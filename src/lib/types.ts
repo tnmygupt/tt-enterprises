@@ -857,6 +857,8 @@ export interface GoodsReceipt {
   createdAt: string;
   createdBy: string;
   voided: boolean;
+  voidedAt?: string;
+  voidedBy?: string;
 }
 
 /** Supplier rate contract — category or item level */

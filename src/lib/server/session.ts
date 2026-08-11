@@ -68,7 +68,8 @@ export type ServerSession = {
 };
 
 const COOKIE = "tt_sid";
-const MAX_AGE_SEC = 60 * 60 * 24 * 14; // 14 days
+/** Shorter TTL so demoted staff lose cookie-gated admin access sooner. */
+const MAX_AGE_SEC = 60 * 60 * 24 * 2; // 2 days
 
 function sign(payload: string): string {
   return createHmac("sha256", getSessionSecret())

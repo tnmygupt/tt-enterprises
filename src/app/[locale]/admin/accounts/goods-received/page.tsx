@@ -23,6 +23,7 @@ import {
   checkCapability,
   listUnpricedGoodsReceipts,
   recordGoodsReceived,
+  voidGoodsReceipt,
 } from "@/lib/store/db";
 
 type LineDraft = {
@@ -470,6 +471,7 @@ export default function GoodsReceivedPage() {
               <th>Items</th>
               <th>Packing slip</th>
               <th>Status</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -482,7 +484,7 @@ export default function GoodsReceivedPage() {
                   v.linkedGrnId === g.id && v.type === "purchase" && !v.voided
               );
               return (
-                <tr key={g.id}>
+                <tr key={g.id} className={g.voided ? "opacity-50" : undefined}>
                   <td className="font-mono text-xs">{g.number}</td>
                   <td>{g.date}</td>
                   <td>{supplier}</td>
@@ -502,7 +504,9 @@ export default function GoodsReceivedPage() {
                     )}
                   </td>
                   <td>
-                    {billed ? (
+                    {g.voided ? (
+                      <span className="text-[var(--danger)]">Voided</span>
+                    ) : billed ? (
                       <span className="text-[var(--ok)]">Priced</span>
                     ) : (
                       <span className="font-semibold text-[var(--brand-deep)]">
@@ -510,12 +514,44 @@ export default function GoodsReceivedPage() {
                       </span>
                     )}
                   </td>
+                  <td>
+                    {!g.voided && !billed ? (
+                      <button
+                        type="button"
+                        className="text-xs font-semibold text-[var(--danger)]"
+                        onClick={() => {
+                          if (
+                            !window.confirm(
+                              `Void ${g.number}? Stock and contract usage will be reversed.`
+                            )
+                          ) {
+                            return;
+                          }
+                          try {
+                            voidGoodsReceipt(g.id, session?.id || "system");
+                            setMsg(`Voided ${g.number}`);
+                            setError("");
+                            refresh();
+                          } catch (err) {
+                            setError(
+                              err instanceof Error
+                                ? err.message
+                                : "Could not void GRN"
+                            );
+                            setMsg("");
+                          }
+                        }}
+                      >
+                        Void
+                      </button>
+                    ) : null}
+                  </td>
                 </tr>
               );
             })}
             {!recent.length ? (
               <tr>
-                <td colSpan={6} className="text-[var(--ink-muted)]">
+                <td colSpan={7} className="text-[var(--ink-muted)]">
                   No goods received yet
                 </td>
               </tr>

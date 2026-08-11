@@ -389,9 +389,27 @@ export function loadDb(): AppDatabase {
     }
     return parsed;
   } catch {
-    const db = emptyDb();
-    localStorage.setItem(DB_KEY, JSON.stringify(db));
-    return db;
+    // Never wipe with seed — that can push an empty DB over cloud.
+    try {
+      localStorage.setItem(`${DB_KEY}_corrupt`, raw);
+      localStorage.removeItem(DB_KEY);
+    } catch {
+      /* ignore storage errors during recovery */
+    }
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("tt-sync-error", {
+          detail:
+            "Local data was unreadable — restoring from cloud. Do not place orders until sync finishes.",
+        })
+      );
+      try {
+        sessionStorage.setItem("tt_db_corrupt_recovery", "1");
+      } catch {
+        /* ignore */
+      }
+    }
+    return emptyDb();
   }
 }
 
@@ -695,7 +713,29 @@ function ensureCostLayersForDemand(
 
 export function saveDb(db: AppDatabase): void {
   if (!canUseStorage()) return;
-  localStorage.setItem(DB_KEY, JSON.stringify(db));
+  // Never persist plaintext passwords that admins briefly reveal in the UI.
+  for (const u of db.users ?? []) {
+    if ("passwordVisible" in u) {
+      delete (u as { passwordVisible?: string }).passwordVisible;
+    }
+  }
+  try {
+    localStorage.setItem(DB_KEY, JSON.stringify(db));
+  } catch (err) {
+    const quota =
+      err instanceof DOMException &&
+      (err.name === "QuotaExceededError" || err.code === 22);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("tt-sync-error", {
+          detail: quota
+            ? "Device storage full — change may still sync to cloud. Free space or clear old bills/photos."
+            : "Could not save locally — syncing to cloud.",
+        })
+      );
+    }
+    // Still attempt cloud push so the write is not lost.
+  }
   window.dispatchEvent(new Event("tt-db-updated"));
   // Prefer Supabase shared sync; never fall back to Firebase when Supabase is on
   // (Firebase anon full-doc write bypasses hardened /api/db).
@@ -5682,6 +5722,83 @@ export function createGoodsReceipt(input: {
   syncPoStatus(db, po.id);
   saveDb(db);
   return grn;
+}
+
+/**
+ * Void a goods receipt: reverse stock, contract usage, PO receivedQty and
+ * provisional FIFO layers. Refuses when a purchase bill is linked or when
+ * GRN batch layers have already been consumed.
+ */
+export function voidGoodsReceipt(grnId: string, voidedBy = "system"): void {
+  const db = loadDb();
+  const grn = db.goodsReceipts.find((g) => g.id === grnId);
+  if (!grn) throw new Error("Goods receipt not found");
+  if (grn.voided) throw new Error("Already voided");
+
+  const billed = (db.vouchers ?? []).some(
+    (v) => v.type === "purchase" && !v.voided && v.linkedGrnId === grn.id
+  );
+  if (billed) {
+    throw new Error("Void the purchase bill first, then void this GRN");
+  }
+
+  db.stockBatches = db.stockBatches || [];
+  db.batchConsumptions = db.batchConsumptions || [];
+  const grnBatchIds = new Set(
+    db.stockBatches.filter((b) => b.grnId === grn.id).map((b) => b.id)
+  );
+  if (grnBatchIds.size) {
+    const consumed = db.batchConsumptions.some((c) =>
+      grnBatchIds.has(c.batchId)
+    );
+    if (consumed) {
+      throw new Error(
+        "Cannot void — stock from this GRN was already sold (FIFO consumed)"
+      );
+    }
+  }
+
+  const po = db.purchaseOrders.find((p) => p.id === grn.poId);
+  if (po) {
+    for (const line of grn.lines) {
+      const poLine = po.lines.find((l) => l.id === line.poLineId);
+      if (poLine) {
+        poLine.receivedQty = roundMoney(
+          Math.max(0, (poLine.receivedQty ?? 0) - line.qty)
+        );
+      }
+      const productId = line.productId || poLine?.productId;
+      const qtyUnit = line.secondaryQty ?? line.qty;
+      const contract = resolveOpenContract(
+        db.supplierContracts,
+        db.products,
+        po.supplierId,
+        productId,
+        grn.date,
+        {
+          contractId: poLine?.contractId,
+          variationId: line.variationId || poLine?.variationId,
+        }
+      );
+      if (contract) {
+        reverseContractUsage(
+          contract,
+          qtyUnit,
+          poLine?.rate || contract.rate
+        );
+      }
+    }
+  }
+
+  applyGrnStock(db, grn, voidedBy, true);
+  db.stockBatches = db.stockBatches.filter((b) => b.grnId !== grn.id);
+
+  grn.voided = true;
+  grn.voidedAt = new Date().toISOString();
+  grn.voidedBy = voidedBy;
+
+  if (po) syncPoStatus(db, po.id);
+  saveDb(db);
 }
 
 /**

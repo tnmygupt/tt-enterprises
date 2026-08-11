@@ -11,7 +11,9 @@
     "postbuild": "node scripts/prepare-standalone.js",
     "start": "next start",
     "start:standalone": "node .next/standalone/server.js",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",
@@ -44,7 +46,8 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   },
   "overrides": {
     "exceljs": {

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
+import { ProductImage } from "@/components/ProductImage";
 import { categoryLabel } from "@/lib/categories";
 import { useDb, useSession } from "@/lib/hooks";
 import { loc } from "@/lib/localized";
@@ -92,15 +93,12 @@ export default function CatalogPage() {
                 href={`/catalog/${p.id}`}
                 className="tt-panel flex items-center gap-4 p-4 transition hover:border-[var(--brand)]"
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
+                <ProductImage
                   src={p.logoUrl || p.media?.[0]?.url || ""}
                   alt={brand || title}
                   className="tt-logo"
                   width={72}
                   height={72}
-                  loading="lazy"
-                  decoding="async"
                 />
                 <div className="min-w-0 flex-1">
                   <p className="text-xs font-semibold uppercase tracking-wide text-[var(--ink-muted)]">

@@ -55,9 +55,9 @@ export async function POST(req: NextRequest) {
   const pincode = (body.pincode || "").replace(/\D/g, "").slice(0, 6);
   const locale: Locale = body.locale === "hi" ? "hi" : "en";
 
-  if (!name || password.length < 4) {
+  if (!name || password.length < 6) {
     return NextResponse.json(
-      { error: "Name and password (min 4 chars) required" },
+      { error: "Name and password (min 6 chars) required" },
       { status: 400 }
     );
   }

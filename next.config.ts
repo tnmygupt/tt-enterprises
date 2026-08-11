@@ -8,10 +8,11 @@ const nextConfig: NextConfig = {
   output: "standalone",
   images: {
     remotePatterns: [
-      {
-        protocol: "https",
-        hostname: "images.unsplash.com",
-      },
+      { protocol: "https", hostname: "images.unsplash.com" },
+      { protocol: "https", hostname: "*.supabase.co" },
+      { protocol: "https", hostname: "firebasestorage.googleapis.com" },
+      { protocol: "https", hostname: "*.googleapis.com" },
+      { protocol: "https", hostname: "*.firebasestorage.app" },
     ],
   },
   // Keep /api/auth/* working after folder rename (Hostinger EACCES on api/auth)

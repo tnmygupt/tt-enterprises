@@ -22,6 +22,27 @@ export function canUseDirectTable(): boolean {
   return Boolean(getSupabaseServiceKey());
 }
 
+/** Lightweight probe — updated_at only (no JSON document download). */
+export async function cloudGetAppDbUpdatedAt(
+  supabase: SupabaseClient
+): Promise<{ updatedAt?: string | null; error?: string }> {
+  if (canUseDirectTable()) {
+    const { data, error } = await supabase
+      .from(APP_DB_TABLE)
+      .select("updated_at")
+      .eq("id", APP_DB_ROW_ID)
+      .maybeSingle();
+    if (error) return { error: error.message };
+    return {
+      updatedAt: (data as { updated_at?: string } | null)?.updated_at ?? null,
+    };
+  }
+  // Gate RPC still returns the full row — prefer direct table for probes.
+  const full = await cloudGetAppDb(supabase);
+  if (full.error) return { error: full.error };
+  return { updatedAt: full.updatedAt ?? null };
+}
+
 export async function cloudGetAppDb(supabase: SupabaseClient): Promise<{
   db: AppDatabase | null;
   updatedAt?: string;

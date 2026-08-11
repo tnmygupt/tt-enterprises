@@ -140,20 +140,41 @@ export function setSizeColorStock(
   );
 }
 
+function applySigned(
+  current: number,
+  delta: number,
+  strict: boolean,
+  label: string
+): number {
+  const next = (current || 0) + delta;
+  if (strict && next < -0.0001) {
+    throw new Error(
+      `Insufficient stock for ${label} (have ${current || 0}, need ${Math.abs(delta)})`
+    );
+  }
+  return Math.max(0, next);
+}
+
 function applyQty(
   product: Product,
   variationId: string | undefined,
   colorId: string | undefined,
   bundlesDelta: number,
-  secondaryDelta: number
+  secondaryDelta: number,
+  opts?: { strict?: boolean }
 ): void {
+  const strict = Boolean(opts?.strict);
+  const label =
+    product.name?.en || product.code || product.id || "product";
   ensureStockMatrix(product);
   if (variationId && product.colors.length && colorId) {
     const key = stockMatrixKey(variationId, colorId);
     if (!product.stockMatrix) product.stockMatrix = {};
-    product.stockMatrix[key] = Math.max(
-      0,
-      (product.stockMatrix[key] || 0) + bundlesDelta
+    product.stockMatrix[key] = applySigned(
+      product.stockMatrix[key] || 0,
+      bundlesDelta,
+      strict,
+      label
     );
     const v = product.variations.find((x) => x.id === variationId);
     if (v) {
@@ -167,7 +188,12 @@ function applyQty(
           ),
         0
       );
-      v.stockSecondary = Math.max(0, prevSecondary + secondaryDelta);
+      v.stockSecondary = applySigned(
+        prevSecondary,
+        secondaryDelta,
+        strict,
+        `${label} (kg/pcs)`
+      );
     }
     product.stock = product.variations.reduce((s, x) => s + (x.stock || 0), 0);
     product.stockSecondary = product.variations.reduce(
@@ -192,6 +218,11 @@ function applyQty(
         product.stockMatrix[key] = have - take;
         need -= take;
       }
+      if (strict && need > 0.0001) {
+        throw new Error(
+          `Insufficient stock for ${label} (short ${need} bundles)`
+        );
+      }
     } else if (remaining > 0) {
       // Put stock back onto the first color bucket for this size
       const key = stockMatrixKey(variationId, product.colors[0].id);
@@ -209,7 +240,12 @@ function applyQty(
           ),
         0
       );
-      v.stockSecondary = Math.max(0, prevSecondary + secondaryDelta);
+      v.stockSecondary = applySigned(
+        prevSecondary,
+        secondaryDelta,
+        strict,
+        `${label} (kg/pcs)`
+      );
     }
     product.stock = product.variations.reduce((s, x) => s + (x.stock || 0), 0);
     product.stockSecondary = product.variations.reduce(
@@ -221,10 +257,12 @@ function applyQty(
   if (variationId) {
     const v = product.variations.find((x) => x.id === variationId);
     if (v) {
-      v.stock = Math.max(0, (v.stock || 0) + bundlesDelta);
-      v.stockSecondary = Math.max(
-        0,
-        (v.stockSecondary ?? 0) + secondaryDelta
+      v.stock = applySigned(v.stock || 0, bundlesDelta, strict, label);
+      v.stockSecondary = applySigned(
+        v.stockSecondary ?? 0,
+        secondaryDelta,
+        strict,
+        `${label} (kg/pcs)`
       );
       product.stock = product.variations.reduce((s, x) => s + (x.stock || 0), 0);
       product.stockSecondary = product.variations.reduce(
@@ -234,10 +272,17 @@ function applyQty(
       return;
     }
   }
-  product.stock = Math.max(0, (product.stock || 0) + bundlesDelta);
-  product.stockSecondary = Math.max(
-    0,
-    (product.stockSecondary ?? 0) + secondaryDelta
+  product.stock = applySigned(
+    product.stock || 0,
+    bundlesDelta,
+    strict,
+    label
+  );
+  product.stockSecondary = applySigned(
+    product.stockSecondary ?? 0,
+    secondaryDelta,
+    strict,
+    `${label} (kg/pcs)`
   );
 }
 
@@ -738,52 +783,116 @@ export function applyOrderEstimateStock(
   const direction: "in" | "out" = mode === "reserve" ? "out" : "in";
   const type = mode === "reserve" ? "estimate_reserve" : "estimate_release";
   const noteVerb = mode === "reserve" ? "Reserved for estimate" : "Released on cancel";
+  const strict = mode === "reserve";
 
-  for (const line of order.lines) {
-    if (!line.productId || !line.quantity) continue;
-    const product = db.products.find((p) => p.id === line.productId);
-    if (!product) {
-      throw new Error(
-        `Cannot ${mode} stock — product missing for ${line.productName?.en || line.productId}`
-      );
+  // Snapshot affected products so a mid-order failure can roll back cleanly.
+  const touched = new Map<
+    string,
+    {
+      stock: number;
+      stockSecondary?: number;
+      stockMatrix?: Record<string, number>;
+      variations: Array<{
+        id: string;
+        stock: number;
+        stockSecondary?: number;
+      }>;
     }
-    ensureStockSecondary(product);
-    const bundles = line.quantity;
-    const secondary = deriveSecondaryQty(
-      product,
-      bundles,
-      line.variationId,
-      line.unit === "kg" ? line.weightKg : undefined
-    );
-    const signedBundles = direction === "in" ? bundles : -bundles;
-    const signedSecondary = direction === "in" ? secondary : -secondary;
-    applyQty(
-      product,
-      line.variationId,
-      line.colorId,
-      signedBundles,
-      signedSecondary
-    );
-    product.updatedAt = new Date().toISOString();
+  >();
+  const movementIds: string[] = [];
 
-    db.stockMovements.unshift({
-      id: `sm_${crypto.randomUUID()}`,
-      date: new Date().toISOString().slice(0, 10),
-      type,
-      productId: line.productId,
-      variationId: line.variationId,
-      colorId: line.colorId,
-      qty: bundles,
-      secondaryQty: secondary,
-      unit: line.unit || product.unit,
-      direction,
-      orderId: order.id,
-      note: `${noteVerb} ${order.orderNumber} · ${line.productName.en}${
-        line.size?.en ? ` · ${line.size.en}` : ""
-      }${line.colorName?.en ? ` · ${line.colorName.en}` : ""}`,
-      createdAt: new Date().toISOString(),
-      createdBy,
+  const snapshotProduct = (product: Product) => {
+    if (touched.has(product.id)) return;
+    touched.set(product.id, {
+      stock: product.stock || 0,
+      stockSecondary: product.stockSecondary,
+      stockMatrix: product.stockMatrix
+        ? { ...product.stockMatrix }
+        : undefined,
+      variations: product.variations.map((v) => ({
+        id: v.id,
+        stock: v.stock || 0,
+        stockSecondary: v.stockSecondary,
+      })),
     });
+  };
+
+  const rollback = () => {
+    for (const [id, snap] of touched) {
+      const product = db.products.find((p) => p.id === id);
+      if (!product) continue;
+      product.stock = snap.stock;
+      product.stockSecondary = snap.stockSecondary;
+      product.stockMatrix = snap.stockMatrix
+        ? { ...snap.stockMatrix }
+        : product.stockMatrix;
+      for (const vs of snap.variations) {
+        const v = product.variations.find((x) => x.id === vs.id);
+        if (!v) continue;
+        v.stock = vs.stock;
+        v.stockSecondary = vs.stockSecondary;
+      }
+    }
+    if (movementIds.length) {
+      const drop = new Set(movementIds);
+      db.stockMovements = db.stockMovements.filter((m) => !drop.has(m.id));
+    }
+  };
+
+  try {
+    for (const line of order.lines) {
+      if (!line.productId || !line.quantity) continue;
+      const product = db.products.find((p) => p.id === line.productId);
+      if (!product) {
+        throw new Error(
+          `Cannot ${mode} stock — product missing for ${line.productName?.en || line.productId}`
+        );
+      }
+      snapshotProduct(product);
+      ensureStockSecondary(product);
+      const bundles = line.quantity;
+      const secondary = deriveSecondaryQty(
+        product,
+        bundles,
+        line.variationId,
+        line.unit === "kg" ? line.weightKg : undefined
+      );
+      const signedBundles = direction === "in" ? bundles : -bundles;
+      const signedSecondary = direction === "in" ? secondary : -secondary;
+      applyQty(
+        product,
+        line.variationId,
+        line.colorId,
+        signedBundles,
+        signedSecondary,
+        { strict }
+      );
+      product.updatedAt = new Date().toISOString();
+
+      const movId = `sm_${crypto.randomUUID()}`;
+      movementIds.push(movId);
+      db.stockMovements.unshift({
+        id: movId,
+        date: new Date().toISOString().slice(0, 10),
+        type,
+        productId: line.productId,
+        variationId: line.variationId,
+        colorId: line.colorId,
+        qty: bundles,
+        secondaryQty: secondary,
+        unit: line.unit || product.unit,
+        direction,
+        orderId: order.id,
+        note: `${noteVerb} ${order.orderNumber} · ${line.productName.en}${
+          line.size?.en ? ` · ${line.size.en}` : ""
+        }${line.colorName?.en ? ` · ${line.colorName.en}` : ""}`,
+        createdAt: new Date().toISOString(),
+        createdBy,
+      });
+    }
+  } catch (err) {
+    rollback();
+    throw err;
   }
 }
 

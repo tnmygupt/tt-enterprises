@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/routing";
 import { NumberField } from "@/components/NumberField";
+import { ProductImage } from "@/components/ProductImage";
 import { useDb } from "@/lib/hooks";
 import {
   calcLineTotal,
@@ -751,8 +752,12 @@ export default function QuickOrderPage() {
                   >
                     <span className="tt-qo-product-thumb">
                       {thumb ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={thumb} alt="" />
+                        <ProductImage
+                          src={thumb}
+                          alt={p.name[locale]}
+                          width={48}
+                          height={48}
+                        />
                       ) : (
                         <span>{p.name[locale].slice(0, 2)}</span>
                       )}

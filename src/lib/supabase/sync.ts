@@ -526,9 +526,31 @@ async function pushViaApi(
     return false;
   }
   try {
-    const data = (await res.json()) as { updatedAt?: string };
+    const data = (await res.json()) as {
+      updatedAt?: string;
+      rejectedOrders?: Array<{
+        id: string;
+        orderNumber: string;
+        reason: string;
+      }>;
+    };
     if (data.updatedAt) lastCloudUpdatedAt = data.updatedAt;
     silentConflictRetries = 0;
+    if (data.rejectedOrders?.length && typeof window !== "undefined") {
+      const labels = data.rejectedOrders
+        .map((r) => r.orderNumber || r.id)
+        .join(", ");
+      window.dispatchEvent(
+        new CustomEvent("tt-sync-error", {
+          detail: `Stock no longer available — order(s) not saved: ${labels}. Update quantities and try again.`,
+        })
+      );
+      window.dispatchEvent(
+        new CustomEvent("tt-orders-rejected", {
+          detail: data.rejectedOrders,
+        })
+      );
+    }
   } catch {
     /* ignore */
   }
@@ -626,9 +648,26 @@ export async function pushCloudDatabase(db: AppDatabase): Promise<boolean> {
 
 export async function ensureCloudSeed(localDb: AppDatabase): Promise<AppDatabase> {
   if (!supabaseSyncEnabled()) return localDb;
+  let recovering = false;
+  try {
+    recovering = sessionStorage.getItem("tt_db_corrupt_recovery") === "1";
+  } catch {
+    /* ignore */
+  }
   const remote = await pullViaApi();
   if (remote) {
     if (remote.updatedAt) lastCloudUpdatedAt = remote.updatedAt;
+    if (recovering) {
+      try {
+        sessionStorage.removeItem("tt_db_corrupt_recovery");
+      } catch {
+        /* ignore */
+      }
+      // Trust cloud entirely after a corrupt local wipe — never push empty seed.
+      return remote.scope === "public"
+        ? mergePublicCatalog(localDb, remote.db)
+        : remote.db;
+    }
     if (remote.scope === "public") {
       return mergePublicCatalog(localDb, remote.db);
     }
@@ -641,13 +680,30 @@ export async function ensureCloudSeed(localDb: AppDatabase): Promise<AppDatabase
     }
     return merged;
   }
+  if (recovering) {
+    // Offline during recovery — keep empty in-memory until a pull succeeds.
+    return localDb;
+  }
   // Only seed empty cloud when logged in (cookie present) — anonymous must not bootstrap
   await pushCloudDatabase(localDb);
   return localDb;
 }
 
+async function probeUpdatedAt(): Promise<string | null | undefined> {
+  const res = await fetch("/api/db?probe=1", {
+    cache: "no-store",
+    credentials: "include",
+    headers: dbHeaders(),
+  });
+  if (!res.ok) return undefined;
+  const data = (await res.json()) as { updatedAt?: string | null };
+  return data.updatedAt ?? null;
+}
+
 /**
  * Live shared DB via /api/db polling (works with locked RLS; no anon SELECT needed).
+ * Uses a cheap updatedAt probe, pauses when the tab is hidden, and backs off
+ * while idle so mid-range phones are not hammered every 4s.
  */
 export function subscribeCloudDatabase(
   onChange: (db: AppDatabase) => void,
@@ -656,16 +712,46 @@ export function subscribeCloudDatabase(
   if (!supabaseSyncEnabled()) return null;
 
   let cancelled = false;
+  let timer: number | null = null;
+  let unchangedStreak = 0;
+  let busy = false;
+  const FAST_MS = 4000;
+  const SLOW_MS = 20_000;
+
   const onConflict = (db: AppDatabase) => {
     if (!cancelled) onChange(db);
   };
   conflictListeners.add(onConflict);
 
+  const intervalMs = () => (unchangedStreak >= 3 ? SLOW_MS : FAST_MS);
+
+  const scheduleNext = () => {
+    if (cancelled) return;
+    if (timer != null) window.clearTimeout(timer);
+    if (document.visibilityState === "hidden") return;
+    timer = window.setTimeout(() => {
+      void tick();
+    }, intervalMs());
+  };
+
   const tick = async () => {
+    if (cancelled || busy) return;
+    if (document.visibilityState === "hidden") return;
+    busy = true;
     try {
       // Don't pull over a just-saved local write before the push debounce lands
       // (that was wiping GRN stock / vouchers back to the stale cloud snapshot).
       if (isCloudPushPending()) return;
+
+      if (lastCloudUpdatedAt) {
+        const probed = await probeUpdatedAt();
+        if (cancelled) return;
+        if (probed !== undefined && probed === lastCloudUpdatedAt) {
+          unchangedStreak += 1;
+          return;
+        }
+      }
+
       const remote = await pullViaApi();
       if (cancelled || !remote) return;
       if (remote.updatedAt) lastCloudUpdatedAt = remote.updatedAt;
@@ -682,21 +768,49 @@ export function subscribeCloudDatabase(
           localPendingDiffers(local, merged, applyDb);
         applyDb = merged;
       }
+      // Only stringify when we actually pulled — probe path skips this.
       const json = JSON.stringify(sanitizeDbForCloud(applyDb));
-      if (json === lastPushJson) return;
+      if (json === lastPushJson) {
+        unchangedStreak += 1;
+        return;
+      }
+      unchangedStreak = 0;
       // Don't mark synced if we still have local-only rows to push
       if (!needsPush) lastPushJson = json;
       onChange(applyDb);
       if (needsPush) void pushCloudDatabase(applyDb);
     } catch {
       /* ignore transient errors */
+    } finally {
+      busy = false;
+      scheduleNext();
     }
   };
+
+  const onVisibility = () => {
+    if (cancelled) return;
+    if (document.visibilityState === "visible") {
+      unchangedStreak = 0;
+      void tick();
+    } else if (timer != null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const onLocalWrite = () => {
+    unchangedStreak = 0;
+  };
+
+  document.addEventListener("visibilitychange", onVisibility);
+  window.addEventListener("tt-db-updated", onLocalWrite);
+
   void tick();
-  const id = window.setInterval(tick, 4000);
   return () => {
     cancelled = true;
     conflictListeners.delete(onConflict);
-    window.clearInterval(id);
+    if (timer != null) window.clearTimeout(timer);
+    document.removeEventListener("visibilitychange", onVisibility);
+    window.removeEventListener("tt-db-updated", onLocalWrite);
   };
 }

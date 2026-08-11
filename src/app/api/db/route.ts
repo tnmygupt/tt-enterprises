@@ -9,10 +9,16 @@ import {
 } from "@/lib/server/authorize-db";
 import {
   cloudGetAppDb,
+  cloudGetAppDbUpdatedAt,
   cloudPutAppDb,
   createServerSupabase,
 } from "@/lib/server/app-db";
-import { isStaffRole, readSessionCookie } from "@/lib/server/session";
+import {
+  createSessionToken,
+  isStaffRole,
+  readSessionCookie,
+  sessionCookieOptions,
+} from "@/lib/server/session";
 import { stripPrePurgeOps } from "@/lib/ops-purge";
 import { getDbApiKey, isSupabaseConfigured } from "@/lib/supabase/config";
 
@@ -47,6 +53,18 @@ export async function GET(req: NextRequest) {
       { error: "Supabase not configured" },
       { status: 503 }
     );
+  }
+
+  // Cheap change probe — clients skip full pull when updatedAt matches.
+  if (req.nextUrl.searchParams.get("probe") === "1") {
+    const probe = await cloudGetAppDbUpdatedAt(supabase);
+    if (probe.error) {
+      return NextResponse.json({ error: probe.error }, { status: 500 });
+    }
+    return NextResponse.json({
+      updatedAt: probe.updatedAt ?? null,
+      probe: true,
+    });
   }
 
   const { db, updatedAt, error } = await cloudGetAppDb(supabase);
@@ -94,20 +112,50 @@ export async function GET(req: NextRequest) {
 
   try {
     const { actor, role } = resolveCloudActor(clean, session);
-    if (isStaffRole(role)) {
-      return NextResponse.json({
-        updatedAt: serveUpdatedAt,
-        db: staffScopedProjection(clean, actor),
-        scope: role === "super_admin" ? "owner" : "staff",
+    // Refresh the signed cookie from cloud truth so demotions take effect
+    // without waiting for the full TTL (and renew while active).
+    const needsCookieRefresh =
+      session.role !== role ||
+      session.name !== actor.name ||
+      session.phone !== actor.phone;
+    const attachCookie = (res: NextResponse) => {
+      if (!needsCookieRefresh && session.role === role) {
+        // Still renew periodically when role matches so active users stay signed in
+        // with the shorter TTL — refresh when under 12h remaining.
+        const remaining = session.exp - Math.floor(Date.now() / 1000);
+        if (remaining > 12 * 60 * 60) return res;
+      }
+      const token = createSessionToken({
+        id: actor.id,
+        phone: actor.phone,
+        email: actor.email,
+        name: actor.name,
         role,
+        locale: actor.locale === "hi" ? "hi" : "en",
       });
+      const cookie = sessionCookieOptions(token);
+      res.cookies.set(cookie.name, cookie.value, cookie);
+      return res;
+    };
+
+    if (isStaffRole(role)) {
+      return attachCookie(
+        NextResponse.json({
+          updatedAt: serveUpdatedAt,
+          db: staffScopedProjection(clean, actor),
+          scope: role === "super_admin" ? "owner" : "staff",
+          role,
+        })
+      );
     }
-    return NextResponse.json({
-      updatedAt: serveUpdatedAt,
-      db: dealerScopedProjection(clean, { ...session, role }),
-      scope: "dealer",
-      role,
-    });
+    return attachCookie(
+      NextResponse.json({
+        updatedAt: serveUpdatedAt,
+        db: dealerScopedProjection(clean, { ...session, role }),
+        scope: "dealer",
+        role,
+      })
+    );
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Session invalid" },
@@ -193,9 +241,9 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: "Missing db" }, { status: 400 });
   }
 
-  let merged: AppDatabase;
+  let mergeResult: ReturnType<typeof mergeAuthorizedPush>;
   try {
-    merged = mergeAuthorizedPush(
+    mergeResult = mergeAuthorizedPush(
       body.db as AppDatabase,
       existing.db,
       boundSession
@@ -209,7 +257,7 @@ export async function PUT(req: NextRequest) {
 
   const result = await cloudPutAppDb(
     supabase,
-    merged,
+    mergeResult.db,
     body.baseUpdatedAt ?? null
   );
 
@@ -230,5 +278,9 @@ export async function PUT(req: NextRequest) {
     );
   }
 
-  return NextResponse.json({ ok: true, updatedAt: result.updatedAt });
+  return NextResponse.json({
+    ok: true,
+    updatedAt: result.updatedAt,
+    rejectedOrders: mergeResult.rejectedOrders,
+  });
 }

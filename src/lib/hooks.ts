@@ -147,6 +147,20 @@ function startCloudSyncOnce(): void {
   if (cloudSyncStarted || typeof window === "undefined") return;
   cloudSyncStarted = true;
 
+  // Drop locally-saved estimates the cloud refused (insufficient stock).
+  window.addEventListener("tt-orders-rejected", ((ev: Event) => {
+    const detail = (ev as CustomEvent<Array<{ id: string }>>).detail;
+    if (!detail?.length) return;
+    const drop = new Set(detail.map((r) => r.id));
+    const db = loadDb();
+    const before = db.orders.length;
+    db.orders = db.orders.filter((o) => !drop.has(o.id));
+    if (db.orders.length !== before) {
+      // Local-only write — cloud already rejected these rows.
+      replaceDbFromCloud(db);
+    }
+  }) as EventListener);
+
   void (async () => {
     try {
       const sb = await import("@/lib/supabase/sync");

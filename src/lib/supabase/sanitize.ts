@@ -30,6 +30,17 @@ export function sanitizeDbForCloud(db: AppDatabase): AppDatabase {
     }
   }
 
+  for (const v of clone.vouchers ?? []) {
+    if (v.packingSlipDataUrl?.startsWith("data:")) {
+      v.packingSlipDataUrl = undefined;
+    }
+  }
+  for (const g of clone.goodsReceipts ?? []) {
+    if (g.packingSlipDataUrl?.startsWith("data:")) {
+      g.packingSlipDataUrl = undefined;
+    }
+  }
+
   for (const dep of clone.walletDeposits ?? []) {
     if (dep.proof?.imageDataUrl?.startsWith("data:")) {
       dep.proof.imageDataUrl = undefined;

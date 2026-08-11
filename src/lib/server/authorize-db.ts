@@ -771,6 +771,7 @@ function orderHasStockReserveMovement(
  * Ensure every active stockReserved order has an estimate_reserve (or sale)
  * movement and matching product qty deduction. Retries after silent failures
  * or staff wipes. Safe to call repeatedly.
+ * On failure, clear stockReserved so we never claim a reserve that does not exist.
  */
 function reconcileEstimateStockReserves(db: AppDatabase): void {
   if (!db.stockMovements) db.stockMovements = [];
@@ -786,9 +787,21 @@ function reconcileEstimateStockReserves(db: AppDatabase): void {
         o.orderNumber,
         err instanceof Error ? err.message : err
       );
+      o.stockReserved = false;
     }
   }
 }
+
+export type RejectedOrder = {
+  id: string;
+  orderNumber: string;
+  reason: string;
+};
+
+export type MergePushResult = {
+  db: AppDatabase;
+  rejectedOrders?: RejectedOrder[];
+};
 
 /**
  * Limited staff push — overlay only capability-allowed collections.
@@ -1134,7 +1147,7 @@ export function mergeAuthorizedPush(
   incomingRaw: AppDatabase,
   existing: AppDatabase | null,
   session: ServerSession | null
-): AppDatabase {
+): MergePushResult {
   const incoming = mergePasswordHashes(
     sanitizeDbForCloud(incomingRaw),
     existing
@@ -1150,7 +1163,7 @@ export function mergeAuthorizedPush(
     }
     const boot = ensureUniqueOrderNumbers(incoming);
     reconcileEstimateStockReserves(boot);
-    return boot;
+    return { db: boot };
   }
 
   if (!session) {
@@ -1169,7 +1182,7 @@ export function mergeAuthorizedPush(
     merged = preferNewestOpsPurge(merged, incoming, existing);
     const out = stripPrePurgeOps(ensureUniqueOrderNumbers(merged));
     reconcileEstimateStockReserves(out);
-    return out;
+    return { db: out };
   }
 
   if (isStaffRole(role)) {
@@ -1180,7 +1193,7 @@ export function mergeAuthorizedPush(
     merged = preferNewestOpsPurge(merged, incoming, existing);
     const out = stripPrePurgeOps(ensureUniqueOrderNumbers(merged));
     reconcileEstimateStockReserves(out);
-    return out;
+    return { db: out };
   }
 
   // Customer path
@@ -1287,17 +1300,45 @@ export function mergeAuthorizedPush(
   ];
 
   // Apply estimate stock reserves for customer orders (cloud catalog truth).
-  // Retries when a prior push saved the order but reserve threw / was wiped.
+  // On failure, drop the order so we never save an oversold estimate.
   if (!cloud.stockMovements) cloud.stockMovements = [];
+  const rejectedOrders: RejectedOrder[] = [];
+  const rejectedIds = new Set<string>();
   for (const o of newlyReserved) {
     if (orderHasStockReserveMovement(cloud, o.id)) continue;
+    // Only reject brand-new orders (not already on cloud) — existing ones
+    // are repaired/cleared by reconcileEstimateStockReserves below.
+    if (cloudOrdersById.has(o.id)) continue;
     try {
       applyOrderEstimateStock(cloud, o, session.id, "reserve");
     } catch (err) {
+      const reason =
+        err instanceof Error ? err.message : "Insufficient stock";
       console.error(
         "[authorize-db] customer stock reserve failed",
         o.orderNumber,
-        err instanceof Error ? err.message : err
+        reason
+      );
+      rejectedOrders.push({
+        id: o.id,
+        orderNumber: o.orderNumber,
+        reason,
+      });
+      rejectedIds.add(o.id);
+    }
+  }
+  if (rejectedIds.size) {
+    cloud.orders = (cloud.orders ?? []).filter((o) => !rejectedIds.has(o.id));
+    // Refund wallet that was reserved against the rejected order(s)
+    let refund = 0;
+    for (const o of sanitizedOrders) {
+      if (!rejectedIds.has(o.id)) continue;
+      refund += Math.max(0, Number(o.walletUsed) || 0);
+    }
+    if (refund > 0) {
+      meCloud.walletBalance = Math.max(
+        0,
+        (Number(meCloud.walletBalance) || 0) + refund
       );
     }
   }
@@ -1329,5 +1370,8 @@ export function mergeAuthorizedPush(
 
   const out = stripPrePurgeOps(ensureUniqueOrderNumbers(cloud));
   reconcileEstimateStockReserves(out);
-  return out;
+  return {
+    db: out,
+    rejectedOrders: rejectedOrders.length ? rejectedOrders : undefined,
+  };
 }
