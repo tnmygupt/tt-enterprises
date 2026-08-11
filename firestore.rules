@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    function isStaff() {
+      return signedIn() && userDoc().role in ['super_admin', 'sales', 'accounts', 'dispatch', 'viewer'];
+    }
+    function isAdmin() {
+      return signedIn() && userDoc().role == 'super_admin';
+    }
+
+    // Shared app database for beta (anonymous auth). Tighten later with role Auth.
+    match /tt/{docId} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isStaff());
+      allow write: if isAdmin();
+    }
+    match /products/{id} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+    match /orders/{id} {
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isStaff());
+      allow create: if signedIn();
+      allow update: if isStaff() || (signedIn() && resource.data.userId == request.auth.uid);
+    }
+    match /schemes/{id} {
+      allow read: if signedIn();
+      allow write: if isStaff();
+    }
+    match /wallet_transactions/{id} {
+      allow read: if signedIn() && (resource.data.userId == request.auth.uid || isStaff());
+      allow write: if isStaff();
+    }
+    match /shipping_rules/{id} {
+      allow read: if true;
+      allow write: if isStaff();
+    }
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}

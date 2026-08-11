@@ -1,0 +1,506 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { Link, usePathname } from "@/i18n/routing";
+import { useLocale, useTranslations } from "next-intl";
+import { useDb, useSession } from "@/lib/hooks";
+import { getAdminQueues } from "@/lib/admin-queues";
+import { checkCapability, isStaff } from "@/lib/store/db";
+import { playStaffNewOrderChime } from "@/lib/whatsapp";
+import { notifyStaffPush } from "@/lib/push-client";
+import { WhatsAppOutbox } from "@/components/WhatsAppOutbox";
+import type { Capability } from "@/lib/types";
+
+const NEED_CONFIRM_SEEN_KEY = "tt_staff_need_confirm_seen";
+const PENDING_DEALER_SEEN_KEY = "tt_staff_pending_dealer_seen";
+
+function readSeen(key: string): number {
+  try {
+    return Number(sessionStorage.getItem(key) || "0") || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeSeen(key: string, count: number): void {
+  try {
+    sessionStorage.setItem(key, String(count));
+  } catch {
+    /* private mode — the toast just repeats next load */
+  }
+}
+
+type NavItem = {
+  href: string;
+  labelKey: string;
+  cap?: Capability;
+  /** Only show for owner / super_admin */
+  superOnly?: boolean;
+  badge?: keyof ReturnType<typeof getAdminQueues>["counts"];
+};
+
+type NavGroup = { titleKey: string; items: NavItem[] };
+
+const GROUPS: NavGroup[] = [
+  {
+    titleKey: "admin.moduleDesk",
+    items: [
+      { href: "/admin", labelKey: "admin.dashboard" },
+      {
+        href: "/admin/tracking",
+        labelKey: "admin.trackingMatrix",
+        cap: "manage_orders",
+      },
+      {
+        href: "/admin/owner",
+        labelKey: "admin.ownerTracking",
+        superOnly: true,
+      },
+      { href: "/admin/help", labelKey: "admin.helpGuide" },
+    ],
+  },
+  {
+    titleKey: "admin.moduleSelling",
+    items: [
+      {
+        href: "/admin/orders",
+        labelKey: "admin.orders",
+        cap: "manage_orders",
+        badge: "need_confirm",
+      },
+    ],
+  },
+  {
+    titleKey: "admin.moduleBooks",
+    items: [
+      {
+        href: "/admin/accounts",
+        labelKey: "admin.accountsBook",
+        cap: "manage_accounts",
+      },
+    ],
+  },
+  {
+    titleKey: "admin.moduleCatalog",
+    items: [
+      {
+        href: "/admin/products",
+        labelKey: "admin.products",
+        cap: "manage_products",
+      },
+      {
+        href: "/admin/rates",
+        labelKey: "admin.rates",
+        cap: "manage_products",
+        superOnly: true,
+      },
+      {
+        href: "/admin/categories",
+        labelKey: "admin.categories",
+        cap: "manage_products",
+      },
+      {
+        href: "/admin/accounts/inventory",
+        labelKey: "admin.stock",
+        cap: "manage_accounts",
+      },
+      {
+        href: "/admin/schemes",
+        labelKey: "admin.schemes",
+        cap: "manage_schemes",
+      },
+    ],
+  },
+  {
+    titleKey: "admin.modulePeople",
+    items: [
+      { href: "/admin/users", labelKey: "admin.users", cap: "manage_users" },
+      {
+        href: "/admin/wallets",
+        labelKey: "admin.wallets",
+        cap: "manage_wallet",
+      },
+    ],
+  },
+  {
+    titleKey: "admin.moduleSetup",
+    items: [
+      {
+        href: "/admin/shipping",
+        labelKey: "admin.shipping",
+        cap: "manage_shipping",
+      },
+      { href: "/admin/tally", labelKey: "admin.tallyStockBooks", cap: "manage_tally" },
+      {
+        href: "/admin/settings",
+        labelKey: "admin.settings",
+        cap: "manage_users",
+      },
+    ],
+  },
+];
+
+export function AdminShell({
+  children,
+  wide = false,
+}: {
+  children: React.ReactNode;
+  wide?: boolean;
+}) {
+  const t = useTranslations();
+  const locale = useLocale();
+  const pathname = usePathname();
+  const { session, ready } = useSession();
+  const { db } = useDb();
+  const queues = getAdminQueues(db);
+  const [navOpen, setNavOpen] = useState(false);
+  const [pendingOpen, setPendingOpen] = useState(false);
+  const [toast, setToast] = useState<{ text: string; href: string } | null>(
+    null
+  );
+  const audioReady = useRef(false);
+  const pendingDealers = (db?.users ?? []).filter(
+    (u) => u.role === "customer" && !u.approved && u.active
+  ).length;
+  const closeLabel = locale === "hi" ? "मेनू बंद करें" : "Close menu";
+
+  useEffect(() => {
+    // Close admin nav on route change — intentional sync of derived UI state
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNavOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    document.body.style.overflow = navOpen ? "hidden" : "";
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [navOpen]);
+
+  // Unlock Web Audio after first click in admin (browser autoplay policy)
+  useEffect(() => {
+    const unlock = () => {
+      audioReady.current = true;
+    };
+    window.addEventListener("pointerdown", unlock, { once: true });
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, []);
+
+  // Browser chime + toast when new estimates arrive
+  useEffect(() => {
+    if (!session || !isStaff(session.role)) return;
+    if (!checkCapability(session, db?.users, "manage_orders")) return;
+    const count = queues.counts.need_confirm;
+    const prev = readSeen(NEED_CONFIRM_SEEN_KEY);
+    if (count > prev) {
+      if (audioReady.current || prev > 0) {
+        playStaffNewOrderChime();
+      }
+      // Toast is driven by an external count change — intentional
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setToast({
+        text:
+          locale === "hi"
+            ? `नया ऑर्डर · प्रोसेस के लिए तैयार (${count})`
+            : `New order · ready to process (${count})`,
+        href: "/admin/orders?filter=estimate",
+      });
+      window.setTimeout(() => setToast(null), 5000);
+      void notifyStaffPush({
+        title: locale === "hi" ? "नया अनुमान" : "New estimate",
+        body:
+          locale === "hi"
+            ? `${count} ऑर्डर प्रोसेस के लिए तैयार`
+            : `${count} order(s) ready to process`,
+        url: "/en/admin/orders?filter=estimate",
+      });
+    }
+    writeSeen(NEED_CONFIRM_SEEN_KEY, count);
+  }, [queues.counts.need_confirm, session, locale, db?.users]);
+
+  // Same treatment for dealers waiting on approval. The signup itself pushes
+  // from the server (nobody is logged in then); this covers staff already in
+  // the admin when the sync poll brings the new registration in.
+  useEffect(() => {
+    if (!session || !isStaff(session.role)) return;
+    if (!checkCapability(session, db?.users, "manage_users")) return;
+    const prev = readSeen(PENDING_DEALER_SEEN_KEY);
+    if (pendingDealers > prev) {
+      if (audioReady.current || prev > 0) {
+        playStaffNewOrderChime();
+      }
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setToast({
+        text:
+          locale === "hi"
+            ? `नया डीलर · मंज़ूरी बाकी (${pendingDealers})`
+            : `New dealer · approval pending (${pendingDealers})`,
+        href: "/admin/users",
+      });
+      window.setTimeout(() => setToast(null), 6000);
+    }
+    writeSeen(PENDING_DEALER_SEEN_KEY, pendingDealers);
+  }, [pendingDealers, session, locale, db?.users]);
+
+  if (!ready) {
+    return <p className="tt-section tt-wrap">{t("common.loading")}</p>;
+  }
+
+  if (!session || !isStaff(session.role)) {
+    return (
+      <section className="tt-section">
+        <div className="tt-wrap tt-panel p-6">
+          <p className="font-semibold">{t("common.adminRequired")}</p>
+          <p className="mt-2 text-sm text-[var(--ink-muted)]">
+            {t("common.adminRequiredHint")}
+          </p>
+          <Link href="/" className="tt-btn tt-btn-dark mt-4 inline-flex w-full sm:w-auto">
+            {t("nav.login")}
+          </Link>
+        </div>
+      </section>
+    );
+  }
+
+  const canOrders =
+    !!session && checkCapability(session, db?.users, "manage_orders");
+  const pendingTotal =
+    queues.counts.need_confirm +
+    queues.counts.need_bill +
+    queues.counts.need_verify_payment +
+    queues.counts.need_lr +
+    queues.counts.full_truck;
+
+  const pendingQueues: {
+    key: string;
+    href: string;
+    label: string;
+    count: number;
+  }[] = [
+    {
+      key: "need_confirm",
+      href: "/admin/orders?filter=estimate",
+      label: locale === "hi" ? "नए अनुमान" : "New estimates",
+      count: queues.counts.need_confirm,
+    },
+    {
+      key: "need_bill",
+      href: "/admin/orders?filter=need_bill",
+      label: locale === "hi" ? "बिल बाकी" : "Bill pending",
+      count: queues.counts.need_bill,
+    },
+    {
+      key: "need_verify",
+      href: "/admin/orders?filter=need_verify",
+      label: locale === "hi" ? "पेमेंट जाँच" : "Verify payment",
+      count: queues.counts.need_verify_payment,
+    },
+    {
+      key: "need_lr",
+      href: "/admin/orders?filter=need_lr",
+      label: locale === "hi" ? "LR → डिलीवर" : "LR → delivered",
+      count: queues.counts.need_lr,
+    },
+    {
+      key: "full_truck",
+      href: "/admin/orders?filter=full_truck",
+      label: locale === "hi" ? "फुल ट्रक" : "Full truck",
+      count: queues.counts.full_truck,
+    },
+  ].filter((q) => q.count > 0);
+
+  const nav = (
+    <>
+      <WhatsAppOutbox />
+      <div className="border-b border-[var(--line)] bg-white px-4 py-4">
+        <div className="mb-3 flex items-center gap-2.5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/brand/tt-mark.svg"
+            alt=""
+            className="h-10 w-10 rounded-[0.65rem]"
+          />
+          <div className="min-w-0">
+            <p className="tt-display text-base font-semibold tracking-tight text-[var(--ink)]">
+              TT Enterprises
+            </p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[var(--brand)]">
+              {t("nav.admin")} · {session.name}
+            </p>
+          </div>
+        </div>
+        <p className="text-xs capitalize text-[var(--ink-muted)]">
+          {session.role.replaceAll("_", " ")}
+        </p>
+        {canOrders && pendingTotal > 0 ? (
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => setPendingOpen((o) => !o)}
+              aria-expanded={pendingOpen}
+              className="flex w-full items-center justify-between gap-2 rounded-lg bg-[var(--brand-soft)] px-2.5 py-2 text-left text-xs font-bold text-[var(--brand-deep)] transition hover:bg-[var(--brand)] hover:text-white"
+            >
+              <span>
+                {t("common.pendingWork")}: {pendingTotal}
+              </span>
+              <span className="text-[10px] font-semibold opacity-80">
+                {pendingOpen
+                  ? locale === "hi"
+                    ? "छिपाएँ ▲"
+                    : "Hide ▲"
+                  : locale === "hi"
+                    ? "खोलें ▼"
+                    : "Open ▼"}
+              </span>
+            </button>
+            {pendingOpen ? (
+              <ul className="mt-1.5 space-y-0.5 rounded-lg border border-[var(--line)] bg-white p-1">
+                {pendingQueues.map((q) => (
+                  <li key={q.key}>
+                    <Link
+                      href={q.href}
+                      onClick={() => {
+                        setNavOpen(false);
+                        setPendingOpen(false);
+                      }}
+                      className="flex min-h-10 items-center justify-between gap-2 rounded-md px-2.5 py-2 text-xs font-semibold text-[var(--ink)] hover:bg-[var(--brand-soft)] hover:text-[var(--brand-deep)]"
+                    >
+                      <span>{q.label}</span>
+                      <span className="rounded-md bg-[var(--brand)] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                        {q.count}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+                <li>
+                  <Link
+                    href="/admin"
+                    onClick={() => {
+                      setNavOpen(false);
+                      setPendingOpen(false);
+                    }}
+                    className="flex min-h-9 items-center rounded-md px-2.5 py-1.5 text-[11px] font-medium text-[var(--ink-muted)] hover:bg-[var(--surface)] hover:text-[var(--ink)]"
+                  >
+                    {locale === "hi"
+                      ? "सभी कतारें → डैशबोर्ड"
+                      : "All queues → dashboard"}
+                  </Link>
+                </li>
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+      <nav className="max-h-[60vh] space-y-3 overflow-y-auto p-2 lg:max-h-[75vh]">
+        {GROUPS.map((g) => {
+          const items = g.items.filter(
+            (l) =>
+              (!l.cap || checkCapability(session, db?.users, l.cap)) &&
+              (!l.superOnly || session.role === "super_admin")
+          );
+          if (!items.length) return null;
+          return (
+            <div key={g.titleKey}>
+              <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
+                {t(g.titleKey)}
+              </p>
+              <div className="flex flex-col gap-0.5">
+                {items.map((l) => {
+                  const active =
+                    l.href === "/admin"
+                      ? pathname === "/admin"
+                      : pathname === l.href ||
+                        pathname.startsWith(`${l.href}/`);
+                  const badgeCount = l.badge ? queues.counts[l.badge] : 0;
+                  const showBadge =
+                    l.href === "/admin/orders"
+                      ? pendingTotal
+                      : l.href === "/admin/users"
+                        ? pendingDealers
+                        : badgeCount;
+                  return (
+                    <Link
+                      key={l.href}
+                      href={l.href}
+                      onClick={() => setNavOpen(false)}
+                      className={`flex min-h-11 items-center justify-between rounded-lg px-2.5 py-2.5 text-sm ${
+                        active
+                          ? "tt-selected bg-[var(--brand)] font-semibold text-white"
+                          : "text-[var(--ink-muted)] hover:bg-[var(--brand-soft)] hover:text-[var(--brand-deep)]"
+                      }`}
+                    >
+                      <span>{t(l.labelKey as "admin.dashboard")}</span>
+                      {showBadge > 0 ? (
+                        <span
+                          className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
+                            active
+                              ? "bg-white/25 text-white"
+                              : "bg-[var(--brand)] text-white"
+                          }`}
+                        >
+                          {showBadge}
+                        </span>
+                      ) : null}
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </nav>
+      <div className="border-t border-[var(--line)] p-3">
+        <Link
+          href="/"
+          className="inline-flex min-h-11 items-center text-sm font-medium text-[var(--ink-muted)] hover:text-[var(--ink)]"
+        >
+          ← {t("common.backToStore")}
+        </Link>
+      </div>
+    </>
+  );
+
+  return (
+    <div className="min-h-[70vh] border-t border-[var(--line)] bg-[var(--surface)]">
+      {toast ? (
+        <Link
+          href={toast.href}
+          className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-4 left-4 z-50 max-w-sm rounded-xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-semibold text-[var(--brand-deep)] shadow-lg print:hidden hover:border-[var(--brand)] sm:left-auto"
+          role="status"
+          onClick={() => setToast(null)}
+        >
+          {toast.text}
+          <span className="mt-1 block text-xs font-medium text-[var(--ink-muted)]">
+            {locale === "hi" ? "देखें →" : "View →"}
+          </span>
+        </Link>
+      ) : null}
+      <div
+        className={`${wide ? "tt-admin-wrap" : "tt-wrap"} grid gap-4 py-4 lg:grid-cols-[220px_1fr] lg:gap-5 lg:py-5`}
+      >
+        <div className="lg:hidden print:hidden">
+          <button
+            type="button"
+            className="tt-btn tt-btn-outline w-full"
+            onClick={() => setNavOpen((o) => !o)}
+            aria-expanded={navOpen}
+          >
+            {navOpen
+              ? closeLabel
+              : `${t("nav.admin")} menu${pendingTotal > 0 ? ` · ${pendingTotal}` : ""}`}
+          </button>
+          {navOpen ? (
+            <aside className="tt-panel mt-3 max-h-[min(70dvh,calc(100dvh-8rem))] overflow-y-auto p-0">
+              {nav}
+            </aside>
+          ) : null}
+        </div>
+
+        <aside className="tt-panel admin-shell-nav hidden h-fit overflow-hidden p-0 print:hidden lg:sticky lg:top-16 lg:block">
+          {nav}
+        </aside>
+        <div className="admin-shell-main min-w-0">{children}</div>
+      </div>
+    </div>
+  );
+}

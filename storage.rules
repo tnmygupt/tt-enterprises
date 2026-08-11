@@ -1,0 +1,28 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    match /uploads/{allPaths=**} {
+      allow read: if true;
+      allow write: if signedIn()
+        && request.resource.size < 80 * 1024 * 1024
+        && (
+          request.resource.contentType.matches('image/.*')
+          || request.resource.contentType.matches('video/.*')
+          || request.resource.contentType == 'application/pdf'
+        );
+    }
+
+    match /products/{allPaths=**} {
+      allow read: if true;
+      allow write: if signedIn();
+    }
+    match /orders/{userId}/{allPaths=**} {
+      allow read: if signedIn();
+      allow write: if signedIn();
+    }
+  }
+}
