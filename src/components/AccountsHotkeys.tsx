@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/routing";
 import {
   ACCOUNTS_HOTKEYS,
@@ -10,12 +11,25 @@ import {
 import { useSession } from "@/lib/hooks";
 import { canViewFinancials } from "@/lib/store/db";
 
+export const ACCOUNTS_SHORTCUTS_EVENT = "tt-accounts-shortcuts";
+
+export function openAccountsShortcuts() {
+  window.dispatchEvent(new Event(ACCOUNTS_SHORTCUTS_EVENT));
+}
+
 /** Global Tally-style shortcuts while inside AccountsShell. */
 export function AccountsHotkeys() {
+  const t = useTranslations("accounts");
   const router = useRouter();
   const { session } = useSession();
   const owner = session ? canViewFinancials(session.role) : false;
   const [helpOpen, setHelpOpen] = useState(false);
+
+  useEffect(() => {
+    const onOpen = () => setHelpOpen(true);
+    window.addEventListener(ACCOUNTS_SHORTCUTS_EVENT, onOpen);
+    return () => window.removeEventListener(ACCOUNTS_SHORTCUTS_EVENT, onOpen);
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -50,7 +64,7 @@ export function AccountsHotkeys() {
       className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4 print:hidden"
       role="dialog"
       aria-modal="true"
-      aria-label="Keyboard shortcuts"
+      aria-label={t("shortcutsTitle")}
       onClick={() => setHelpOpen(false)}
     >
       <div
@@ -60,10 +74,10 @@ export function AccountsHotkeys() {
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-[var(--ink)]">
-              Keyboard shortcuts
+              {t("shortcutsTitle")}
             </h2>
             <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              Tally-style keys. Press ? to toggle · Esc to close
+              {t("shortcutsHint")}
             </p>
           </div>
           <button

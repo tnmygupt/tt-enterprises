@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  cloudGetAppDb,
-  cloudPutAppDb,
-  createServerSupabase,
-} from "@/lib/server/app-db";
+import { cloudGetAppDb, cloudPutAppDb } from "@/lib/server/app-db";
 import { resolveCloudActor } from "@/lib/server/authorize-db";
 import { rateLimit } from "@/lib/server/rate-limit";
 import { isStaffRole, readSessionCookie } from "@/lib/server/session";
@@ -12,7 +8,7 @@ import {
   sendWebPushToSubs,
   vapidConfigured,
 } from "@/lib/server/web-push";
-import { userHasCapability } from "@/lib/capabilities";
+import { capabilityContextFrom, userHasCapability } from "@/lib/capabilities";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { sanitizeDbForCloud } from "@/lib/supabase/sanitize";
 
@@ -25,22 +21,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Login required" }, { status: 401 });
   }
 
-  const limited = rateLimit(
-    `notify-user:${session.id}`,
-    20,
-    15 * 60 * 1000
-  );
+  const limited = rateLimit(`notify-user:${session.id}`, 20, 15 * 60 * 1000);
   if (!limited.ok) {
     return NextResponse.json(
       { error: "Too many notifications — try again later" },
-      { status: 429, headers: { "Retry-After": String(limited.retryAfterSec) } }
+      {
+        status: 429,
+        headers: { "Retry-After": String(limited.retryAfterSec) },
+      },
     );
   }
 
   if (!vapidConfigured()) {
     return NextResponse.json(
       { ok: false, configured: false, error: "VAPID not configured" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 
@@ -64,17 +59,11 @@ export async function POST(req: NextRequest) {
   if (!isSupabaseConfigured()) {
     return NextResponse.json({ ok: true, sent: 0, mode: "local_skip" });
   }
-
-  const supabase = createServerSupabase();
-  if (!supabase) {
-    return NextResponse.json({ error: "Cloud unavailable" }, { status: 503 });
-  }
-
-  const { db, updatedAt, error } = await cloudGetAppDb(supabase);
+  const { db, updatedAt, error } = await cloudGetAppDb();
   if (error || !db) {
     return NextResponse.json(
       { error: error || "Cloud empty" },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
@@ -84,13 +73,14 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Session invalid" },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
   const self = actor.id === userId;
   const staffOk =
-    isStaffRole(actor.role) && userHasCapability(actor, "manage_orders");
+    isStaffRole(actor.role) &&
+    userHasCapability(actor, "manage_orders", capabilityContextFrom(db));
   if (!self && !staffOk) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
@@ -106,7 +96,7 @@ export async function POST(req: NextRequest) {
 
   const { sent, deadEndpoints } = await sendWebPushToSubs(
     user.pushSubscriptions,
-    { title, body: text, url }
+    { title, body: text, url },
   );
 
   if (deadEndpoints.length) {
@@ -115,7 +105,7 @@ export async function POST(req: NextRequest) {
       next = removePushEndpoint(next, ep);
     }
     user.pushSubscriptions = next;
-    await cloudPutAppDb(supabase, sanitizeDbForCloud(db), updatedAt ?? null);
+    await cloudPutAppDb(sanitizeDbForCloud(db), updatedAt ?? null);
   }
 
   return NextResponse.json({ ok: true, configured: true, sent });

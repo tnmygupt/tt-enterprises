@@ -218,7 +218,11 @@ function renderSlipPdf(
 
   const kg = columnKgTotals(slip);
   const bundles = columnBundles(slip);
-  const bill = computeBillFromSlip(order, slip);
+  const slipKg = kg.reduce((s, n) => s + (Number(n) || 0), 0);
+  const schemeOff = slipKg > 0 ? order.schemeDiscount || 0 : 0;
+  const bill = computeBillFromSlip(order, slip, {
+    schemeDiscount: schemeOff,
+  });
   const cols = slip.columns;
   const rowCount = slip.rows.length;
   const headers = cols.map((c) => productHeaderLabel(c, order, locale));
@@ -465,7 +469,8 @@ function renderSlipPdf(
 
   // Clear grand bill calculation
   const hasSchemeDisc = (bill.schemeDiscount || 0) > 0;
-  const calcBlockH = hasSchemeDisc ? 32 : 28;
+  const math = (order.schemeDiscountMath || "").trim();
+  const calcBlockH = hasSchemeDisc || slipKg <= 0 ? (math ? 36 : 32) : 28;
   y = need(calcBlockH + 2);
   doc.setLineWidth(0.35);
   doc.rect(M, y, W, calcBlockH);
@@ -480,6 +485,27 @@ function renderSlipPdf(
     align: "right",
   });
   cy += 4;
+  const discTitle =
+    slipKg > 0
+      ? hi
+        ? "- Discount"
+        : "- Discount"
+      : hi
+        ? "- Discount after weighment"
+        : "- Discount after weighment";
+  doc.text(discTitle, M + 2, cy);
+  doc.text(pdfMoney(bill.schemeDiscount, locale), pageW - M - 2, cy, {
+    align: "right",
+  });
+  if (slipKg > 0 && math) {
+    cy += 3.5;
+    doc.setFontSize(6);
+    doc.setTextColor(80, 80, 80);
+    doc.text(math.replace(/₹/g, "Rs."), M + 2, cy);
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(7);
+  }
+  cy += 4;
   doc.text(
     `+ Shipping${slip.shippingManual ? " (manual)" : " (auto)"}`,
     M + 2,
@@ -488,19 +514,6 @@ function renderSlipPdf(
   doc.text(pdfMoney(bill.shippingAmount, locale), pageW - M - 2, cy, {
     align: "right",
   });
-  if ((bill.schemeDiscount || 0) > 0) {
-    cy += 4;
-    doc.text(
-      `- Scheme discount${
-        order.schemeDiscountLabel ? ` (${order.schemeDiscountLabel})` : ""
-      }`,
-      M + 2,
-      cy
-    );
-    doc.text(pdfMoney(bill.schemeDiscount, locale), pageW - M - 2, cy, {
-      align: "right",
-    });
-  }
   cy += 3.5;
   doc.setDrawColor(0);
   doc.setLineWidth(0.25);
@@ -511,7 +524,7 @@ function renderSlipPdf(
   doc.setTextColor(...blue);
   doc.text(
     (bill.schemeDiscount || 0) > 0
-      ? "GRAND BILL TOTAL  (Items + Shipping − Discount)"
+      ? "GRAND BILL TOTAL  (Items − Discount + Shipping)"
       : "GRAND BILL TOTAL  (Items + Shipping)",
     M + 2,
     cy

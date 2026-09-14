@@ -1,4 +1,7 @@
-import { stockAlerts, type StockAlertRow } from "./accounting/analysis";
+import {
+  stockAlertsFromDb,
+  type StockAlertRow,
+} from "./accounting/analysis";
 import { resolveOpenContract } from "./contracts";
 import { roundMoney } from "./pricing";
 import type {
@@ -9,6 +12,7 @@ import type {
   StockMovement,
   SupplierContract,
   AppSettings,
+  Order,
 } from "./types";
 
 /** Slice of the app DB the reorder builder needs — avoids importing store/db. */
@@ -19,6 +23,7 @@ export type ReorderDb = {
   supplierContracts: SupplierContract[];
   stockMovements: StockMovement[];
   settings: AppSettings;
+  orders?: Order[];
 };
 
 function nextPoNumber(orders: PurchaseOrder[]): string {
@@ -30,18 +35,10 @@ function nextPoNumber(orders: PurchaseOrder[]): string {
   return `PO-${max + 1}`;
 }
 
-function skuKey(r: {
-  productId: string;
-  variationId?: string;
-  colorId?: string;
-}): string {
-  return `${r.productId}|${r.variationId ?? ""}|${r.colorId ?? ""}`;
-}
-
 /**
  * Create draft POs from reorder alerts, mutating `db` in place.
- * Groups lines by preferred supplier (required). Skips SKUs already on an
- * open draft/ordered PO from the last 7 days.
+ * Groups lines by preferred supplier (required). Incoming open-PO qty is
+ * already netted in suggestedQty — do not skip the whole SKU.
  */
 export function buildDraftPosFromAlerts(
   db: ReorderDb,
@@ -54,34 +51,14 @@ export function buildDraftPosFromAlerts(
 ): PurchaseOrder[] {
   const asOf = opts.asOf || new Date().toISOString().slice(0, 10);
   const minQty = opts.minQty ?? db.settings.autoReorderMinQty ?? 1;
-  const weekAgo = new Date(asOf + "T00:00:00");
-  weekAgo.setDate(weekAgo.getDate() - 7);
-  const weekAgoStr = weekAgo.toISOString().slice(0, 10);
-
-  const recentCovered = new Set<string>();
-  for (const po of db.purchaseOrders) {
-    if (po.status === "cancelled" || po.status === "received") continue;
-    if (po.date < weekAgoStr) continue;
-    for (const line of po.lines) {
-      if (!line.productId) continue;
-      recentCovered.add(
-        skuKey({
-          productId: line.productId,
-          variationId: line.variationId,
-          colorId: line.colorId,
-        })
-      );
-    }
-  }
 
   const alerts =
     opts.rows ??
-    stockAlerts(db.products, db.stockMovements ?? []).filter(
-      (r) => r.kind === "reorder"
-    );
+    stockAlertsFromDb(db, { asOf }).filter((r) => r.kind === "reorder");
 
   const bySupplier = new Map<string, StockAlertRow[]>();
   for (const row of alerts) {
+    if (row.kind !== "reorder") continue;
     if (row.suggestedQty < minQty) continue;
     const supplierId = row.preferredSupplierId;
     if (!supplierId) continue;
@@ -89,17 +66,6 @@ export function buildDraftPosFromAlerts(
       (p) => p.id === supplierId && p.type === "supplier" && p.active
     );
     if (!party) continue;
-    if (
-      recentCovered.has(
-        skuKey({
-          productId: row.productId,
-          variationId: row.variationId,
-          colorId: row.colorId,
-        })
-      )
-    ) {
-      continue;
-    }
     const list = bySupplier.get(supplierId) ?? [];
     list.push(row);
     bySupplier.set(supplierId, list);
@@ -107,6 +73,14 @@ export function buildDraftPosFromAlerts(
 
   const created: PurchaseOrder[] = [];
   for (const [supplierId, rows] of bySupplier) {
+    const hasVelocity = rows.some((r) => r.coverMode === "velocity");
+    const hasMin = rows.some((r) => r.coverMode !== "velocity");
+    const narration =
+      hasVelocity && hasMin
+        ? "Auto reorder (velocity + min)"
+        : hasVelocity
+          ? "Auto reorder (velocity)"
+          : "Auto reorder (min)";
     const lines: PurchaseOrderLine[] = rows.map((r) => {
       const product = db.products.find((p) => p.id === r.productId);
       const contract = resolveOpenContract(
@@ -143,7 +117,7 @@ export function buildDraftPosFromAlerts(
       date: asOf,
       status: "draft",
       lines,
-      narration: "Auto reorder from stock alerts",
+      narration,
       total: roundMoney(lines.reduce((s, l) => s + l.amount, 0)),
       createdAt: new Date().toISOString(),
       createdBy,

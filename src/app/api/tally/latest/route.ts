@@ -4,11 +4,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { ensureDataDir } from "@/lib/data-dir";
 
 function isAuthorized(req: NextRequest): boolean {
-  // Prefer dedicated read key so the write sync key never ships to browsers.
-  const required =
-    process.env.TALLY_READ_KEY ||
-    process.env.NEXT_PUBLIC_TALLY_READ_KEY ||
-    process.env.TALLY_SYNC_KEY;
+  const required = process.env.TALLY_READ_KEY || process.env.TALLY_SYNC_KEY;
   if (!required) return process.env.NODE_ENV !== "production";
   const key =
     req.headers.get("x-tally-key") ||

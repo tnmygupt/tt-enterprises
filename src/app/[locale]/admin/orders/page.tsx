@@ -5,7 +5,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
-import { AdminShell } from "@/components/AdminShell";
+import { AccountsShell } from "@/components/AccountsShell";
 import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { orderNextAction } from "@/lib/admin-queues";
 import { inRange } from "@/lib/date-range";
@@ -22,20 +22,44 @@ import {
   updateOrderStatus,
   verifyPayment,
 } from "@/lib/store/db";
-import type { Order, OrderStatus } from "@/lib/types";
+import type { Order, OrderStatus, Voucher } from "@/lib/types";
 import { notifyOrderWhatsApp } from "@/lib/whatsapp";
 
 type FilterKey =
   | "all"
   | "estimate"
   | "need_bill"
+  | "need_voucher"
   | "need_verify"
   | "need_lr"
   | "full_truck"
   | "dispatched"
   | "delivered";
 
-function matchesFilter(o: Order, filter: FilterKey): boolean {
+function isOpenWorkOrder(o: Order): boolean {
+  return (
+    o.status === "estimate" ||
+    o.status === "confirmed" ||
+    o.status === "payment_pending" ||
+    Boolean(o.paymentProof && !o.paymentProof.verified)
+  );
+}
+
+function orderNeedsSaleVoucher(o: Order, vouchers: Voucher[]): boolean {
+  return (
+    o.status !== "cancelled" &&
+    o.actualBillAmount != null &&
+    !vouchers.some(
+      (v) => v.linkedOrderId === o.id && v.type === "sale" && !v.voided
+    )
+  );
+}
+
+function matchesFilter(
+  o: Order,
+  filter: FilterKey,
+  vouchers: Voucher[]
+): boolean {
   switch (filter) {
     case "all":
       return true;
@@ -46,6 +70,8 @@ function matchesFilter(o: Order, filter: FilterKey): boolean {
         (o.status === "estimate" || o.status === "confirmed") &&
         o.actualBillAmount == null
       );
+    case "need_voucher":
+      return orderNeedsSaleVoucher(o, vouchers);
     case "need_verify":
       return Boolean(o.paymentProof && !o.paymentProof.verified);
     case "need_lr":
@@ -71,6 +97,7 @@ function AdminOrdersInner() {
       "all",
       "estimate",
       "need_bill",
+      "need_voucher",
       "need_verify",
       "need_lr",
       "full_truck",
@@ -83,12 +110,12 @@ function AdminOrdersInner() {
   const [filter, setFilter] = useState<FilterKey>(urlFilter);
   const [q, setQ] = useState(searchParams.get("q") || "");
   const [range, setRange] = useAdminDateRange("today");
-  const { db, refresh } = useDb();
+  const { db, refresh, cloudReady } = useDb();
   const { session } = useSession();
-  const canManage = session && checkCapability(session, db?.users, "manage_orders");
-  const canVerify = session && checkCapability(session, db?.users, "verify_payment");
-  const canBill = session && checkCapability(session, db?.users, "upload_bill");
-  const canLr = session && checkCapability(session, db?.users, "upload_lr");
+  const canManage = session && checkCapability(session, db, "manage_orders");
+  const canVerify = session && checkCapability(session, db, "verify_payment");
+  const canBill = session && checkCapability(session, db, "upload_bill");
+  const canLr = session && checkCapability(session, db, "upload_lr");
   const canViewOrders = !!(canManage || canVerify || canBill || canLr);
 
   useEffect(() => {
@@ -104,6 +131,10 @@ function AdminOrdersInner() {
     { key: "all", label: t("common.all") },
     { key: "estimate", label: locale === "hi" ? "नए अनुमान" : "Estimates" },
     { key: "need_bill", label: locale === "hi" ? "बिल बाकी" : "Need bill" },
+    {
+      key: "need_voucher",
+      label: locale === "hi" ? "बुक बाकी" : "Need voucher",
+    },
     { key: "need_verify", label: locale === "hi" ? "पेमेंट जाँच" : "Verify pay" },
     {
       key: "need_lr",
@@ -118,6 +149,7 @@ function AdminOrdersInner() {
   const queueFilter =
     filter === "estimate" ||
     filter === "need_bill" ||
+    filter === "need_voucher" ||
     filter === "need_verify" ||
     filter === "need_lr" ||
     filter === "full_truck";
@@ -125,16 +157,32 @@ function AdminOrdersInner() {
   const rows = useMemo(() => {
     const list = db?.orders ?? [];
     return list.filter((o) => {
-      if (!queueFilter && !inRange(o.createdAt, range.from, range.to)) {
+      if (
+        !queueFilter &&
+        !isOpenWorkOrder(o) &&
+        !inRange(o.createdAt, range.from, range.to)
+      ) {
         return false;
       }
-      if (!matchesFilter(o, filter)) return false;
+      if (!matchesFilter(o, filter, db?.vouchers ?? [])) return false;
       if (!q.trim()) return true;
       const hay =
         `${o.orderNumber} ${o.userName} ${o.userEmail} ${o.phone ?? ""} ${o.gstOrAadhar ?? ""}`.toLowerCase();
       return hay.includes(q.toLowerCase());
     });
   }, [db, filter, q, queueFilter, range.from, range.to]);
+
+  const hiddenByDate = useMemo(() => {
+    if (queueFilter) return 0;
+    return (db?.orders ?? []).filter(
+      (o) => !isOpenWorkOrder(o) && !inRange(o.createdAt, range.from, range.to)
+    ).length;
+  }, [db, queueFilter, range.from, range.to]);
+
+  const cancelledCount = useMemo(
+    () => (db?.orders ?? []).filter((o) => o.status === "cancelled").length,
+    [db]
+  );
 
   // Placed after every hook so the gate can never change the hook order
   if (!canViewOrders) {
@@ -203,12 +251,96 @@ function AdminOrdersInner() {
               ? `${rows.length} लंबित`
               : `${rows.length} pending`
             : locale === "hi"
-              ? `${rows.length} ऑर्डर इस अवधि में`
-              : `${rows.length} in range`}
+              ? `${rows.length} ऑर्डर इस अवधि में${hiddenByDate ? ` · ${hiddenByDate} बाहर` : ""}`
+              : `${rows.length} in range${hiddenByDate ? ` · ${hiddenByDate} outside` : ""}`}
         </p>
       </div>
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="mt-4 space-y-2 sm:hidden">
+        {rows.map((o) => (
+          <div key={o.id} className="tt-panel p-3">
+            <div className="flex items-start justify-between gap-2">
+              <Link
+                href={`/orders/${o.id}`}
+                className="font-mono text-sm font-semibold text-[var(--brand)]"
+              >
+                {o.orderNumber}
+              </Link>
+              <span className="tt-status shrink-0">
+                {t(`orderStatus.${o.status}` as "orderStatus.estimate")}
+              </span>
+            </div>
+            <p className="mt-1 text-sm font-medium">
+              {o.checkoutName || o.userName}
+            </p>
+            <p className="text-xs text-[var(--ink-muted)]">
+              {o.phone || o.userEmail}
+              {" · "}
+              {new Date(o.createdAt).toLocaleDateString(
+                locale === "hi" ? "hi-IN" : "en-IN"
+              )}
+            </p>
+            <p className="mt-1 text-xs text-[var(--ink-muted)]">
+              {orderNextAction(o)}
+            </p>
+            <p className="mt-1 text-sm tabular-nums">
+              {formatInr(o.estimatedTotal, locale)}
+              {o.actualBillAmount != null
+                ? ` · ${formatInr(o.actualBillAmount, locale)}`
+                : ""}
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Link
+                href={`/orders/${o.id}`}
+                className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
+              >
+                {locale === "hi" ? "खोलें" : "Open"}
+              </Link>
+              {canManage ? (
+                <Link
+                  href={`/admin/orders/${o.id}/packing-slip`}
+                  className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
+                >
+                  {locale === "hi" ? "पैकिंग" : "Packing"}
+                </Link>
+              ) : null}
+              {orderNeedsSaleVoucher(o, db?.vouchers ?? []) ? (
+                <Link
+                  href={`/orders/${o.id}`}
+                  className="tt-btn tt-btn-dark px-2 py-1.5 text-xs font-bold"
+                >
+                  {locale === "hi" ? "बुक में डालें" : "Post to books"}
+                </Link>
+              ) : null}
+            </div>
+          </div>
+        ))}
+        {!cloudReady ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.loading")}</p>
+        ) : !rows.length && hiddenByDate > 0 ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">
+            {locale === "hi"
+              ? `${hiddenByDate} ऑर्डर इस तारीख के बाहर हैं — 7 दिन या अनुमान खोलें`
+              : `${hiddenByDate} order(s) outside this date — open 7 days or Estimates`}
+          </p>
+        ) : !rows.length && (db?.orders?.length ?? 0) === 0 ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">
+            {locale === "hi"
+              ? "क्लाउड से कोई ऑर्डर नहीं आया। पेज रीफ़्रेश करें या फिर से लॉगिन करें।"
+              : "No orders loaded from cloud. Refresh or log in again."}
+          </p>
+        ) : !rows.length && cancelledCount > 0 && filter === "estimate" ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">
+            {locale === "hi"
+              ? `${cancelledCount} रद्द ऑर्डर हैं — All खोलें`
+              : `${cancelledCount} cancelled order(s). Open All to see them.`}
+          </p>
+        ) : !rows.length ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+        ) : null}
+      </div>
+
+      <div className="tt-panel mt-5 hidden overflow-x-auto sm:block">
         <table className="tt-table min-w-[980px]">
           <thead>
             <tr>
@@ -364,10 +496,7 @@ function AdminOrdersInner() {
                             );
                             return;
                           }
-                          if (
-                            db &&
-                            db.settings.whatsappNotifyEnabled !== false
-                          ) {
+                          if (db) {
                             void notifyOrderWhatsApp({
                               order: {
                                 ...o,
@@ -395,7 +524,7 @@ function AdminOrdersInner() {
                         className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
                         onClick={() => {
                           updateOrderStatus(o.id, "confirmed", "Confirmed by admin");
-                          if (db && db.settings.whatsappNotifyEnabled !== false) {
+                          if (db) {
                             void notifyOrderWhatsApp({
                               order: { ...o, status: "confirmed" },
                               status: "confirmed",
@@ -415,8 +544,17 @@ function AdminOrdersInner() {
                         type="button"
                         className="tt-btn tt-btn-dark px-2 py-1.5 text-xs font-bold"
                         onClick={() => {
-                          markOrderDispatched(o.id);
-                          if (db && db.settings.whatsappNotifyEnabled !== false) {
+                          try {
+                            markOrderDispatched(o.id);
+                          } catch (err) {
+                            alert(
+                              err instanceof Error
+                                ? err.message
+                                : "Cannot dispatch"
+                            );
+                            return;
+                          }
+                          if (db) {
                             void notifyOrderWhatsApp({
                               order: { ...o, status: "dispatched" },
                               status: "dispatched",
@@ -462,12 +600,21 @@ function AdminOrdersInner() {
                         type="button"
                         className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
                         onClick={() => {
-                          updateOrderStatus(
-                            o.id,
-                            "delivered" as OrderStatus,
-                            "Marked delivered"
-                          );
-                          if (db && db.settings.whatsappNotifyEnabled !== false) {
+                          try {
+                            updateOrderStatus(
+                              o.id,
+                              "delivered" as OrderStatus,
+                              "Marked delivered"
+                            );
+                          } catch (err) {
+                            alert(
+                              err instanceof Error
+                                ? err.message
+                                : "Cannot mark delivered"
+                            );
+                            return;
+                          }
+                          if (db) {
                             void notifyOrderWhatsApp({
                               order: { ...o, status: "delivered" },
                               status: "delivered",
@@ -491,10 +638,7 @@ function AdminOrdersInner() {
                           if (!confirm(t("common.cancelOrderConfirm"))) return;
                           try {
                             cancelOrder(o.id, session.id, "Cancelled by admin");
-                            if (
-                              db &&
-                              db.settings.whatsappNotifyEnabled !== false
-                            ) {
+                            if (db) {
                               void notifyOrderWhatsApp({
                                 order: { ...o, status: "cancelled" },
                                 status: "cancelled",
@@ -522,7 +666,27 @@ function AdminOrdersInner() {
             ))}
           </tbody>
         </table>
-        {!rows.length ? (
+        {!cloudReady ? (
+          <p className="p-6 text-sm text-[var(--ink-muted)]">{t("common.loading")}</p>
+        ) : !rows.length && hiddenByDate > 0 ? (
+          <p className="p-6 text-sm text-[var(--ink-muted)]">
+            {locale === "hi"
+              ? `${hiddenByDate} ऑर्डर इस तारीख के बाहर हैं — 7 दिन या अनुमान खोलें`
+              : `${hiddenByDate} order(s) outside this date — open 7 days or Estimates`}
+          </p>
+        ) : !rows.length && (db?.orders?.length ?? 0) === 0 ? (
+          <p className="p-6 text-sm text-[var(--ink-muted)]">
+            {locale === "hi"
+              ? "क्लाउड से कोई ऑर्डर नहीं आया। पेज रीफ़्रेश करें या फिर से लॉगिन करें।"
+              : "No orders loaded from cloud. Refresh or log in again."}
+          </p>
+        ) : !rows.length && cancelledCount > 0 && filter === "estimate" ? (
+          <p className="p-6 text-sm text-[var(--ink-muted)]">
+            {locale === "hi"
+              ? `${cancelledCount} रद्द ऑर्डर हैं — All खोलें`
+              : `${cancelledCount} cancelled order(s). Open All to see them.`}
+          </p>
+        ) : !rows.length ? (
           <p className="p-6 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
         ) : null}
       </div>
@@ -533,10 +697,10 @@ function AdminOrdersInner() {
 export default function AdminOrdersPage() {
   const t = useTranslations();
   return (
-    <AdminShell>
+    <AccountsShell>
       <Suspense fallback={<p>{t("common.loading")}</p>}>
         <AdminOrdersInner />
       </Suspense>
-    </AdminShell>
+    </AccountsShell>
   );
 }

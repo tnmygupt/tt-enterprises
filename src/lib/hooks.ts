@@ -13,6 +13,11 @@ import {
   replaceDbFromCloud,
   type AppDatabase,
 } from "@/lib/store/db";
+import {
+  getLiveSyncState,
+  subscribeLiveSyncState,
+  type LiveSyncState,
+} from "@/lib/supabase/live";
 import type { CartItem, SessionUser } from "@/lib/types";
 
 /* --------------------------- External stores ---------------------------- */
@@ -168,6 +173,10 @@ function startCloudSyncOnce(): void {
       if (supabaseOk) {
         const merged = await sb.ensureCloudSeed(loadDb());
         replaceDbFromCloud(merged);
+        if (!(loadDb().products?.length)) {
+          const again = await sb.pullCloudDatabase(loadDb());
+          if (again?.products?.length) replaceDbFromCloud(again);
+        }
         sb.subscribeCloudDatabase((remote) => {
           replaceDbFromCloud(remote);
         }, () => loadDb());
@@ -185,6 +194,16 @@ function startCloudSyncOnce(): void {
       });
     } catch (err) {
       console.warn("[cloud] sync bootstrap failed", err);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("tt-sync-error", {
+            detail:
+              err instanceof Error
+                ? err.message
+                : "Could not load the catalog. Check your connection and retry.",
+          })
+        );
+      }
     } finally {
       cloudReadyGlobal = true;
       for (const fn of cloudReadyListeners) {
@@ -199,48 +218,11 @@ function startCloudSyncOnce(): void {
   })();
 }
 
-let tallySyncStarted = false;
-
-function startTallyAutosyncOnce(): void {
-  if (tallySyncStarted || typeof window === "undefined") return;
-  if (process.env.NEXT_PUBLIC_TALLY_AUTOSYNC !== "1") return;
-  const session = getSession();
-  if (!session || session.role === "customer") return;
-  tallySyncStarted = true;
-
-  const pullTally = async () => {
-    try {
-      const readKey = process.env.NEXT_PUBLIC_TALLY_READ_KEY || "";
-      const res = await fetch("/api/tally/latest", {
-        headers: readKey ? { "x-tally-key": readKey } : undefined,
-      });
-      if (!res.ok) return;
-      const data = (await res.json()) as {
-        items?: {
-          productId: string;
-          variationId?: string;
-          stock: number;
-          stockSecondary?: number;
-          tallyItemId: string;
-        }[];
-        syncedAt?: string;
-      };
-      if (!data.items?.length || !data.syncedAt) return;
-      const markerKey = "tt_tally_applied_at";
-      if (localStorage.getItem(markerKey) === data.syncedAt) return;
-      const { applyTallyStockSync } = await import("@/lib/store/db");
-      applyTallyStockSync(data.items);
-      localStorage.setItem(markerKey, data.syncedAt);
-    } catch {
-      /* offline / no server file yet */
-    }
-  };
-  void pullTally();
-  window.setInterval(pullTally, 60_000);
-}
+let lastSessionPullKey = "";
 
 export function useDb() {
   const db = useSyncExternalStore(subscribeDb, readDbSnap, () => null);
+  const { session, ready } = useSession();
   const [cloudReady, setCloudReady] = useState(cloudReadyGlobal);
 
   const refresh = useCallback(() => {
@@ -254,7 +236,6 @@ export function useDb() {
 
   useEffect(() => {
     startCloudSyncOnce();
-    startTallyAutosyncOnce();
     if (cloudReadyGlobal) {
       // Sync already finished before this component mounted — intentional
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -268,7 +249,57 @@ export function useDb() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!ready || !cloudReady || !session) return;
+    const key = `${session.id}:${session.role}`;
+    if (lastSessionPullKey === key) return;
+    void (async () => {
+      const sb = await import("@/lib/supabase/sync");
+      const prevScope = sb.lastPullScope();
+      if (
+        prevScope === "staff" ||
+        prevScope === "owner" ||
+        (prevScope === "dealer" && session.role === "customer")
+      ) {
+        lastSessionPullKey = key;
+        return;
+      }
+      const remote = await sb.repullForSession();
+      if (remote) {
+        replaceDbFromCloud(remote);
+        lastSessionPullKey = key;
+      }
+    })();
+  }, [ready, cloudReady, session]);
+
   return { db, refresh, cloudReady };
+}
+
+/** Realtime badge for the payments desk (and any other staff screen). */
+export function useCloudLive(): LiveSyncState {
+  return useSyncExternalStore(
+    (onChange) => subscribeLiveSyncState(() => onChange()),
+    getLiveSyncState,
+    () => "off"
+  );
+}
+
+/** Re-pull catalog after an empty first paint or failed bootstrap. */
+export async function retryCloudCatalog(): Promise<boolean> {
+  try {
+    const sb = await import("@/lib/supabase/sync");
+    if (!(sb.supabaseSyncEnabled() || (await sb.detectSupabaseSync()))) {
+      return false;
+    }
+    const remote = await sb.pullCloudDatabase(loadDb());
+    if (remote) {
+      replaceDbFromCloud(remote);
+      return (remote.products?.length ?? 0) > 0;
+    }
+  } catch (err) {
+    console.warn("[cloud] catalog retry failed", err);
+  }
+  return false;
 }
 
 /* ------------------------------- Helpers -------------------------------- */

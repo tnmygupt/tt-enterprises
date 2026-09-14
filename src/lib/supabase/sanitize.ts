@@ -57,6 +57,11 @@ export function sanitizeDbForCloud(db: AppDatabase): AppDatabase {
     p.media = (p.media ?? []).filter((m) => !m.url?.startsWith("data:"));
   }
 
+  for (const party of clone.parties ?? []) {
+    delete party.statementOutstanding;
+    delete party.statementReceipts;
+  }
+
   const settings = clone.settings;
   if (settings?.bankAccounts?.length) {
     for (const a of settings.bankAccounts) {
@@ -80,6 +85,7 @@ export function sanitizeDbForClient(db: AppDatabase): AppDatabase {
       delete (u as { passwordVisible?: string }).passwordVisible;
     }
   }
+  clone.tallyPosts = [];
   return clone;
 }
 
@@ -100,6 +106,35 @@ export function mergePasswordHashes(
     const kept =
       byId.get(u.id) || byPhone.get((u.phone || "").replace(/\D/g, ""));
     if (kept) u.passwordHash = kept;
+  }
+  return incoming;
+}
+
+/**
+ * Keep office reset requests that a stale browser never saw.
+ * If the incoming password hash changed, the request was fulfilled — drop it.
+ */
+export function mergePasswordResetRequests(
+  incoming: AppDatabase,
+  existing: AppDatabase | null
+): AppDatabase {
+  if (!existing?.users?.length) return incoming;
+  const cloudById = new Map((existing.users ?? []).map((u) => [u.id, u] as const));
+  for (const u of incoming.users ?? []) {
+    const cloud = cloudById.get(u.id);
+    if (!cloud) continue;
+    const hashChanged = Boolean(
+      u.passwordHash && u.passwordHash !== cloud.passwordHash
+    );
+    if (hashChanged) {
+      delete u.passwordResetRequestedAt;
+      continue;
+    }
+    const incomingAt = u.passwordResetRequestedAt;
+    const cloudAt = cloud.passwordResetRequestedAt;
+    if (cloudAt && (!incomingAt || cloudAt > incomingAt)) {
+      u.passwordResetRequestedAt = cloudAt;
+    }
   }
   return incoming;
 }

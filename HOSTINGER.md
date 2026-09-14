@@ -33,18 +33,18 @@ ssh root@YOUR_VPS_IP
 
 Enter the VPS password when asked.
 
-### 3) Install Node.js 20
+### 3) Install Node.js 22
 Paste these commands one block at a time:
 
 ```bash
 apt update && apt upgrade -y
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt install -y nodejs git nginx
 node -v
 npm -v
 ```
 
-You should see Node **v20.x**.
+You should see Node **v22.x**.
 
 ### 4) Upload the website code
 
@@ -217,29 +217,70 @@ Or with query secret (if headers are awkward in the panel):
 curl -fsS "https://tanmayphotos.space/api/cron/reorder?secret=YOUR_CRON_SECRET"
 ```
 
-The endpoint skips when `autoReorderEnabled` is off, groups reorder alerts by preferred supplier, and creates **draft** POs (skips SKUs already on an open PO from the last 7 days). Staff with `manage_orders` get a web push when VAPID is configured.
+The endpoint skips when `autoReorderEnabled` is off, groups reorder alerts by preferred supplier, and creates **draft** POs. Suggested qty uses sales velocity × (lead + safety days), plus open estimates, minus remaining qty on open POs. Staff still confirm before the supplier is told. Staff with `manage_orders` get a web push when VAPID is configured, and a WhatsApp when the Tally instance is on.
+
+## WhatsApp digest cron (overdue / credit / schemes / stale estimates / daily owner summary)
+
+Same `CRON_SECRET`. Overdue / credit / scheme / stale-estimate dealer reminders skip if already sent within 6 days (safe to hit daily). The **super-admin daily summary** sends once per calendar day and includes top reorder SKUs, slow/dead stock, and stale estimates (stock still reserved — never auto-cancelled). Master switch: **Admin → WhatsApp desk** (or Settings). Run this every morning so the owner summary is actually daily.
+
+```bash
+curl -fsS -X POST \
+  -H "Authorization: Bearer YOUR_CRON_SECRET" \
+  https://tanmayphotos.space/api/cron/whatsapp-digest
+```
+
+Or:
+
+```bash
+curl -fsS "https://tanmayphotos.space/api/cron/whatsapp-digest?secret=YOUR_CRON_SECRET"
+```
+
+Example: reorder Monday 06:00 IST (`30 0 * * 1` if cron is UTC), digest daily 06:15 IST (`45 0 * * *` if UTC). The deploy zip also drops `config/ops.cfg` so cron works even when `CRON_SECRET` is not in hPanel.
+
+---
+
+## Required: hPanel environment (login fails without these)
+
+The deploy zip **never uploads** `.env.production` or `.env.local`. Secrets must live in **hPanel**, not in the zip.
+
+**Where:** hPanel → Websites → this site → **Deployments → Settings & Redeploy → Environment**  
+(or the Node.js app **Environment variables** panel). Save, then **redeploy / restart**.
+
+Login checks session signing **before** the password. If signing cannot run, the API returns *Server auth is misconfigured. Contact admin.* — it will not tell you whether the password was right.
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `MYSQL_HOST` | **Yes** | `localhost` on Hostinger Node. Use `srv1949.hstgr.io` from a laptop. |
+| `MYSQL_PORT` | **Yes** | `3306` |
+| `MYSQL_USER` | **Yes** | Prefixed DB user, e.g. `u415877111_tterp` |
+| `MYSQL_PASSWORD` | **Yes** | Database password. Never put in the deploy zip. |
+| `MYSQL_DATABASE` | **Yes** | e.g. `u415877111_tterp` |
+| `NEXT_PUBLIC_CLOUD_DB` | **Yes** | Set `1` so the browser knows shared books are on. |
+| `SESSION_SECRET` | **Yes** | Long random string. **Must differ** from `NEXT_PUBLIC_DB_API_KEY`. Signs the httpOnly login cookie. |
+| `NEXT_PUBLIC_DB_API_KEY` | **Yes** | Browser key for `/api/db`. |
+| `DB_API_KEY` | **Yes** | Must be **identical** to `NEXT_PUBLIC_DB_API_KEY`. |
+| `CRON_SECRET` | If using auto-reorder / WhatsApp digest | Same as `.env.example`. |
+| `UPLOAD_KEY` | Production uploads | Clients send `x-upload-key`. |
+| `TALLY_WA_INSTANCE_KEY` | Silent WhatsApp | Instance key from [TallyWebSolutions](https://app.tallywebsolutions.in/). Server-only. |
+| `TALLY_WA_ACCESS_TOKEN` | If the panel shows a second secret | Same panel. Leave unset if you only have an instance key. |
+| `TALLY_WA_BASE_URL` | Optional | Default `https://app.tallywebsolutions.in`. |
+
+Do **not** set `SESSION_SECRET` or `TT_APP_DB_GATE` to the same value as the public DB key. Copying `.env.local` onto the server is not enough if you deploy from a zip — hPanel must have the list above.
 
 ---
 
 ## Important notes for this project
 
-1. **Current demo data is browser-based (localStorage)**  
-   Each phone/computer has its own data until you connect Firebase.  
-   For a real multi-user live store, next step is Firebase (shared database). Ask to enable Firebase after hosting is up.
+1. **Shared data is Hostinger MySQL** (see env table above). Browser localStorage is a cache, not the live books. New uploads go to Hostinger disk (`/api/media`).
 
-2. **Change admin password** after go-live (Admin → Users, or recreate admin account).
-
-3. **Environment file (optional later)**  
-   Copy `.env.example` to `.env.local` on the server when you add Firebase keys / Tally sync key.
-
-4. **Tally bridge** still runs on your **office PC**, not on Hostinger. Keep using `tally-bridge/` locally and sync stock into Admin → Tally.
+2. **Change admin password** after go-live (Admin → Users).
 
 ---
 
 ## Quick checklist
 
 - [ ] Hostinger VPS/Node plan ready
-- [ ] Node 20 installed
+- [ ] Node 22 installed
 - [ ] `npm install` + `npm run build` succeeded
 - [ ] App service running on port 3000
 - [ ] Nginx proxy + domain A record

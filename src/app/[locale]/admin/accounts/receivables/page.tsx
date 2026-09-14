@@ -5,9 +5,13 @@ import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import {
   allOpenReceivables,
+  invoiceSettlementLines,
+  leftoverReceipts,
   partyAging,
   partyBalance,
 } from "@/lib/accounting";
@@ -15,6 +19,13 @@ import { ExportButtons } from "@/components/ExportButtons";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import { checkCapability } from "@/lib/store/db";
+import type { AppDatabase } from "@/lib/store/db";
+
+function lastReceiptForInvoice(db: AppDatabase, invoiceId: string) {
+  return [...invoiceSettlementLines(invoiceId, db.vouchers, db.billAllocations ?? [])]
+    .reverse()
+    .find((s) => s.kind === "receipt" || s.kind === "payment");
+}
 
 export default function ReceivablesPage() {
   const t = useTranslations();
@@ -35,10 +46,24 @@ export default function ReceivablesPage() {
     return partyId ? rows.filter((r) => r.voucher.partyId === partyId) : rows;
   }, [db, partyId, asOf]);
 
+  const leftoverByParty = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!db) return map;
+    for (const row of leftoverReceipts(
+      db.vouchers,
+      db.billAllocations ?? []
+    )) {
+      const pid = row.voucher.partyId;
+      if (!pid) continue;
+      map.set(pid, (map.get(pid) || 0) + row.leftover);
+    }
+    return map;
+  }, [db]);
+
   const exportOptions = useMemo(
     () => ({
       title: t("accounts.receivables"),
-      subtitle: `As of ${asOf}`,
+      subtitle: `${t("common.asOf")} ${asOf}`,
       filename: `receivables-${asOf}.pdf`,
       columns: [
         "Invoice",
@@ -109,7 +134,7 @@ export default function ReceivablesPage() {
     );
   }, [db, partyId, asOf]);
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -122,16 +147,12 @@ export default function ReceivablesPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {t("accounts.receivables")}
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)]">
-        {locale === "hi"
-          ? "बिल-वार बकाया और एजिंग"
-          : "Bill-wise outstanding and aging"}
-      </p>
+      <AccountsPageHeader
+        title={t("accounts.receivables")}
+        hint={t("accounts.receivablesHint")}
+      />
 
-      <div className="mt-4 flex flex-wrap items-end gap-3">
+      <div className="mt-4 flex flex-wrap items-end gap-3 print:hidden">
         <div>
           <label className="tt-label">{t("accounts.customers")}</label>
           <select
@@ -140,7 +161,7 @@ export default function ReceivablesPage() {
             onChange={(e) => setPartyId(e.target.value)}
           >
             <option value="">
-              {locale === "hi" ? "सभी ग्राहक" : "All customers"}
+              {t("accounts.allCustomers")}
             </option>
             {customers.map((p) => (
               <option key={p.id} value={p.id}>
@@ -152,6 +173,13 @@ export default function ReceivablesPage() {
             ))}
           </select>
         </div>
+        <button
+          type="button"
+          className="tt-btn tt-btn-outline"
+          onClick={() => window.print()}
+        >
+          {t("accounts.print")}
+        </button>
         <ExportButtons options={exportOptions} />
         <Link
           href="/admin/accounts/vouchers?new=receipt"
@@ -184,7 +212,7 @@ export default function ReceivablesPage() {
       <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {(
           [
-            ["current", locale === "hi" ? "चालू" : "Current"],
+            ["current", t("accounts.agingCurrent")],
             ["d1_30", "1–30"],
             ["d31_60", "31–60"],
             ["d61_90", "61–90"],
@@ -218,17 +246,67 @@ export default function ReceivablesPage() {
         </p>
       ) : null}
 
-      <div className="tt-panel mt-4 overflow-x-auto">
+      <div className="tt-acct-cards mt-4 sm:hidden">
+        {open.map((row) => {
+          const party = db?.parties.find((p) => p.id === row.voucher.partyId);
+          const last = db
+            ? lastReceiptForInvoice(db, row.voucher.id)
+            : undefined;
+          return (
+            <div key={row.voucher.id} className="tt-panel tt-acct-card">
+              <p className="font-mono text-sm font-semibold">
+                <VoucherNumberLink
+                  id={row.voucher.id}
+                  number={row.voucher.number}
+                />
+              </p>
+              <p className="text-sm">{party?.name || "—"}</p>
+              <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                {row.voucher.date} · due {row.voucher.dueDate || row.voucher.date}
+              </p>
+              <p className="mt-1 text-sm font-semibold tabular-nums">
+                {formatInr(row.outstanding, locale)}
+                <span className="ml-2 text-xs font-normal text-[var(--ink-muted)]">
+                  {row.bucket === "current"
+                    ? t("accounts.agingCurrent")
+                    : `${row.daysOverdue}d`}
+                </span>
+              </p>
+              {last ? (
+                <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                  {t("accounts.stmtLastReceipt")}{" "}
+                  <VoucherNumberLink
+                    id={last.voucherId}
+                    number={last.number}
+                  />{" "}
+                  {formatInr(last.amount, locale)}
+                </p>
+              ) : null}
+              {leftoverByParty.get(row.voucher.partyId || "") ? (
+                <p className="mt-1 text-xs font-semibold text-[var(--brand-deep)]">
+                  {t("accounts.onAccount")}{" "}
+                  {formatInr(
+                    leftoverByParty.get(row.voucher.partyId || "") || 0,
+                    locale
+                  )}
+                </p>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      <div className="tt-panel tt-acct-table-wrap mt-4 hidden sm:block">
         <table className="tt-table min-w-[820px]">
           <thead>
             <tr>
-              <th>Invoice</th>
-              <th>Date</th>
-              <th>Due</th>
-              <th>Party</th>
-              <th>Total</th>
+              <th>{t("accounts.colInvoice")}</th>
+              <th>{t("accounts.colDate")}</th>
+              <th>{t("accounts.colDue")}</th>
+              <th>{t("accounts.colParty")}</th>
+              <th>{t("accounts.colTotal")}</th>
               <th>{t("accounts.outstanding")}</th>
-              <th>Aging</th>
+              <th>{t("accounts.stmtLastReceipt")}</th>
+              <th>{t("accounts.colAging")}</th>
             </tr>
           </thead>
           <tbody>
@@ -236,6 +314,9 @@ export default function ReceivablesPage() {
               const party = db?.parties.find(
                 (p) => p.id === row.voucher.partyId
               );
+              const last = db
+                ? lastReceiptForInvoice(db, row.voucher.id)
+                : undefined;
               return (
                 <tr key={row.voucher.id}>
                   <td className="font-mono text-sm"><VoucherNumberLink id={row.voucher.id} number={row.voucher.number} /></td>
@@ -247,11 +328,33 @@ export default function ReceivablesPage() {
                     {formatInr(row.outstanding, locale)}
                   </td>
                   <td className="text-sm">
+                    {last ? (
+                      <>
+                        <VoucherNumberLink
+                          id={last.voucherId}
+                          number={last.number}
+                        />
+                        <span className="ml-1 text-[var(--ink-muted)]">
+                          {formatInr(last.amount, locale)}
+                        </span>
+                      </>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td className="text-sm">
                     {row.bucket === "current"
-                      ? locale === "hi"
-                        ? "चालू"
-                        : "Current"
+                      ? t("accounts.agingCurrent")
                       : `${row.daysOverdue}d`}
+                    {leftoverByParty.get(row.voucher.partyId || "") ? (
+                      <span className="ml-2 rounded-full bg-[var(--brand-soft)] px-2 py-0.5 text-xs font-semibold text-[var(--brand-deep)]">
+                        {t("accounts.onAccount")}{" "}
+                        {formatInr(
+                          leftoverByParty.get(row.voucher.partyId || "") || 0,
+                          locale
+                        )}
+                      </span>
+                    ) : null}
                   </td>
                 </tr>
               );
@@ -259,9 +362,11 @@ export default function ReceivablesPage() {
           </tbody>
         </table>
         {!open.length ? (
-          <p className="p-4 text-sm text-[var(--ink-muted)]">
-            {t("common.empty")}
-          </p>
+          <AccountsEmpty
+            message={t("accounts.emptyReceivables")}
+            href="/admin/accounts/vouchers?new=receipt"
+            cta={t("accounts.emptyReceivablesCta")}
+          />
         ) : null}
       </div>
     </AccountsShell>

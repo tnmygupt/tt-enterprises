@@ -1,19 +1,23 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { ExportButtons } from "@/components/ExportButtons";
 import { NumberField } from "@/components/NumberField";
-import { stockAlerts } from "@/lib/accounting";
+import { stockAlertsFromDb } from "@/lib/accounting";
 import { useDb, useSession } from "@/lib/hooks";
 import {
+  checkAnyCapability,
   checkCapability,
   createDraftPosFromStockAlerts,
 } from "@/lib/store/db";
 
 export default function StockAlertsPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db, refresh } = useDb();
   const [slowDays, setSlowDays] = useState(45);
@@ -22,10 +26,12 @@ export default function StockAlertsPage() {
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const canBooks =
+    !!session && checkCapability(session, db, "manage_accounts");
 
   const all = useMemo(() => {
     if (!db) return [];
-    return stockAlerts(db.products, db.stockMovements ?? [], {
+    return stockAlertsFromDb(db, {
       slowDays,
       deadDays,
     });
@@ -56,6 +62,9 @@ export default function StockAlertsPage() {
         "Product",
         "Stock",
         "Min",
+        "Avg/day",
+        "Incoming",
+        "Committed",
         "Suggested",
         "Supplier",
         "Last out",
@@ -70,6 +79,9 @@ export default function StockAlertsPage() {
           r.label,
           r.stock,
           r.minStockLevel || "—",
+          r.kind === "reorder" ? Number((r.avgDailyOut ?? 0).toFixed(2)) : "—",
+          r.kind === "reorder" ? r.incomingQty ?? 0 : "—",
+          r.kind === "reorder" ? r.committedQty ?? 0 : "—",
           r.suggestedQty || "—",
           sup || "—",
           r.lastOutDate || "never",
@@ -80,7 +92,7 @@ export default function StockAlertsPage() {
     [db, rows]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkAnyCapability(session, db, ["manage_accounts", "manage_reorder"])) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -117,34 +129,29 @@ export default function StockAlertsPage() {
 
   return (
     <AccountsShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            Stock alerts
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Reorder at product / size / color mins. Suggested qty fills back to
-            min (or reorder target). Set preferred supplier to draft POs.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Link
-            href="/admin/accounts/purchases"
-            className="tt-btn tt-btn-outline"
-          >
-            Purchase orders
-          </Link>
-          <Link
-            href="/admin/accounts/inventory"
-            className="tt-btn tt-btn-outline"
-          >
-            Stock on hand
-          </Link>
-          <Link href="/admin/products" className="tt-btn tt-btn-outline">
-            Set min levels
-          </Link>
-        </div>
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.stockAlerts")}
+        hint={t("accounts.stockAlertsHint")}
+        actions={
+          <>
+            <Link
+              href="/admin/accounts/purchases?tab=orders"
+              className="tt-btn tt-btn-outline"
+            >
+              {t("accounts.purchaseOrder")}
+            </Link>
+            <Link
+              href="/admin/accounts/inventory"
+              className="tt-btn tt-btn-outline"
+            >
+              {t("accounts.stockOnHand")}
+            </Link>
+            <Link href="/admin/products" className="tt-btn tt-btn-outline">
+              {t("accounts.stock")}
+            </Link>
+          </>
+        }
+      />
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
         {(
@@ -241,7 +248,7 @@ export default function StockAlertsPage() {
       ) : null}
 
       <div className="tt-panel mt-5 overflow-x-auto">
-        <table className="tt-table min-w-[980px]">
+        <table className="tt-table min-w-[1180px]">
           <thead>
             <tr>
               <th />
@@ -249,6 +256,9 @@ export default function StockAlertsPage() {
               <th>Product</th>
               <th>Stock</th>
               <th>Min</th>
+              <th>Avg/day</th>
+              <th>Incoming</th>
+              <th>Committed</th>
               <th>Suggested</th>
               <th>Supplier</th>
               <th>Last out</th>
@@ -289,13 +299,29 @@ export default function StockAlertsPage() {
                     ) : null}
                   </td>
                   <td>{r.minStockLevel || "—"}</td>
+                  <td className="tabular-nums text-sm">
+                    {r.kind === "reorder"
+                      ? (r.avgDailyOut ?? 0).toFixed(2)
+                      : "—"}
+                  </td>
+                  <td className="tabular-nums text-sm">
+                    {r.kind === "reorder" ? r.incomingQty ?? 0 : "—"}
+                  </td>
+                  <td className="tabular-nums text-sm">
+                    {r.kind === "reorder" ? r.committedQty ?? 0 : "—"}
+                  </td>
                   <td className="font-semibold tabular-nums">
                     {r.kind === "reorder" ? r.suggestedQty : "—"}
+                    {r.kind === "reorder" && r.coverMode ? (
+                      <span className="block text-xs font-normal text-[var(--ink-muted)]">
+                        {r.coverMode}
+                      </span>
+                    ) : null}
                   </td>
                   <td className="text-sm">
                     {sup?.name || (
                       <span className="text-[var(--ink-muted)]">
-                        set preferred
+                        {t("accounts.setPreferredSupplier")}
                       </span>
                     )}
                   </td>
@@ -311,28 +337,41 @@ export default function StockAlertsPage() {
                     <div className="flex flex-wrap gap-x-3">
                       {r.kind === "reorder" ? (
                         <>
+                          {r.preferredSupplierId ? (
                           <button
                             type="button"
                             className="inline-flex min-h-11 items-center text-sm font-semibold underline"
-                            disabled={busy || !r.preferredSupplierId}
+                            disabled={busy}
                             onClick={() => onCreatePo([key])}
                           >
                             Draft PO
                           </button>
+                          ) : (
+                          <Link
+                            href="/admin/products"
+                            className="inline-flex min-h-11 items-center text-sm font-semibold underline"
+                          >
+                            {t("accounts.setPreferredSupplier")}
+                          </Link>
+                          )}
+                          {canBooks ? (
                           <Link
                             href="/admin/accounts/goods-received"
                             className="inline-flex min-h-11 items-center text-sm underline"
                           >
                             Receive
                           </Link>
+                          ) : null}
                         </>
                       ) : null}
+                      {canBooks ? (
                       <Link
                         href={`/admin/accounts/reports/stock-movements?product=${r.productId}`}
                         className="inline-flex min-h-11 items-center text-sm underline"
                       >
                         History
                       </Link>
+                      ) : null}
                     </div>
                   </td>
                 </tr>
@@ -344,7 +383,7 @@ export default function StockAlertsPage() {
           <p className="p-4 text-sm text-[var(--ink-muted)]">
             {kind
               ? `No ${kind} alerts right now.`
-              : "No alerts. Set min stock on products / sizes / colors."}
+              : "No alerts. Set min stock on products, or wait for sales velocity."}
           </p>
         ) : null}
       </div>

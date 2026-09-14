@@ -1,7 +1,7 @@
 import { mkdir } from "fs/promises";
 import path from "path";
 
-/** Server-side writable data folder (Tally sync, etc.) */
+/** Server-side writable data folder (uploads, etc.) */
 export function dataDir(): string {
   return path.join(process.cwd(), "data");
 }

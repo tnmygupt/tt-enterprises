@@ -7,6 +7,7 @@ import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import {
   dealerHasScheme,
+  dealerOrderDiscountView,
   daysUntilSchemeEnd,
   estimateSchemePayout,
   formatSchemeDuration,
@@ -25,6 +26,7 @@ import {
   schemeTierRate,
   schemeUnitLabel,
 } from "@/lib/schemes";
+import { OrderDiscountExplain } from "@/components/OrderDiscountExplain";
 import type { Scheme } from "@/lib/types";
 
 type StatusFilter = "all" | "live" | "ending_soon";
@@ -275,7 +277,9 @@ export default function SchemesPage() {
                     </span>
                   </div>
                   <p className="mt-2 text-sm text-white/85">
-                    {schemeRewardLabel(s, locale)}
+                    {isOrderDiscountScheme(s)
+                      ? t("schemes.orderDiscount")
+                      : schemeRewardLabel(s, locale)}
                   </p>
                 </header>
 
@@ -303,24 +307,11 @@ export default function SchemesPage() {
                       <p className="text-xs font-bold uppercase tracking-wide text-[var(--brand)]">
                         {t("schemes.orderDiscount")}
                       </p>
-                      <p className="mt-2 text-sm text-[var(--ink)]">
-                        {t("schemes.orderDiscountHint")}
-                      </p>
-                      <ul className="mt-3 space-y-1.5 text-sm">
-                        {levels.map((l) => (
-                          <li key={l.id} className="flex justify-between gap-2">
-                            <span className="text-[var(--ink-muted)]">
-                              {schemeLevelLabel(l, locale)} ·{" "}
-                              {l.targetAmount} {unit}+
-                            </span>
-                            <span className="font-semibold tabular-nums">
-                              {s.rewardType === "order_percent"
-                                ? `${schemeTierRate(s, l)}%`
-                                : formatInr(schemeTierRate(s, l), locale)}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
+                      <div className="mt-2">
+                        <OrderDiscountExplain
+                          view={dealerOrderDiscountView(s, locale)}
+                        />
+                      </div>
                     </div>
                   ) : (
                   /* Progress ring + estimate ------------------ */
@@ -440,20 +431,32 @@ export default function SchemesPage() {
                           value={
                             s.rewardType === "order_percent"
                               ? locale === "hi"
-                                ? "% छूट"
-                                : "% off"
-                              : locale === "hi"
-                                ? "₹ छूट"
-                                : "₹ off"
+                                ? "% ₹/किग्रा"
+                                : "% off ₹/kg"
+                              : s.rewardType === "order_rate"
+                                ? locale === "hi"
+                                  ? "रेट से ₹ (100 → 99)"
+                                  : "₹ off rate (100 → 99)"
+                              : s.rewardType === "order_per_kg"
+                                ? locale === "hi"
+                                  ? "₹/किग्रा छूट"
+                                  : "₹/kg off"
+                                : locale === "hi"
+                                  ? "बिल से ₹"
+                                  : "₹ off bill"
                           }
                           hint={t("schemes.orderDiscount")}
                         />
                         <Fact
-                          label={locale === "hi" ? "टॉप टियर" : "Top tier"}
+                          label={locale === "hi" ? "सबसे ज़्यादा छूट" : "Biggest cut"}
                           value={
                             s.rewardType === "order_percent"
                               ? `${topRate}%`
-                              : formatInr(topRate, locale)
+                              : s.rewardType === "order_rate"
+                                ? `₹${topRate} (100 → ${Math.max(0, 100 - topRate)})`
+                              : s.rewardType === "order_per_kg"
+                                ? `₹${topRate}/${unit}`
+                                : formatInr(topRate, locale)
                           }
                           hint={`${topTarget} ${unit}+`}
                           tone="ok"

@@ -344,10 +344,116 @@ button.tt-selected {
   letter-spacing: 0.06em;
   color: var(--ink-muted);
   background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .tt-table tr:last-child td {
   border-bottom: none;
+}
+
+.tt-acct-header-wrap {
+  margin-bottom: 0.25rem;
+}
+
+.tt-acct-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+}
+
+.tt-acct-header h1 {
+  color: var(--brand-deep);
+}
+
+.tt-acct-kpi {
+  display: block;
+  padding: 1.1rem 1.15rem;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.tt-acct-kpi:hover {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.tt-acct-kpi-value {
+  margin-top: 0.45rem;
+  font-size: 1.45rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-deep);
+}
+
+.tt-acct-card {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  text-align: left;
+}
+
+.tt-acct-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tt-acct-money {
+  font-variant-numeric: tabular-nums;
+}
+
+.tt-acct-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.tt-acct-table-wrap .tt-table th:first-child,
+.tt-acct-table-wrap .tt-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+
+.tt-acct-table-wrap .tt-table thead th:first-child {
+  z-index: 3;
+  background: var(--surface-2);
+}
+
+.tt-acct-nav-title {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+.tt-acct-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+}
+
+.tt-acct-sheet-panel {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  max-height: 88dvh;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-bottom: none;
+  border-radius: 1.1rem 1.1rem 0 0;
+  background: var(--surface);
+  box-shadow: 0 -12px 40px rgba(15, 23, 22, 0.18);
+}
+
+.tt-acct-attn {
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--line));
+}
+
+.tt-acct-attn-warn {
+  border-color: color-mix(in srgb, #b45309 40%, var(--line));
 }
 
 .tt-input,
@@ -790,7 +896,7 @@ button.tt-selected {
 .tt-sticky-bar {
   position: sticky;
   bottom: 0;
-  z-index: 30;
+  z-index: 40;
   margin-inline: calc(
     -1 * max(0.75rem, env(safe-area-inset-left), env(safe-area-inset-right))
   );
@@ -817,6 +923,21 @@ button.tt-selected {
 
   .tt-sticky-bar .tt-btn {
     width: auto;
+  }
+}
+
+/* PWA install + offline banners sit above sticky checkout/save bars on phones */
+.tt-bottom-toast {
+  position: fixed;
+  left: 0.75rem;
+  right: 0.75rem;
+  bottom: max(0.75rem, env(safe-area-inset-bottom));
+  z-index: 55;
+}
+
+@media (max-width: 639px) {
+  body:has(.tt-sticky-bar) .tt-bottom-toast {
+    bottom: calc(6.5rem + env(safe-area-inset-bottom));
   }
 }
 
@@ -1293,8 +1414,57 @@ button.tt-selected {
   margin-bottom: 0.85rem;
 }
 
+.tt-qo-sheet-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.2rem;
+}
+
+.tt-qo-sheet-label-row .tt-label {
+  margin: 0;
+}
+
+.tt-qo-sheet-all {
+  border: 0;
+  background: none;
+  padding: 0.15rem 0;
+  color: var(--brand-deep, var(--brand));
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
 .tt-qo-sheet-qty {
   margin-bottom: 0.85rem;
+}
+
+.tt-qo-sheet-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  margin-bottom: 0.85rem;
+}
+
+.tt-qo-sheet-draft-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.tt-qo-sheet-draft-size {
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.tt-qo-sheet-draft-size span {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--ink-muted);
 }
 
 .tt-qo-sheet-total {
@@ -1818,4 +1988,3 @@ button.tt-selected {
     overflow: visible !important;
   }
 }
-

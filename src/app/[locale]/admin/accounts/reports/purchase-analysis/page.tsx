@@ -1,13 +1,15 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { ExportButtons } from "@/components/ExportButtons";
 import { BarChart } from "@/components/charts/BarChart";
 import { LineChart } from "@/components/charts/LineChart";
 import { purchaseAnalysis } from "@/lib/accounting";
-import { toDateInputValue } from "@/lib/date-range";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import { canViewFinancials } from "@/lib/store/db";
@@ -15,11 +17,12 @@ import { canViewFinancials } from "@/lib/store/db";
 type Dim = "supplier" | "item";
 
 export default function PurchaseAnalysisPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db } = useDb();
-  const today = toDateInputValue();
-  const [from, setFrom] = useState(today.slice(0, 8) + "01");
-  const [to, setTo] = useState(today);
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
   const [dim, setDim] = useState<Dim>("supplier");
 
   const data = useMemo(() => {
@@ -27,8 +30,10 @@ export default function PurchaseAnalysisPage() {
     return purchaseAnalysis(db.vouchers, db.parties, from, to);
   }, [db, from, to]);
 
-  const tableRows =
-    dim === "supplier" ? data?.bySupplier ?? [] : data?.byItem ?? [];
+  const tableRows = useMemo(
+    () => (dim === "supplier" ? data?.bySupplier ?? [] : data?.byItem ?? []),
+    [data, dim]
+  );
 
   const exportOptions = useMemo(
     () => ({
@@ -49,47 +54,34 @@ export default function PurchaseAnalysisPage() {
   if (!session || !canViewFinancials(session.role)) {
     return (
       <AccountsShell>
-        <AdminAccessDenied title="Owner only — purchase analysis" />
+        <AdminAccessDenied title={t("accounts.ownerOnlyPurchaseAnalysis")} />
       </AccountsShell>
     );
   }
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        Purchase analysis
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)]">
-        Spend by supplier and item.
-      </p>
+      <AccountsPageHeader
+        title={t("accounts.purchaseAnalysis")}
+        hint={t("accounts.purchaseAnalysisHint")}
+      />
 
       <div className="mt-4 flex flex-wrap gap-3">
-        <input
-          type="date"
-          className="tt-input"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <input
-          type="date"
-          className="tt-input"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
+        <DateRangeBar value={range} onChange={setRange} />
         <select
           className="tt-select"
           value={dim}
           onChange={(e) => setDim(e.target.value as Dim)}
         >
-          <option value="supplier">By supplier</option>
-          <option value="item">By item</option>
+          <option value="supplier">{t("accounts.bySupplier")}</option>
+          <option value="item">{t("accounts.byItem")}</option>
         </select>
         <ExportButtons options={exportOptions} />
       </div>
 
       <div className="mt-5 grid gap-4 lg:grid-cols-2">
         <div className="tt-panel p-4">
-          <p className="mb-2 text-sm font-semibold">Monthly trend</p>
+          <p className="mb-2 text-sm font-semibold">{t("accounts.monthlyTrend")}</p>
           <LineChart
             data={(data?.byMonth ?? []).map((m) => ({
               label: m.month,

@@ -9,7 +9,7 @@ import { NumberField } from "@/components/NumberField";
 import { categoryLabel } from "@/lib/categories";
 import { useDb, useSession } from "@/lib/hooks";
 import { dedupeProductVariations, normalizeSizeKey } from "@/lib/media";
-import { formatInr } from "@/lib/pricing";
+import { applySqftComputedRate, formatInr, isSqftUnit, ratePerPacket, ratePerPiece, resolveSqftPack, unitLabel } from "@/lib/pricing";
 import { checkCapability, upsertProduct } from "@/lib/store/db";
 import type { Product } from "@/lib/types";
 
@@ -28,6 +28,7 @@ type RateGroup = {
   category: string;
   rate: number;
   pricingMode: Product["pricingMode"];
+  unit: Product["unit"];
   sizes: SizeMember[];
   /** Unique product ids in this club (usually 1) */
   productIds: string[];
@@ -46,8 +47,6 @@ export default function AdminRatesPage() {
   const [draft, setDraft] = useState<Record<string, number>>({});
   const [msg, setMsg] = useState("");
   const [cleaning, setCleaning] = useState(false);
-
-  const isSuperAdmin = session?.role === "super_admin";
 
   const groups = useMemo(() => {
     if (!db) return [] as RateGroup[];
@@ -68,8 +67,10 @@ export default function AdminRatesPage() {
         if (seenSizes.has(dedupeKey)) continue;
         seenSizes.add(dedupeKey);
 
-        const rate = Number(v.rate) || 0;
-        const clubKey = `${nameKey}__${rate}`;
+        const rate = isSqftUnit(p.unit)
+          ? Number(resolveSqftPack(p, v).ratePerSqft) || 0
+          : Number(v.rate) || 0;
+        const clubKey = `${nameKey}__${p.unit}__${rate}`;
         let group = map.get(clubKey);
         if (!group) {
           group = {
@@ -78,6 +79,7 @@ export default function AdminRatesPage() {
             category,
             rate,
             pricingMode: p.pricingMode,
+            unit: p.unit,
             sizes: [],
             productIds: [],
           };
@@ -121,7 +123,7 @@ export default function AdminRatesPage() {
     return n;
   }, [groups, draft]);
 
-  if (!session || !checkCapability(session, db?.users, "manage_products") || !isSuperAdmin) {
+  if (!session || !checkCapability(session, db, "manage_products")) {
     return (
       <AdminShell>
         <AdminAccessDenied />
@@ -160,7 +162,13 @@ export default function AdminRatesPage() {
         }
         const v = product.variations.find((x) => x.id === s.variationId);
         if (!v) continue;
-        v.rate = nextRate;
+        if (isSqftUnit(product.unit)) {
+          v.ratePerSqft = nextRate;
+          const next = applySqftComputedRate(product, v);
+          Object.assign(v, next);
+        } else {
+          v.rate = nextRate;
+        }
       }
     }
 
@@ -264,7 +272,12 @@ export default function AdminRatesPage() {
               <th>{locale === "hi" ? "आइटम" : "Item"}</th>
               <th>{locale === "hi" ? "साइज़ (क्लब)" : "Sizes (clubbed)"}</th>
               <th>{locale === "hi" ? "कितने" : "Count"}</th>
-              <th>{locale === "hi" ? "रेट (₹)" : "Rate (₹)"}</th>
+              <th>
+                {locale === "hi" ? "रेट (₹)" : "Rate (₹)"}
+                <span className="block text-[10px] font-normal normal-case text-[var(--ink-muted)]">
+                  {locale === "hi" ? "sq/ft आइटम = ₹/वर्ग फुट" : "sq/ft items = ₹/sqft"}
+                </span>
+              </th>
               <th>{locale === "hi" ? "अनुमान" : "Estimate"}</th>
             </tr>
           </thead>
@@ -282,12 +295,37 @@ export default function AdminRatesPage() {
                   draft[g.key] !== undefined && draft[g.key] !== g.rate;
                 const sampleWt =
                   g.sizes.find((s) => s.weightKg > 0)?.weightKg ?? 0;
-                const estimate =
-                  g.pricingMode === "bundle" && sampleWt > 0 && rate > 0
-                    ? `${formatInr(rate * sampleWt, locale)} / bundle`
-                    : rate > 0
-                      ? formatInr(rate, locale)
-                      : "—";
+                let estimate = "—";
+                if (g.unit === "sqft" && rate > 0) {
+                  const s = g.sizes[0];
+                  const prod = db.products.find((p) => p.id === s.productId);
+                  const v = prod?.variations.find(
+                    (x) => x.id === s.variationId
+                  );
+                  if (prod && v) {
+                    const spec = resolveSqftPack(prod, v);
+                    const pc = ratePerPiece(
+                      rate,
+                      spec.lengthFt,
+                      spec.widthFt
+                    );
+                    const pkt = ratePerPacket(
+                      rate,
+                      spec.lengthFt,
+                      spec.widthFt,
+                      spec.pcsPerPacket
+                    );
+                    estimate = `${formatInr(pc, locale)}/pc · ${formatInr(pkt, locale)}/pkt`;
+                  }
+                } else if (
+                  g.pricingMode === "bundle" &&
+                  sampleWt > 0 &&
+                  rate > 0
+                ) {
+                  estimate = `${formatInr(rate * sampleWt, locale)} / bundle`;
+                } else if (rate > 0) {
+                  estimate = formatInr(rate, locale);
+                }
                 const sizeList = g.sizes.map((s) => s.sizeLabel).join(", ");
                 return (
                   <tr

@@ -6,19 +6,24 @@ import { Link, useRouter } from "@/i18n/routing";
 import { categoryLabel } from "@/lib/categories";
 import { useDb, useSession } from "@/lib/hooks";
 import { loc } from "@/lib/localized";
-import { formatInr } from "@/lib/pricing";
+import { catalogFromRate, formatInr, unitLabel } from "@/lib/pricing";
 import {
   dealerHasScheme,
+  dealerOrderDiscountView,
   formatSchemeDuration,
+  isOrderDiscountScheme,
   isSchemeVisibleToDealer,
   schemeRewardAmount,
   schemeRewardLabel,
 } from "@/lib/schemes";
+import { OrderDiscountExplain } from "@/components/OrderDiscountExplain";
+import { resolveHomeNewProducts, resolveHomePromoProducts } from "@/lib/home-merch";
 import {
   checkCapability,
   isStaff,
   loginAsync,
   registerCustomer,
+  requestPasswordResetAsync,
 } from "@/lib/store/db";
 import type { Order, Product, Scheme } from "@/lib/types";
 
@@ -29,13 +34,18 @@ function useHomeContent() {
 
   const newProducts = useMemo(() => {
     if (!db) return [] as Product[];
-    return [...(db.products ?? [])]
-      .filter((p) => p.active)
-      .sort((a, b) => {
-        if (a.featured !== b.featured) return a.featured ? -1 : 1;
-        return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
-      })
-      .slice(0, 6);
+    return resolveHomeNewProducts(
+      db.products ?? [],
+      db.settings.homeNewProductIds
+    );
+  }, [db]);
+
+  const promoProducts = useMemo(() => {
+    if (!db) return [] as Product[];
+    return resolveHomePromoProducts(
+      db.products ?? [],
+      db.settings.homePromoProductIds
+    );
   }, [db]);
 
   const myOrders = useMemo(() => {
@@ -60,10 +70,10 @@ function useHomeContent() {
           ? true
           : dealerHasScheme(s, user.assignedSchemeIds || [])
       )
-      .slice(0, 4);
+      .slice(0, 8);
   }, [db, session]);
 
-  return { db, locale, session, myOrders, newProducts, schemes };
+  return { db, locale, session, myOrders, newProducts, promoProducts, schemes };
 }
 
 function MyOrdersSection({ orders }: { orders: Order[] }) {
@@ -185,16 +195,15 @@ function ProductsSection({
               <div className="p-4">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
                   {categoryLabel(db?.categories, p.category, locale)}
-                  {p.featured
-                    ? ` · ${locale === "hi" ? "नया" : "New"}`
-                    : ""}
+                  {` · ${locale === "hi" ? "नया" : "New"}`}
                 </p>
                 <h3 className="mt-1 truncate font-semibold text-[var(--ink)]">
                   {loc(p.name, locale, p.code || "Product")}
                 </h3>
                 {loggedIn ? (
                   <p className="mt-1 text-sm font-semibold text-[var(--brand-deep)]">
-                    {formatInr(p.baseRate, locale)} / {p.unit}
+                    {formatInr(catalogFromRate(p), locale)} /{" "}
+                    {unitLabel(p.unit, locale)}
                   </p>
                 ) : null}
               </div>
@@ -230,13 +239,15 @@ function ProductsSection({
 
 function SchemesSection({
   schemes,
+  promos,
   loggedIn,
 }: {
   schemes: Scheme[];
+  promos: Product[];
   loggedIn: boolean;
 }) {
   const t = useTranslations();
-  const { locale } = useHomeContent();
+  const { db, locale } = useHomeContent();
 
   return (
     <section className="tt-animate-rise">
@@ -259,13 +270,17 @@ function SchemesSection({
       <div className="mt-5 grid gap-4 lg:grid-cols-2">
         {schemes.map((s) => {
           const reward = schemeRewardAmount(s);
+          const offer = isOrderDiscountScheme(s);
           return (
             <article
               key={s.id}
               className="overflow-hidden rounded-2xl border border-[var(--line)] bg-white shadow-[var(--shadow)]"
             >
               <div className="border-b border-[var(--line)] bg-[var(--surface-2)] px-5 py-4">
-                <h3 className="text-lg font-semibold text-[var(--ink)]">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--brand)]">
+                  {offer ? t("home.offerBadge") : t("home.schemeBadge")}
+                </p>
+                <h3 className="mt-1 text-lg font-semibold text-[var(--ink)]">
                   {s.name?.[locale] || s.name?.en || s.id}
                 </h3>
                 <p className="mt-1 text-sm text-[var(--brand)]">
@@ -276,28 +291,83 @@ function SchemesSection({
                 <p className="text-[var(--ink-muted)]">
                   {s.description?.[locale] || s.description?.en || ""}
                 </p>
-                <p>
-                  <strong>
-                    {locale === "hi" ? "लक्ष्य" : "Target"}:
-                  </strong>{" "}
-                  {(Number(s.targetWeightKg) || 0).toLocaleString(
-                    locale === "hi" ? "hi-IN" : "en-IN"
-                  )}{" "}
-                  {t("common.kg")}
-                </p>
-                <p>
-                  <strong>
-                    {locale === "hi" ? "रिवॉर्ड" : "Reward"}:
-                  </strong>{" "}
-                  {schemeRewardLabel(s, locale)}
-                  {reward > 0 ? ` · ${formatInr(reward, locale)}` : ""}
-                </p>
+                {offer ? (
+                  <OrderDiscountExplain
+                    view={dealerOrderDiscountView(s, locale)}
+                  />
+                ) : (
+                  <>
+                    <p>
+                      <strong>
+                        {locale === "hi" ? "लक्ष्य" : "Target"}:
+                      </strong>{" "}
+                      {(Number(s.targetWeightKg) || 0).toLocaleString(
+                        locale === "hi" ? "hi-IN" : "en-IN"
+                      )}{" "}
+                      {t("common.kg")}
+                    </p>
+                    <p>
+                      <strong>
+                        {locale === "hi" ? "रिवॉर्ड" : "Reward"}:
+                      </strong>{" "}
+                      {schemeRewardLabel(s, locale)}
+                      {reward > 0 ? ` · ${formatInr(reward, locale)}` : ""}
+                    </p>
+                  </>
+                )}
               </div>
             </article>
           );
         })}
+        {promos.map((p) => {
+          const href = loggedIn ? `/catalog/${p.id}` : "/";
+          const inner = (
+            <>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={p.logoUrl || p.media?.[0]?.url || ""}
+                alt={loc(p.name, locale, p.code || "Product")}
+                className="h-36 w-full object-cover"
+                style={{ background: "#eef0f3" }}
+              />
+              <div className="p-5">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-[var(--brand)]">
+                  {t("home.offerBadge")}
+                  {p.category
+                    ? ` · ${categoryLabel(db?.categories, p.category, locale)}`
+                    : ""}
+                </p>
+                <h3 className="mt-1 font-semibold text-[var(--ink)]">
+                  {loc(p.name, locale, p.code || "Product")}
+                </h3>
+                {loggedIn ? (
+                  <p className="mt-1 text-sm font-semibold text-[var(--brand-deep)]">
+                    {formatInr(catalogFromRate(p), locale)} /{" "}
+                    {unitLabel(p.unit, locale)}
+                  </p>
+                ) : null}
+              </div>
+            </>
+          );
+          return loggedIn ? (
+            <Link
+              key={p.id}
+              href={href}
+              className="overflow-hidden rounded-2xl border border-[var(--line)] bg-white shadow-[var(--shadow)] transition hover:border-[var(--brand)]"
+            >
+              {inner}
+            </Link>
+          ) : (
+            <div
+              key={p.id}
+              className="overflow-hidden rounded-2xl border border-[var(--line)] bg-white shadow-[var(--shadow)]"
+            >
+              {inner}
+            </div>
+          );
+        })}
       </div>
-      {!schemes.length ? (
+      {!schemes.length && !promos.length ? (
         <p className="mt-4 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
       ) : null}
     </section>
@@ -400,7 +470,7 @@ function MoreInfoSection() {
 
 function LoggedInHome() {
   const t = useTranslations();
-  const { db, locale, session, myOrders, newProducts, schemes } =
+  const { db, locale, session, myOrders, newProducts, promoProducts, schemes } =
     useHomeContent();
   const name = session?.name || (locale === "hi" ? "डीलर" : "Dealer");
   const companyName = db?.settings?.companyName || "TT Enterprises";
@@ -439,8 +509,12 @@ function LoggedInHome() {
         </div>
 
         <MyOrdersSection orders={myOrders} />
+        <SchemesSection
+          schemes={schemes}
+          promos={promoProducts}
+          loggedIn
+        />
         <ProductsSection products={newProducts} loggedIn />
-        <SchemesSection schemes={schemes} loggedIn />
         <MoreInfoSection />
       </div>
     </section>
@@ -464,7 +538,7 @@ function StaffHome() {
       hint: locale === "hi" ? "आज की कतारें" : "Today's queues",
     },
   ];
-  if (checkCapability(session, db?.users, "manage_orders")) {
+  if (checkCapability(session, db, "manage_orders")) {
     shortcuts.push(
       {
         href: "/admin/orders",
@@ -478,7 +552,7 @@ function StaffHome() {
       }
     );
   }
-  if (checkCapability(session, db?.users, "manage_accounts")) {
+  if (checkCapability(session, db, "manage_accounts")) {
     shortcuts.push({
       href: "/admin/accounts",
       label: t("admin.accountsBook"),
@@ -540,6 +614,11 @@ function AuthLanding() {
   const [error, setError] = useState("");
   const [signupDone, setSignupDone] = useState(false);
   const [loginBusy, setLoginBusy] = useState(false);
+  const [signupBusy, setSignupBusy] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotBusy, setForgotBusy] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotPhone, setForgotPhone] = useState("");
   const [loginForm, setLoginForm] = useState({ phone: "", password: "" });
   const [signup, setSignup] = useState({
     name: "",
@@ -585,15 +664,33 @@ function AuthLanding() {
     }
   };
 
+  const submitForgot = async () => {
+    if (forgotBusy || forgotSent) return;
+    setError("");
+    setForgotBusy(true);
+    try {
+      await requestPasswordResetAsync(forgotPhone || loginForm.phone, locale);
+      setForgotSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Request failed");
+    } finally {
+      setForgotBusy(false);
+    }
+  };
+
   const onSignup = async (e: FormEvent) => {
     e.preventDefault();
+    if (signupBusy) return;
     setError("");
+    setSignupBusy(true);
     try {
       await registerCustomer({ ...signup, locale });
       setSignupDone(true);
       setTab("login");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed");
+    } finally {
+      setSignupBusy(false);
     }
   };
 
@@ -641,6 +738,8 @@ function AuthLanding() {
                 onClick={() => {
                   setTab("login");
                   setError("");
+                  setForgotOpen(false);
+                  setForgotSent(false);
                 }}
               >
                 {t("nav.login")}
@@ -675,7 +774,7 @@ function AuthLanding() {
                     className="tt-input"
                     type="tel"
                     inputMode="numeric"
-                    placeholder="10-digit mobile"
+                    placeholder={t("auth.phonePlaceholder")}
                     value={loginForm.phone}
                     onChange={(e) =>
                       setLoginForm({ ...loginForm, phone: e.target.value })
@@ -692,14 +791,76 @@ function AuthLanding() {
                     onChange={(e) =>
                       setLoginForm({ ...loginForm, password: e.target.value })
                     }
-                    required
+                    required={!forgotOpen}
+                    disabled={forgotOpen}
                   />
                 </div>
+                {forgotOpen ? (
+                  <div className="space-y-3 rounded-xl bg-[var(--surface-2)] p-3">
+                    <p className="text-sm text-[var(--ink-muted)]">
+                      {t("auth.forgotPasswordHint")}
+                    </p>
+                    <div>
+                      <label className="tt-label">{t("auth.phone")} *</label>
+                      <input
+                        className="tt-input"
+                        type="tel"
+                        inputMode="numeric"
+                        placeholder={t("auth.phonePlaceholder")}
+                        value={forgotPhone}
+                        onChange={(e) => setForgotPhone(e.target.value)}
+                        required
+                      />
+                    </div>
+                    {forgotSent ? (
+                      <p className="rounded-lg bg-[#e8f2ea] px-3 py-2 text-sm text-[var(--ok)]">
+                        {t("auth.forgotPasswordSent")}
+                      </p>
+                    ) : null}
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="tt-btn tt-btn-dark"
+                        disabled={forgotBusy || forgotSent}
+                        onClick={() => void submitForgot()}
+                      >
+                        {forgotBusy
+                          ? t("auth.forgotSending")
+                          : t("auth.forgotPasswordSend")}
+                      </button>
+                      <button
+                        type="button"
+                        className="tt-btn tt-btn-outline"
+                        onClick={() => {
+                          setForgotOpen(false);
+                          setForgotSent(false);
+                          setError("");
+                        }}
+                      >
+                        {t("auth.forgotBackToLogin")}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-left text-sm font-semibold text-[var(--brand)] underline underline-offset-2"
+                    onClick={() => {
+                      setForgotOpen(true);
+                      setForgotSent(false);
+                      setForgotPhone(loginForm.phone);
+                      setError("");
+                    }}
+                  >
+                    {t("auth.forgotPassword")}
+                  </button>
+                )}
                 {error ? (
                   <p className="rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-[var(--danger)]">
                     {error}
                   </p>
                 ) : null}
+                {forgotOpen ? null : (
                 <button
                   type="submit"
                   className="tt-btn tt-btn-dark w-full"
@@ -711,6 +872,7 @@ function AuthLanding() {
                       : "Signing in…"
                     : t("nav.login")}
                 </button>
+                )}
               </form>
             ) : (
               <form className="mt-5 grid gap-3 sm:grid-cols-2" onSubmit={onSignup}>
@@ -731,7 +893,7 @@ function AuthLanding() {
                     className="tt-input"
                     type="tel"
                     inputMode="numeric"
-                    placeholder="10-digit mobile"
+                    placeholder={t("auth.phonePlaceholder")}
                     value={signup.phone}
                     onChange={(e) =>
                       setSignup({ ...signup, phone: e.target.value })
@@ -759,7 +921,7 @@ function AuthLanding() {
                     onChange={(e) =>
                       setSignup({ ...signup, gstOrAadhar: e.target.value })
                     }
-                    placeholder="GSTIN / Aadhaar"
+                    placeholder={t("checkout.gstPlaceholder")}
                   />
                 </div>
                 <div>
@@ -800,7 +962,7 @@ function AuthLanding() {
                     type="tel"
                     inputMode="numeric"
                     maxLength={6}
-                    placeholder="6-digit PIN"
+                    placeholder={t("auth.pincodePlaceholder")}
                     value={signup.pincode}
                     onChange={(e) =>
                       setSignup({
@@ -822,8 +984,9 @@ function AuthLanding() {
                 <button
                   type="submit"
                   className="tt-btn tt-btn-dark sm:col-span-2"
+                  disabled={signupBusy}
                 >
-                  {t("nav.register")}
+                  {signupBusy ? t("auth.registering") : t("nav.register")}
                 </button>
               </form>
             )}
@@ -837,12 +1000,17 @@ function AuthLanding() {
 }
 
 export default function HomePage() {
+  const t = useTranslations();
   const { session, ready } = useSession();
 
-  // Never leave mobile stuck on a blank loading screen if hydration is slow.
-  // Guests see the login landing immediately; session appears once ready.
   if (!ready) {
-    return <AuthLanding />;
+    return (
+      <section className="tt-section">
+        <div className="tt-wrap py-16 text-center text-sm text-[var(--ink-muted)]">
+          {t("common.loading")}
+        </div>
+      </section>
+    );
   }
 
   if (!session) return <AuthLanding />;

@@ -1,11 +1,14 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { ExportButtons } from "@/components/ExportButtons";
+import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
 import { OWNER_SENSITIVE_ACCOUNTS } from "@/lib/accounting";
 import { toDateInputValue } from "@/lib/date-range";
@@ -30,6 +33,7 @@ function blankLine(): DraftLine {
 }
 
 export default function JournalPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db, refresh } = useDb();
   const isOwner = session ? canViewFinancials(session.role) : false;
@@ -45,6 +49,7 @@ export default function JournalPage() {
   const [billFile, setBillFile] = useState<File | null>(null);
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const accounts = useMemo(() => {
     if (!db) return [];
@@ -86,9 +91,14 @@ export default function JournalPage() {
 
   const exportOptions = useMemo(
     () => ({
-      title: "Journal",
+      title: t("accounts.journal"),
       filename: `journal-${today}.pdf`,
-      columns: ["Date", "Number", "Narration", "Total"],
+      columns: [
+        t("accounts.colDate"),
+        t("accounts.colNo"),
+        t("accounts.journalNarration"),
+        t("accounts.colTotal"),
+      ],
       rows: recent.map((v) => [
         v.date,
         v.number,
@@ -100,10 +110,10 @@ export default function JournalPage() {
         ),
       ]),
     }),
-    [recent, today]
+    [recent, t, today]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -117,9 +127,10 @@ export default function JournalPage() {
     setMsg("");
     setError("");
     if (!balanced) {
-      setError("Debits and credits must match");
+      setError(t("accounts.journalMustBalance"));
       return;
     }
+    setSaving(true);
     try {
       const voucherLines: VoucherLine[] = lines
         .filter((l) => l.accountId && (Number(l.amount) || 0) > 0)
@@ -128,7 +139,7 @@ export default function JournalPage() {
           const acct = accounts.find((a) => a.id === l.accountId);
           return {
             id: `vl_${crypto.randomUUID()}`,
-            itemLabel: l.note.trim() || acct?.name.en || "Journal line",
+            itemLabel: l.note.trim() || acct?.name.en || t("accounts.journalLine"),
             accountId: l.accountId,
             qty: 1,
             rate: amount,
@@ -137,7 +148,7 @@ export default function JournalPage() {
           };
         });
       if (voucherLines.length < 2) {
-        setError("Need at least one debit and one credit line");
+        setError(t("accounts.journalNeedLines"));
         return;
       }
 
@@ -167,30 +178,28 @@ export default function JournalPage() {
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
     <AccountsShell focusMode>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            Journal
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Double-entry adjustment. Debits must equal credits.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <ExportButtons options={exportOptions} disabled={!recent.length} />
-          <Link
-            href="/admin/accounts/expenses"
-            className="tt-btn tt-btn-outline"
-          >
-            Log expense
-          </Link>
-        </div>
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.journal")}
+        hint={t("accounts.journalHint")}
+        actions={
+          <>
+            <ExportButtons options={exportOptions} disabled={!recent.length} />
+            <Link
+              href="/admin/accounts/expenses"
+              className="tt-btn tt-btn-outline"
+            >
+              {t("accounts.logExpense")}
+            </Link>
+          </>
+        }
+      />
 
       {msg ? <p className="mt-3 text-sm text-[var(--ok)]">{msg}</p> : null}
       {error ? (
@@ -200,7 +209,7 @@ export default function JournalPage() {
       <form onSubmit={onSave} className="tt-panel mt-5 space-y-4 p-5">
         <div className="grid gap-3 sm:grid-cols-3">
           <div>
-            <label className="tt-label">Date</label>
+            <label className="tt-label">{t("common.date")}</label>
             <input
               type="date"
               className="tt-input"
@@ -210,22 +219,22 @@ export default function JournalPage() {
             />
           </div>
           <div className="sm:col-span-2">
-            <label className="tt-label">Narration</label>
+            <label className="tt-label">{t("accounts.journalNarration")}</label>
             <input
               className="tt-input"
               value={narration}
               onChange={(e) => setNarration(e.target.value)}
-              placeholder="Reason for this entry"
+              placeholder={t("accounts.journalNarrationPh")}
             />
           </div>
           <div className="sm:col-span-3">
-            <label className="tt-label">Party (optional)</label>
+            <label className="tt-label">{t("accounts.journalPartyOpt")}</label>
             <select
               className="tt-select max-w-md"
               value={partyId}
               onChange={(e) => setPartyId(e.target.value)}
             >
-              <option value="">None</option>
+              <option value="">{t("accounts.journalNone")}</option>
               {(db?.parties ?? [])
                 .filter((p) => p.active)
                 .map((p) => (
@@ -244,7 +253,7 @@ export default function JournalPage() {
               className="grid gap-2 border-b border-[var(--line)] pb-3 md:grid-cols-12"
             >
               <div className="sm:col-span-5">
-                <label className="tt-label">Account</label>
+                <label className="tt-label">{t("accounts.accountLabel")}</label>
                 <select
                   className="tt-select"
                   value={line.accountId}
@@ -257,7 +266,7 @@ export default function JournalPage() {
                   }
                   required
                 >
-                  <option value="">Select…</option>
+                  <option value="">{t("common.select")}</option>
                   {accounts.map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.code} · {a.name.en}
@@ -266,7 +275,7 @@ export default function JournalPage() {
                 </select>
               </div>
               <div className="sm:col-span-2">
-                <label className="tt-label">Side</label>
+                <label className="tt-label">{t("accounts.journalSide")}</label>
                 <select
                   className="tt-select"
                   value={line.side}
@@ -283,12 +292,12 @@ export default function JournalPage() {
                     )
                   }
                 >
-                  <option value="debit">Debit</option>
-                  <option value="credit">Credit</option>
+                  <option value="debit">{t("accounts.journalDebit")}</option>
+                  <option value="credit">{t("accounts.journalCredit")}</option>
                 </select>
               </div>
               <div className="sm:col-span-2">
-                <label className="tt-label">Amount</label>
+                <label className="tt-label">{t("accounts.journalAmount")}</label>
                 <NumberField
                   className="tt-input"
                   emptyAs={null}
@@ -306,7 +315,7 @@ export default function JournalPage() {
                 />
               </div>
               <div className="sm:col-span-3">
-                <label className="tt-label">Line note</label>
+                <label className="tt-label">{t("accounts.journalLineNote")}</label>
                 <input
                   className="tt-input"
                   value={line.note}
@@ -329,50 +338,49 @@ export default function JournalPage() {
             className="tt-btn tt-btn-outline"
             onClick={() => setLines((r) => [...r, blankLine()])}
           >
-            Add line
+            {t("accounts.journalAddLine")}
           </button>
           <div className="text-sm">
             Dr {formatInr(totals.debit)} · Cr {formatInr(totals.credit)}
             {!balanced ? (
               <span className="ml-2 text-[var(--danger)]">
-                Diff {formatInr(totals.diff)}
+                {t("accounts.journalDiff", { amount: formatInr(totals.diff) })}
               </span>
             ) : (
-              <span className="ml-2 text-[var(--ok)]">Balanced</span>
+              <span className="ml-2 text-[var(--ok)]">
+                {t("accounts.journalBalanced")}
+              </span>
             )}
           </div>
         </div>
 
-        <div>
-          <label className="tt-label">Attachment (optional)</label>
-          <input
-            type="file"
-            accept="image/*,.pdf"
-            className="tt-input"
-            onChange={(e) => setBillFile(e.target.files?.[0] || null)}
-          />
-        </div>
+        <FilePick
+          kind="photoOrPdf"
+          value={billFile}
+          onChange={(files) => setBillFile(files[0] || null)}
+          label={t("accounts.journalAttach")}
+        />
 
         <button
           type="submit"
           className="tt-btn tt-btn-dark"
-          disabled={!balanced}
+          disabled={!balanced || saving}
         >
-          Post journal
+          {saving ? t("accounts.saving") : t("accounts.postJournal")}
         </button>
       </form>
 
       <div className="tt-panel mt-5 overflow-x-auto">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
-          Recent journals
+          {t("accounts.journalRecent")}
         </p>
         <table className="tt-table min-w-[560px]">
           <thead>
             <tr>
-              <th>Date</th>
-              <th>Number</th>
-              <th>Narration</th>
-              <th>Lines</th>
+              <th>{t("accounts.colDate")}</th>
+              <th>{t("accounts.colNo")}</th>
+              <th>{t("accounts.journalNarration")}</th>
+              <th>{t("accounts.journalColLines")}</th>
             </tr>
           </thead>
           <tbody>

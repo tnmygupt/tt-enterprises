@@ -4,13 +4,15 @@ import { useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { itemPurchaseReport, itemSalesReport } from "@/lib/accounting";
 import { ExportButtons } from "@/components/ExportButtons";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import { canViewFinancials, checkCapability } from "@/lib/store/db";
-import { toDateInputValue } from "@/lib/date-range";
 
 export default function ItemSalesPurchaseReportPage() {
   const t = useTranslations();
@@ -19,9 +21,9 @@ export default function ItemSalesPurchaseReportPage() {
   const { db } = useDb();
   const showPurchase = session ? canViewFinancials(session.role) : false;
   const [mode, setMode] = useState<"sales" | "purchase">("sales");
-  const today = toDateInputValue();
-  const [from, setFrom] = useState(today);
-  const [to, setTo] = useState(today);
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
 
   const effectiveMode =
     !showPurchase && mode === "purchase" ? "sales" : mode;
@@ -52,7 +54,7 @@ export default function ItemSalesPurchaseReportPage() {
     };
   }, [effectiveMode, from, locale, rows, t, to]);
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -62,11 +64,13 @@ export default function ItemSalesPurchaseReportPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {effectiveMode === "sales"
-          ? t("accounts.salesByItem")
-          : t("accounts.purchaseByItem")}
-      </h1>
+      <AccountsPageHeader
+        title={
+          effectiveMode === "sales"
+            ? t("accounts.salesByItem")
+            : t("accounts.purchaseByItem")
+        }
+      />
       <div className="mt-4 flex flex-wrap gap-3">
         <select
           className="tt-select"
@@ -78,24 +82,13 @@ export default function ItemSalesPurchaseReportPage() {
             <option value="purchase">{t("accounts.purchaseByItem")}</option>
           ) : null}
         </select>
-        <input
-          type="date"
-          className="tt-input"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <input
-          type="date"
-          className="tt-input"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
+        <DateRangeBar value={range} onChange={setRange} />
         <ExportButtons options={exportOptions} />
         <Link
           href="/admin/accounts/reports/sales-analysis"
           className="tt-btn tt-btn-outline"
         >
-          Sales analysis
+          {t("accounts.salesAnalysis")}
         </Link>
       </div>
       <div className="tt-panel mt-4 overflow-x-auto">
@@ -120,9 +113,7 @@ export default function ItemSalesPurchaseReportPage() {
           </tbody>
         </table>
         {!rows.length ? (
-          <p className="p-4 text-sm text-[var(--ink-muted)]">
-            {t("common.empty")}
-          </p>
+          <AccountsEmpty message={t("common.empty")} />
         ) : null}
       </div>
     </AccountsShell>

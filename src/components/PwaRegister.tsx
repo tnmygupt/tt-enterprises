@@ -94,7 +94,7 @@ export function PwaRegister() {
   if (!showInstall && !pushMsg && !showIosHint) return null;
 
   return (
-    <div className="pointer-events-none fixed bottom-4 left-0 right-0 z-[60] flex justify-center px-3 print:hidden">
+    <div className="tt-bottom-toast pointer-events-none flex justify-center print:hidden">
       <div className="pointer-events-auto flex max-w-lg flex-col gap-2">
         {pushMsg ? (
           <p className="rounded-lg bg-[var(--brand)] px-3 py-2 text-center text-sm font-medium text-white shadow-lg">

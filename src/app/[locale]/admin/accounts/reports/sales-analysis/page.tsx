@@ -1,14 +1,16 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { ExportButtons } from "@/components/ExportButtons";
 import { BarChart } from "@/components/charts/BarChart";
 import { LineChart } from "@/components/charts/LineChart";
 import { salesAnalysis } from "@/lib/accounting";
-import { toDateInputValue } from "@/lib/date-range";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import { checkCapability } from "@/lib/store/db";
@@ -16,12 +18,12 @@ import { checkCapability } from "@/lib/store/db";
 type Dim = "item" | "customer" | "category";
 
 export default function SalesAnalysisPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db } = useDb();
-  const today = toDateInputValue();
-  const monthStart = today.slice(0, 8) + "01";
-  const [from, setFrom] = useState(monthStart);
-  const [to, setTo] = useState(today);
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
   const [dim, setDim] = useState<Dim>("item");
 
   const data = useMemo(() => {
@@ -36,12 +38,15 @@ export default function SalesAnalysisPage() {
     );
   }, [db, from, to]);
 
-  const tableRows =
-    dim === "item"
-      ? data?.byItem ?? []
-      : dim === "customer"
-        ? data?.byCustomer ?? []
-        : data?.byCategory ?? [];
+  const tableRows = useMemo(
+    () =>
+      dim === "item"
+        ? data?.byItem ?? []
+        : dim === "customer"
+          ? data?.byCustomer ?? []
+          : data?.byCategory ?? [],
+    [data, dim]
+  );
 
   const exportOptions = useMemo(
     () => ({
@@ -59,7 +64,7 @@ export default function SalesAnalysisPage() {
     [dim, from, to, tableRows]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -69,48 +74,33 @@ export default function SalesAnalysisPage() {
 
   return (
     <AccountsShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            Sales analysis
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            By item, customer or category — with monthly trend.
-          </p>
-        </div>
-        <Link href="/admin/accounts/item-sales" className="tt-btn tt-btn-outline">
-          Classic by-item
-        </Link>
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.salesAnalysis")}
+        hint={t("accounts.salesAnalysisHint")}
+        actions={
+          <Link href="/admin/accounts/item-sales" className="tt-btn tt-btn-outline">
+            {t("accounts.classicByItem")}
+          </Link>
+        }
+      />
 
       <div className="mt-4 flex flex-wrap gap-3">
-        <input
-          type="date"
-          className="tt-input"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <input
-          type="date"
-          className="tt-input"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
+        <DateRangeBar value={range} onChange={setRange} />
         <select
           className="tt-select"
           value={dim}
           onChange={(e) => setDim(e.target.value as Dim)}
         >
-          <option value="item">By item</option>
-          <option value="customer">By customer</option>
-          <option value="category">By category</option>
+          <option value="item">{t("accounts.byItem")}</option>
+          <option value="customer">{t("accounts.byCustomer")}</option>
+          <option value="category">{t("accounts.byCategory")}</option>
         </select>
         <ExportButtons options={exportOptions} />
       </div>
 
       <div className="mt-5 grid gap-4 lg:grid-cols-2">
         <div className="tt-panel p-4">
-          <p className="mb-2 text-sm font-semibold">Monthly trend</p>
+          <p className="mb-2 text-sm font-semibold">{t("accounts.monthlyTrend")}</p>
           <LineChart
             data={(data?.byMonth ?? []).map((m) => ({
               label: m.month,

@@ -13,6 +13,8 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/en?v=4&source=pwa",
     scope: "/",
     display: "standalone",
+    display_override: ["standalone", "minimal-ui", "browser"],
+    launch_handler: { client_mode: ["navigate-existing", "auto"] },
     // Do NOT set orientation — unsupported on iOS and can break home-screen launch
     background_color: "#f4f7f8",
     theme_color: "#0b7ea4",

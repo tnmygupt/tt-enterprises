@@ -5,7 +5,7 @@ import { TransportInput } from "@/components/TransportInput";
 import { NumberField } from "@/components/NumberField";
 import { useLocale, useTranslations } from "next-intl";
 import { Link, useRouter } from "@/i18n/routing";
-import { useCart, useDb, useSession } from "@/lib/hooks";
+import { retryCloudCatalog, useCart, useDb, useSession } from "@/lib/hooks";
 import {
   buildOrderLine,
   formatInr,
@@ -20,7 +20,15 @@ import {
   shippingWeightExcludingJhal,
   updateCustomerProfile,
 } from "@/lib/store/db";
-import { pickBestOrderDiscount } from "@/lib/schemes";
+import {
+  lineDiscountedRate,
+  lineOrderDiscountTier,
+  orderDiscountMathLabel,
+  orderDiscountMathQty,
+  orderDiscountReceiptLabel,
+  previewDealerOrderDiscount,
+} from "@/lib/schemes";
+import { OrderDiscountExplain } from "@/components/OrderDiscountExplain";
 
 export default function CheckoutPage() {
   const t = useTranslations();
@@ -101,16 +109,23 @@ export default function CheckoutPage() {
   const jhalQty = db ? countOrderJhals(orderLines, db.products) : 0;
   const shipping = db ? calcShipping(db, subtotal, totalWeight, jhalQty) : 0;
   const truckOk = db ? canRequestFullTruck(db, subtotal, totalWeight) : false;
-  const schemeBest =
+  const schemePreview =
     db && user
-      ? pickBestOrderDiscount(
+      ? previewDealerOrderDiscount(
           db.schemes,
           user.assignedSchemeIds,
           orderLines,
-          db.products
+          db.products,
+          locale
         )
-      : null;
+      : { best: null, view: null };
+  const schemeBest = schemePreview.best;
   const schemeDiscount = schemeBest?.amount ?? 0;
+  const schemeQty =
+    schemeBest && db
+      ? orderDiscountMathQty(schemeBest.scheme, orderLines, db.products)
+      : 0;
+  const schemeMath = orderDiscountMathLabel(schemeBest, schemeQty, locale);
   const maxWallet = Math.min(
     user?.walletBalance ?? 0,
     Math.max(0, subtotal + shipping - schemeDiscount)
@@ -156,14 +171,6 @@ export default function CheckoutPage() {
     }
     setBusy(true);
     try {
-      updateCustomerProfile(session.id, {
-        name: name.trim(),
-        phone: phone.trim(),
-        address: address.trim(),
-        pincode: pin,
-        gstOrAadhar: gstOrAadhar.trim(),
-        transport: transport.trim(),
-      });
       const order = await createEstimateOrderAndSync({
         userId: session.id,
         cart: checkoutCart,
@@ -177,10 +184,26 @@ export default function CheckoutPage() {
         fullTruckRequested: fullTruck && truckOk,
         locale,
       });
+      try {
+        updateCustomerProfile(session.id, {
+          name: name.trim(),
+          phone: phone.trim(),
+          address: address.trim(),
+          pincode: pin,
+          gstOrAadhar: gstOrAadhar.trim(),
+          transport: transport.trim(),
+        });
+      } catch {
+        /* order already placed */
+      }
       setPlacedOrderId(order.id);
       router.replace(`/orders/${order.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed");
+      const msg = err instanceof Error ? err.message : "Failed";
+      setError(msg);
+      if (/stock|available/i.test(msg)) {
+        void retryCloudCatalog();
+      }
       setBusy(false);
     }
   };
@@ -241,13 +264,32 @@ export default function CheckoutPage() {
       <div className="tt-wrap grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
         <aside className="tt-panel order-1 h-fit p-5 lg:order-2">
           <h2 className="font-semibold">
-            {locale === "hi" ? "सारांश" : "Summary"}
+            {t("shop.checkoutSummary")}
           </h2>
+          {checkoutCart.length ? (
+            <Link
+              href="/quick-order"
+              className="mt-1 inline-block text-sm font-semibold text-[var(--brand)] hover:underline"
+            >
+              {t("checkout.editCart")}
+            </Link>
+          ) : null}
           <ul className="mt-4 space-y-3 text-sm">
             {lines.map(({ key, line: l }) => {
               const size =
                 l.size?.[locale] || l.variationLabel?.[locale] || "";
               const color = l.colorName?.[locale] || "";
+              const product = db.products.find((p) => p.id === l.productId);
+              const lineTier = lineOrderDiscountTier(schemeBest, l);
+              const rates =
+                lineTier && product
+                  ? lineDiscountedRate(
+                      schemeBest!.scheme,
+                      lineTier,
+                      l,
+                      product
+                    )
+                  : null;
               const meta = [size, color].filter(Boolean).join(" · ");
               return (
                 <li key={key} className="flex justify-between gap-3">
@@ -258,6 +300,32 @@ export default function CheckoutPage() {
                     {meta ? (
                       <span className="block text-xs text-[var(--ink-muted)]">
                         {meta}
+                      </span>
+                    ) : null}
+                    {rates && rates.discountedRate < rates.listRate ? (
+                      <span className="block text-xs text-[var(--ok)]">
+                        <span className="text-[var(--ink-muted)] line-through">
+                          {formatInr(rates.listRate, locale)}
+                          {product?.pricingMode === "pcs"
+                            ? locale === "hi"
+                              ? "/पीस"
+                              : "/pc"
+                            : locale === "hi"
+                              ? "/किग्रा"
+                              : "/kg"}
+                        </span>
+                        {" → "}
+                        {formatInr(rates.discountedRate, locale)}
+                        {product?.pricingMode === "pcs"
+                          ? locale === "hi"
+                            ? "/पीस"
+                            : "/pc"
+                          : locale === "hi"
+                            ? "/किग्रा"
+                            : "/kg"}
+                        {locale === "hi"
+                          ? " · अनुमान"
+                          : " · estimate"}
                       </span>
                     ) : null}
                   </span>
@@ -280,18 +348,27 @@ export default function CheckoutPage() {
             {schemeDiscount > 0 ? (
               <div className="tt-kv-row text-[var(--ok)]">
                 <span>
-                  {t("common.schemeDiscount")}
-                  {schemeBest?.scheme.name?.[locale] ||
-                  schemeBest?.scheme.name?.en
-                    ? ` · ${
-                        schemeBest.scheme.name[locale] ||
-                        schemeBest.scheme.name.en
-                      }`
+                  {t("schemes.orderDiscountEstimate")}
+                  {schemeMath ? ` · ${schemeMath}` : schemeBest
+                    ? ` · ${orderDiscountReceiptLabel(schemeBest, locale)}`
                     : ""}
+                  <span className="mt-0.5 block text-[11px] font-normal text-[var(--ink-muted)]">
+                    {t("schemes.orderDiscountAfterWeight")}
+                  </span>
                 </span>
                 <span className="tabular-nums">
                   -{formatInr(schemeDiscount, locale)}
                 </span>
+              </div>
+            ) : null}
+            {schemePreview.view ? (
+              <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-3">
+                <p className="text-xs font-bold uppercase tracking-wide text-[var(--brand)]">
+                  {t("schemes.orderDiscount")}
+                </p>
+                <div className="mt-2">
+                  <OrderDiscountExplain view={schemePreview.view} compact />
+                </div>
               </div>
             ) : null}
             <div className="tt-kv-row">
@@ -330,7 +407,7 @@ export default function CheckoutPage() {
                 className="tt-input"
                 value={gstOrAadhar}
                 onChange={(e) => setGstOrAadhar(e.target.value)}
-                placeholder="GSTIN / Aadhaar"
+                placeholder={t("checkout.gstPlaceholder")}
               />
             </div>
             <div>
@@ -368,7 +445,7 @@ export default function CheckoutPage() {
                 type="tel"
                 inputMode="numeric"
                 maxLength={6}
-                placeholder="6-digit PIN"
+                placeholder={t("auth.pincodePlaceholder")}
                 value={pincode}
                 onChange={(e) =>
                   setPincode(e.target.value.replace(/\D/g, "").slice(0, 6))
@@ -411,6 +488,19 @@ export default function CheckoutPage() {
                 >
                   {t("checkout.applyWallet")}
                 </button>
+                {maxWallet > 0 ? (
+                  <button
+                    type="button"
+                    className="tt-btn tt-btn-dark"
+                    onClick={() => {
+                      setError("");
+                      setWalletApplied(maxWallet);
+                      setWalletInput(String(maxWallet));
+                    }}
+                  >
+                    {t("checkout.useFullWallet")}
+                  </button>
+                ) : null}
                 {walletApplied > 0 ? (
                   <button
                     type="button"

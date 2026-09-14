@@ -21,7 +21,7 @@ export default function AdminShippingPage() {
   const [rules, setRules] = useState<ShippingRule[] | null>(null);
   const current = rules ?? db?.shippingRules ?? [];
 
-  if (!session || !checkCapability(session, db?.users, "manage_shipping")) {
+  if (!session || !checkCapability(session, db, "manage_shipping")) {
     return (
       <AdminShell>
         <AdminAccessDenied />

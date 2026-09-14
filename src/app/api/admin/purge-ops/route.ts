@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  cloudGetAppDb,
-  cloudPutAppDb,
-  createServerSupabase,
-} from "@/lib/server/app-db";
+import { cloudGetAppDb, cloudPutAppDb } from "@/lib/server/app-db";
 import {
   clearOrderHistoryKeepUsers,
   purgeOpsDataKeepCatalog,
@@ -41,8 +37,8 @@ export async function POST(req: NextRequest) {
 
   if (!isSupabaseConfigured()) {
     return NextResponse.json(
-      { error: "Supabase not configured" },
-      { status: 503 }
+      { error: "Cloud database not configured" },
+      { status: 503 },
     );
   }
 
@@ -63,19 +59,10 @@ export async function POST(req: NextRequest) {
         error:
           'confirm must be "CLEAR_ORDER_HISTORY" or "PURGE_OPS_KEEP_CATALOG"',
       },
-      { status: 400 }
+      { status: 400 },
     );
   }
-
-  const supabase = createServerSupabase();
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Supabase not configured" },
-      { status: 503 }
-    );
-  }
-
-  const { db, updatedAt, error } = await cloudGetAppDb(supabase);
+  const { db, updatedAt, error } = await cloudGetAppDb();
   if (error) {
     return NextResponse.json({ error }, { status: 500 });
   }
@@ -86,16 +73,15 @@ export async function POST(req: NextRequest) {
   const { db: next, result } =
     confirm === "CLEAR_ORDER_HISTORY"
       ? clearOrderHistoryKeepUsers(db)
-      : purgeOpsDataKeepCatalog(db, String(body.keepPhone || "").trim());
+      : purgeOpsDataKeepCatalog(db, String(body.keepPhone || "").trim(), {
+          clearCatalog: false,
+          keepAllOwners: true,
+        });
   if (!result.ok) {
     return NextResponse.json(result, { status: 400 });
   }
 
-  const put = await cloudPutAppDb(
-    supabase,
-    sanitizeDbForCloud(next),
-    updatedAt
-  );
+  const put = await cloudPutAppDb(sanitizeDbForCloud(next), updatedAt);
   if (!put.ok) {
     return NextResponse.json(
       {
@@ -104,7 +90,7 @@ export async function POST(req: NextRequest) {
           : put.error || "Write failed",
         conflict: !!put.conflict,
       },
-      { status: put.conflict ? 409 : 500 }
+      { status: put.conflict ? 409 : 500 },
     );
   }
 

@@ -7,10 +7,7 @@ type TallyItem = {
   productId: string;
   variationId?: string;
   tallyItemId: string;
-  /** Website bundles = Tally Alt Qty */
   stock: number;
-  /** Website kg/pcs = Tally base qty */
-  stockSecondary?: number;
 };
 
 function syncFile(dir: string) {
@@ -18,13 +15,9 @@ function syncFile(dir: string) {
 }
 
 function authorize(req: NextRequest): boolean {
-  const expected = process.env.TALLY_SYNC_KEY;
-  if (!expected) {
-    // Never accept a hardcoded default in production.
-    if (process.env.NODE_ENV === "production") return false;
-    return req.headers.get("x-tally-sync-key") === "tt-enterprises-tally-dev-key";
-  }
-  return req.headers.get("x-tally-sync-key") === expected;
+  const key = req.headers.get("x-tally-sync-key");
+  const expected = process.env.TALLY_SYNC_KEY || "tt-enterprises-tally-dev-key";
+  return key === expected;
 }
 
 /**
@@ -43,7 +36,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Expected array of { productId, variationId?, tallyItemId, stock, stockSecondary? } — stock = Tally Alt Qty (bundles)",
+            "Expected array of { productId, variationId?, tallyItemId, stock }",
         },
         { status: 400 }
       );
@@ -62,10 +55,6 @@ export async function POST(req: NextRequest) {
         variationId: i.variationId || undefined,
         tallyItemId: i.tallyItemId,
         stock: Number(i.stock),
-        stockSecondary:
-          i.stockSecondary != null && Number.isFinite(Number(i.stockSecondary))
-            ? Number(i.stockSecondary)
-            : undefined,
       }));
 
     const syncedAt = new Date().toISOString();

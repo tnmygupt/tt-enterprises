@@ -5,6 +5,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AdminShell } from "@/components/AdminShell";
+import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
 import { RichTextEditor, sanitizeHtml, stripHtml, hasRichContent } from "@/components/RichTextEditor";
 import { categoryLabel } from "@/lib/categories";
@@ -16,12 +17,23 @@ import {
 import { useDb, useSession } from "@/lib/hooks";
 import { asLocalized, loc } from "@/lib/localized";
 import { normalizeSizeKey } from "@/lib/media";
-import { formatInr } from "@/lib/pricing";
+import {
+  applySqftComputedRate,
+  catalogFromRate,
+  formatInr,
+  isPackCountUnit,
+  isSqftUnit,
+  ratePerPacket,
+  ratePerPiece,
+  sqftPerPiece,
+  sqftSizeLabel,
+} from "@/lib/pricing";
 import { autoFillLocalized } from "@/lib/translate-client";
 import { uploadProductMedia } from "@/lib/upload-media";
 import {
   deleteProduct,
   checkCapability,
+  setProductHomePlacement,
   upsertCategory,
   upsertProduct,
 } from "@/lib/store/db";
@@ -45,13 +57,34 @@ function slugifyCategory(input: string): string {
   return base || `cat_${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function blankVariation(product: Pick<Product, "baseRate" | "baseWeightKg" | "code">): ProductVariation {
+function blankVariation(
+  product: Pick<
+    Product,
+    | "baseRate"
+    | "baseWeightKg"
+    | "code"
+    | "unit"
+    | "lengthFt"
+    | "widthFt"
+    | "pcsPerPacket"
+    | "ratePerSqft"
+  >
+): ProductVariation {
+  const lengthFt = product.lengthFt ?? 0;
+  const widthFt = product.widthFt ?? 0;
+  const sizeEn = isSqftUnit(product.unit)
+    ? sqftSizeLabel(lengthFt, widthFt)
+    : "";
   return {
     id: `var_${crypto.randomUUID()}`,
-    label: { en: "Standard", hi: "स्टैंडर्ड" },
-    size: { en: "", hi: "" },
+    label: { en: sizeEn || "Standard", hi: sizeEn || "स्टैंडर्ड" },
+    size: { en: sizeEn, hi: sizeEn },
     sku: product.code ? `${product.code}-1` : "",
     rate: product.baseRate || 0,
+    lengthFt: product.lengthFt,
+    widthFt: product.widthFt,
+    pcsPerPacket: product.pcsPerPacket,
+    ratePerSqft: product.ratePerSqft ?? product.baseRate,
     weightKg: product.baseWeightKg ?? 1,
     stock: 0,
   };
@@ -290,6 +323,8 @@ export default function AdminProductsPage() {
   const { session } = useSession();
   const { db, refresh } = useDb();
   const [editing, setEditing] = useState<Product | null>(null);
+  const [homeNew, setHomeNew] = useState(false);
+  const [homePromo, setHomePromo] = useState(false);
   const [q, setQ] = useState("");
   const [bulkSizes, setBulkSizes] = useState("");
   const [bulkMsg, setBulkMsg] = useState("");
@@ -388,23 +423,39 @@ export default function AdminProductsPage() {
         if (!v.label.en.trim() && !v.size?.en?.trim()) {
           throw new Error("Each variation needs a label or size");
         }
-        if (!(v.rate > 0)) throw new Error("Each variation needs a rate > 0");
+        if (!(v.rate > 0) && !isSqftUnit(editing.unit)) {
+          throw new Error("Each variation needs a rate > 0");
+        }
+        if (isSqftUnit(editing.unit)) {
+          const lengthFt = Number(v.lengthFt ?? editing.lengthFt) || 0;
+          const widthFt = Number(v.widthFt ?? editing.widthFt) || 0;
+          const pcs = Number(v.pcsPerPacket ?? editing.pcsPerPacket) || 0;
+          const rps = Number(v.ratePerSqft ?? editing.ratePerSqft) || 0;
+          if (!(lengthFt > 0) || !(widthFt > 0)) {
+            throw new Error("Sq/ft sizes need length and width in feet");
+          }
+          if (!(pcs > 0)) {
+            throw new Error("Sq/ft needs pieces per packet > 0");
+          }
+          if (!(rps > 0)) {
+            throw new Error("Sq/ft needs ₹ per sqft > 0");
+          }
+        }
         const unitWt =
           v.weightKg != null && v.weightKg > 0
             ? v.weightKg
             : editing.baseWeightKg ?? 0;
-        // pkt/pcs need pack weight for shipping; kg/jhal need it for billing
+        // pkt/pcs/sqft need pack weight for shipping; kg/jhal need it for billing
         if (
-          (editing.unit === "pkt" ||
-            editing.unit === "pcs" ||
+          (isPackCountUnit(editing.unit) ||
             editing.unit === "jhal" ||
             editing.unit === "kg" ||
             editing.pricingMode === "bundle") &&
           !(unitWt > 0)
         ) {
           throw new Error(
-            editing.unit === "pkt" || editing.unit === "pcs"
-              ? "Pkt/pc needs pack weight (kg) on each size — used for shipping"
+            isPackCountUnit(editing.unit)
+              ? "Pkt/pc/sqft needs pack weight (kg) on each size — used for shipping"
               : "Each variation needs weight (kg) > 0"
           );
         }
@@ -505,12 +556,11 @@ export default function AdminProductsPage() {
 
       const p: Product = {
         ...editing,
-        pricingMode:
-          editing.unit === "pkt" || editing.unit === "pcs"
-            ? "pcs"
-            : editing.unit === "jhal" || editing.unit === "kg"
-              ? "bundle"
-              : editing.pricingMode,
+        pricingMode: isPackCountUnit(editing.unit)
+          ? "pcs"
+          : editing.unit === "jhal" || editing.unit === "kg"
+            ? "bundle"
+            : editing.pricingMode,
         name,
         itemName,
         description,
@@ -522,36 +572,55 @@ export default function AdminProductsPage() {
               }
             : undefined,
         colors,
-        variations: variations.map((v, idx) => ({
-          ...v,
-          label: {
-            en: v.size?.en || v.label?.en || `${idx + 1}`,
-            hi:
-              v.size?.hi ||
-              v.label?.hi ||
-              v.size?.en ||
-              v.label?.en ||
-              `${idx + 1}`,
-          },
-          size: {
-            en: v.size?.en || v.label?.en || `${idx + 1}`,
-            hi:
-              v.size?.hi ||
-              v.label?.hi ||
-              v.size?.en ||
-              v.label?.en ||
-              `${idx + 1}`,
-          },
-          sku: v.sku || `${editing.code}-V${idx + 1}`,
-          rate: v.rate || editing.baseRate,
-          weightKg:
-            v.weightKg != null && v.weightKg > 0
-              ? v.weightKg
-              : editing.baseWeightKg ?? 1,
-        })),
+        variations: variations.map((v, idx) => {
+          const row: ProductVariation = {
+            ...v,
+            label: {
+              en: v.size?.en || v.label?.en || `${idx + 1}`,
+              hi:
+                v.size?.hi ||
+                v.label?.hi ||
+                v.size?.en ||
+                v.label?.en ||
+                `${idx + 1}`,
+            },
+            size: {
+              en: v.size?.en || v.label?.en || `${idx + 1}`,
+              hi:
+                v.size?.hi ||
+                v.label?.hi ||
+                v.size?.en ||
+                v.label?.en ||
+                `${idx + 1}`,
+            },
+            sku: v.sku || `${editing.code}-V${idx + 1}`,
+            rate: v.rate || editing.baseRate,
+            weightKg:
+              v.weightKg != null && v.weightKg > 0
+                ? v.weightKg
+                : editing.baseWeightKg ?? 1,
+          };
+          return isSqftUnit(editing.unit)
+            ? applySqftComputedRate(editing, row)
+            : row;
+        }),
       };
-      if (p.variations[0]) p.baseRate = p.variations[0].rate;
-      upsertProduct(p);
+      if (p.variations[0]) {
+        p.baseRate = p.variations[0].rate;
+        if (isSqftUnit(p.unit)) {
+          p.ratePerSqft = p.variations[0].ratePerSqft;
+          p.lengthFt = p.variations[0].lengthFt;
+          p.widthFt = p.variations[0].widthFt;
+          p.pcsPerPacket = p.variations[0].pcsPerPacket;
+        }
+      }
+      if (session?.role === "super_admin") {
+        p.featured = homeNew;
+        upsertProduct(p);
+        setProductHomePlacement(p.id, { homeNew, homePromo });
+      } else {
+        upsertProduct(p);
+      }
       setEditing(null);
       refresh();
     } catch (err) {
@@ -561,7 +630,7 @@ export default function AdminProductsPage() {
     }
   };
 
-  if (!session || !checkCapability(session, db?.users, "manage_products")) {
+  if (!session || !checkCapability(session, db, "manage_products")) {
     return (
       <AdminShell>
         <AdminAccessDenied />
@@ -609,17 +678,22 @@ export default function AdminProductsPage() {
             </button>
           ) : (
             <>
-              {session.role === "super_admin" ? (
+                {session?.role === "super_admin" ? (
+                <Link href="/admin/home" className="tt-btn tt-btn-outline">
+                  {t("admin.homePage")}
+                </Link>
+                ) : null}
                 <Link href="/admin/rates" className="tt-btn tt-btn-outline">
                   {t("admin.rates")}
                 </Link>
-              ) : null}
               <button
                 type="button"
                 className="tt-btn tt-btn-dark"
                 onClick={() => {
                   const firstCat = activeCategories[0]?.id ?? "";
                   setEditing(blankProduct(firstCat));
+                  setHomeNew(false);
+                  setHomePromo(false);
                   setBulkSizes("");
                   setBulkMsg("");
                   if (!firstCat) {
@@ -677,10 +751,7 @@ export default function AdminProductsPage() {
               <tbody>
                 {rows.map((p) => {
                   const stock = productStockSummary(p);
-                  const rates = p.variations.map((v) => v.rate).filter((r) => r > 0);
-                  const minRate = rates.length
-                    ? Math.min(...rates)
-                    : p.baseRate;
+                  const minRate = catalogFromRate(p);
                   return (
                     <tr key={p.id}>
                       <td>
@@ -706,9 +777,11 @@ export default function AdminProductsPage() {
                           : "—"}
                       </td>
                       <td className="text-sm capitalize">
-                        {p.pricingMode === "bundle"
-                          ? "rate × kg"
-                          : "rate × qty"}
+                        {p.unit === "sqft"
+                          ? "₹/sqft → ₹/pkt"
+                          : p.pricingMode === "bundle"
+                            ? "rate × kg"
+                            : "rate × qty"}
                       </td>
                       <td>{formatInr(minRate, locale)}</td>
                       <td className="text-sm">
@@ -726,7 +799,19 @@ export default function AdminProductsPage() {
                         <button
                           type="button"
                           className="text-[var(--brand)]"
-                          onClick={() => setEditing(cloneForEdit(p))}
+                          onClick={() => {
+                            setEditing(cloneForEdit(p));
+                            setHomeNew(
+                              (db?.settings.homeNewProductIds ?? []).includes(
+                                p.id
+                              )
+                            );
+                            setHomePromo(
+                              (db?.settings.homePromoProductIds ?? []).includes(
+                                p.id
+                              )
+                            );
+                          }}
                         >
                           {t("common.edit")}
                         </button>
@@ -736,6 +821,8 @@ export default function AdminProductsPage() {
                           onClick={() => {
                             const codes = (db?.products ?? []).map((x) => x.code);
                             setEditing(duplicateProductForEdit(p, codes));
+                            setHomeNew(false);
+                            setHomePromo(false);
                             setBulkSizes("");
                             setBulkMsg("");
                             setError("");
@@ -1067,8 +1154,8 @@ export default function AdminProductsPage() {
                     setEditing({
                       ...editing,
                       unit,
-                      // pkt/pcs = rate × qty; kg/jhal = rate × weight
-                      ...(unit === "pkt" || unit === "pcs"
+                      // pkt/pcs/sqft = rate × qty; kg/jhal = rate × weight
+                      ...(isPackCountUnit(unit)
                         ? { pricingMode: "pcs" as const }
                         : unit === "jhal" || unit === "kg"
                           ? { pricingMode: "bundle" as const }
@@ -1079,6 +1166,7 @@ export default function AdminProductsPage() {
                   <option value="kg">kg</option>
                   <option value="pcs">pcs</option>
                   <option value="pkt">pkt/pc</option>
+                  <option value="sqft">sq/ft</option>
                   <option value="jhal">jhal</option>
                 </select>
               </div>
@@ -1089,8 +1177,7 @@ export default function AdminProductsPage() {
                   value={editing.pricingMode}
                   disabled={
                     editing.unit === "jhal" ||
-                    editing.unit === "pcs" ||
-                    editing.unit === "pkt" ||
+                    isPackCountUnit(editing.unit) ||
                     editing.unit === "kg"
                   }
                   onChange={(e) =>
@@ -1104,7 +1191,7 @@ export default function AdminProductsPage() {
                     kg / jhal = rate × weight (kg)
                   </option>
                   <option value="pcs">
-                    pkt / pcs = qty × rate per pc
+                    pkt / pcs / sqft = qty × packet or pc rate
                   </option>
                 </select>
                 {editing.unit === "jhal" ? (
@@ -1120,17 +1207,34 @@ export default function AdminProductsPage() {
                     weighed on the slip.
                   </p>
                 ) : null}
+                {isSqftUnit(editing.unit) ? (
+                  <p className="mt-1 text-[11px] text-[var(--ink-muted)]">
+                    Enter L × W (ft), pcs in a packet, and ₹/sqft. Bill is
+                    packets × ₹/pkt. Shipping uses pack weight × packets.
+                  </p>
+                ) : null}
               </div>
               <div>
-                <label className="tt-label">Default rate (₹)</label>
+                <label className="tt-label">
+                  {isSqftUnit(editing.unit)
+                    ? "Default ₹ / sqft"
+                    : "Default rate (₹)"}
+                </label>
                 <NumberField
                   className="tt-input"
                   emptyAs={null}
-                  value={editing.baseRate}
+                  value={
+                    isSqftUnit(editing.unit)
+                      ? editing.ratePerSqft ?? editing.baseRate
+                      : editing.baseRate
+                  }
                   onValueChange={(v) =>
                     setEditing({
                       ...editing,
                       baseRate: typeof v === "number" ? v : 0,
+                      ...(isSqftUnit(editing.unit)
+                        ? { ratePerSqft: typeof v === "number" ? v : 0 }
+                        : {}),
                     })
                   }
                 />
@@ -1140,7 +1244,7 @@ export default function AdminProductsPage() {
               </div>
               <div>
                 <label className="tt-label">
-                  {editing.unit === "pkt" || editing.unit === "pcs"
+                  {isPackCountUnit(editing.unit)
                     ? "Pack weight for shipping (kg) *"
                     : "Default weight / bundle (kg)"}
                 </label>
@@ -1158,11 +1262,63 @@ export default function AdminProductsPage() {
                   }
                 />
                 <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                  {editing.unit === "pkt" || editing.unit === "pcs"
+                  {isPackCountUnit(editing.unit)
                     ? "Per pack — bill is qty × rate; shipping uses this × qty on the weight slab"
                     : "Default for new sizes — existing size weights stay independent"}
                 </p>
               </div>
+              {isSqftUnit(editing.unit) ? (
+                <>
+                  <div>
+                    <label className="tt-label">Default length (ft)</label>
+                    <NumberField
+                      className="tt-input"
+                      min={0}
+                      step={0.01}
+                      emptyAs={null}
+                      value={editing.lengthFt ?? ""}
+                      onValueChange={(v) =>
+                        setEditing({
+                          ...editing,
+                          lengthFt: v === "" ? undefined : v,
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="tt-label">Default width (ft)</label>
+                    <NumberField
+                      className="tt-input"
+                      min={0}
+                      step={0.01}
+                      emptyAs={null}
+                      value={editing.widthFt ?? ""}
+                      onValueChange={(v) =>
+                        setEditing({
+                          ...editing,
+                          widthFt: v === "" ? undefined : v,
+                        })
+                      }
+                    />
+                  </div>
+                  <div>
+                    <label className="tt-label">Default pcs / packet</label>
+                    <NumberField
+                      className="tt-input"
+                      min={0}
+                      integer
+                      emptyAs={null}
+                      value={editing.pcsPerPacket ?? ""}
+                      onValueChange={(v) =>
+                        setEditing({
+                          ...editing,
+                          pcsPerPacket: v === "" ? undefined : v,
+                        })
+                      }
+                    />
+                  </div>
+                </>
+              ) : null}
               <div>
                 <label className="tt-label">GSM</label>
                 <NumberField
@@ -1252,6 +1408,23 @@ export default function AdminProductsPage() {
                   }
                 />
               </div>
+              <div>
+                <label className="tt-label">Lead time (days)</label>
+                <NumberField
+                  className="tt-input"
+                  min={0}
+                  integer
+                  emptyAs={null}
+                  value={editing.leadTimeDays ?? ""}
+                  placeholder="Company default"
+                  onValueChange={(v) =>
+                    setEditing({
+                      ...editing,
+                      leadTimeDays: v === "" ? undefined : v,
+                    })
+                  }
+                />
+              </div>
               <div className="sm:col-span-2">
                 <label className="tt-label">Preferred supplier (auto PO)</label>
                 <select
@@ -1331,7 +1504,7 @@ export default function AdminProductsPage() {
               3 · Media (photo / video)
             </p>
             <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              Upload from PC (saved on server) or paste a server / CDN URL.
+              Take a photo, pick from this phone or PC, or paste a server / CDN URL.
             </p>
 
             <div className="mt-3 space-y-3 rounded-xl border border-[var(--line)] bg-[var(--surface-2)] p-4">
@@ -1347,37 +1520,32 @@ export default function AdminProductsPage() {
                     }
                   />
                 </div>
-                <label className="tt-btn tt-btn-outline cursor-pointer font-bold">
-                  {mediaBusy ? "Uploading…" : "Upload logo from PC"}
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    disabled={mediaBusy}
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      e.target.value = "";
-                      if (!file || !editing) return;
-                      setMediaBusy(true);
-                      setMediaMsg("");
-                      setError("");
-                      try {
-                        const up = await uploadProductMedia(file);
-                        if (up.type !== "image") {
-                          throw new Error("Logo must be an image");
-                        }
-                        setEditing({ ...editing, logoUrl: up.url });
-                        setMediaMsg("Logo uploaded");
-                      } catch (err) {
-                        setError(
-                          err instanceof Error ? err.message : "Upload failed"
-                        );
-                      } finally {
-                        setMediaBusy(false);
+                <FilePick
+                  kind="photo"
+                  compact
+                  busy={mediaBusy}
+                  onPick={async (files) => {
+                    const file = files[0];
+                    if (!file || !editing) return;
+                    setMediaBusy(true);
+                    setMediaMsg("");
+                    setError("");
+                    try {
+                      const up = await uploadProductMedia(file);
+                      if (up.type !== "image") {
+                        throw new Error("Logo must be an image");
                       }
-                    }}
-                  />
-                </label>
+                      setEditing({ ...editing, logoUrl: up.url });
+                      setMediaMsg("Logo uploaded");
+                    } catch (err) {
+                      setError(
+                        err instanceof Error ? err.message : "Upload failed"
+                      );
+                    } finally {
+                      setMediaBusy(false);
+                    }
+                  }}
+                />
               </div>
               {editing.logoUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -1395,74 +1563,63 @@ export default function AdminProductsPage() {
                   Gallery — photos & videos
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  <label className="tt-btn tt-btn-dark cursor-pointer text-sm font-bold">
-                    {mediaBusy
-                      ? locale === "hi"
-                        ? "अपलोड हो रहा है…"
-                        : "Uploading…"
-                      : locale === "hi"
-                        ? "+ PC से फोटो / वीडियो (एक साथ कई)"
-                        : "+ Photo / video from PC (multi-select)"}
-                    <input
-                      type="file"
-                      accept="image/*,video/*"
-                      multiple
-                      className="hidden"
-                      disabled={mediaBusy}
-                      onChange={async (e) => {
-                        const files = Array.from(e.target.files || []);
-                        e.target.value = "";
-                        if (!files.length || !editing) return;
-                        setMediaBusy(true);
-                        setMediaMsg("");
-                        setError("");
-                        const added: ProductMedia[] = [];
-                        const errors: string[] = [];
-                        let firstImageUrl = "";
-                        for (const file of files) {
-                          try {
-                            const up = await uploadProductMedia(file);
-                            if (up.type !== "image" && up.type !== "video") {
-                              errors.push(`${file.name}: unsupported type`);
-                              continue;
-                            }
-                            added.push({
-                              id: `m_${crypto.randomUUID()}`,
-                              type: up.type,
-                              url: up.url,
-                              alt: file.name,
-                            });
-                            if (!firstImageUrl && up.type === "image") {
-                              firstImageUrl = up.url;
-                            }
-                          } catch (err) {
-                            errors.push(
-                              `${file.name}: ${
-                                err instanceof Error ? err.message : "upload failed"
-                              }`
-                            );
+                  <FilePick
+                    kind="media"
+                    multiple
+                    camera
+                    compact
+                    busy={mediaBusy}
+                    onPick={async (files) => {
+                      if (!files.length || !editing) return;
+                      setMediaBusy(true);
+                      setMediaMsg("");
+                      setError("");
+                      const added: ProductMedia[] = [];
+                      const errors: string[] = [];
+                      let firstImageUrl = "";
+                      for (const file of files) {
+                        try {
+                          const up = await uploadProductMedia(file);
+                          if (up.type !== "image" && up.type !== "video") {
+                            errors.push(`${file.name}: unsupported type`);
+                            continue;
                           }
-                        }
-                        if (added.length) {
-                          setEditing({
-                            ...editing,
-                            media: [...editing.media, ...added],
-                            logoUrl:
-                              editing.logoUrl || firstImageUrl || editing.logoUrl,
+                          added.push({
+                            id: `m_${crypto.randomUUID()}`,
+                            type: up.type,
+                            url: up.url,
+                            alt: file.name,
                           });
-                          setMediaMsg(
-                            locale === "hi"
-                              ? `${added.length} फ़ाइल जोड़ी गईं`
-                              : `${added.length} file${added.length === 1 ? "" : "s"} uploaded`
+                          if (!firstImageUrl && up.type === "image") {
+                            firstImageUrl = up.url;
+                          }
+                        } catch (err) {
+                          errors.push(
+                            `${file.name}: ${
+                              err instanceof Error ? err.message : "upload failed"
+                            }`
                           );
                         }
-                        if (errors.length) {
-                          setError(errors.join(" · "));
-                        }
-                        setMediaBusy(false);
-                      }}
-                    />
-                  </label>
+                      }
+                      if (added.length) {
+                        setEditing({
+                          ...editing,
+                          media: [...editing.media, ...added],
+                          logoUrl:
+                            editing.logoUrl || firstImageUrl || editing.logoUrl,
+                        });
+                        setMediaMsg(
+                          locale === "hi"
+                            ? `${added.length} फ़ाइल जोड़ी गईं`
+                            : `${added.length} file${added.length === 1 ? "" : "s"} uploaded`
+                        );
+                      }
+                      if (errors.length) {
+                        setError(errors.join(" · "));
+                      }
+                      setMediaBusy(false);
+                    }}
+                  />
                   <button
                     type="button"
                     className="tt-btn tt-btn-outline text-sm font-bold"
@@ -1492,7 +1649,7 @@ export default function AdminProductsPage() {
 
               {!editing.media.length ? (
                 <p className="text-sm text-[var(--ink-muted)]">
-                  No media yet — upload from PC or add a URL.
+                  No media yet — take a photo, pick files, or add a URL.
                 </p>
               ) : (
                 <ul className="space-y-3">
@@ -1548,49 +1705,46 @@ export default function AdminProductsPage() {
                               <option value="image">Photo</option>
                               <option value="video">Video</option>
                             </select>
-                            <label className="tt-btn tt-btn-outline cursor-pointer text-xs font-bold">
-                              Replace from PC
-                              <input
-                                type="file"
-                                accept={
-                                  m.type === "video"
-                                    ? "video/*"
-                                    : "image/*,video/*"
-                                }
-                                className="hidden"
-                                disabled={mediaBusy}
-                                onChange={async (e) => {
-                                  const file = e.target.files?.[0];
-                                  e.target.value = "";
-                                  if (!file || !editing) return;
-                                  setMediaBusy(true);
-                                  setError("");
-                                  try {
-                                    const up = await uploadProductMedia(file);
-                                    if (up.type !== "image" && up.type !== "video") {
-                                      throw new Error("Only images or videos allowed");
-                                    }
-                                    const media = [...editing.media];
-                                    media[idx] = {
-                                      ...m,
-                                      type: up.type,
-                                      url: up.url,
-                                      alt: file.name,
-                                    };
-                                    setEditing({ ...editing, media });
-                                    setMediaMsg("File replaced");
-                                  } catch (err) {
-                                    setError(
-                                      err instanceof Error
-                                        ? err.message
-                                        : "Upload failed"
-                                    );
-                                  } finally {
-                                    setMediaBusy(false);
+                            <FilePick
+                              kind="media"
+                              camera={m.type !== "video"}
+                              compact
+                              busy={mediaBusy}
+                              accept={
+                                m.type === "video"
+                                  ? "video/*"
+                                  : "image/*,video/*"
+                              }
+                              onPick={async (files) => {
+                                const file = files[0];
+                                if (!file || !editing) return;
+                                setMediaBusy(true);
+                                setError("");
+                                try {
+                                  const up = await uploadProductMedia(file);
+                                  if (up.type !== "image" && up.type !== "video") {
+                                    throw new Error("Only images or videos allowed");
                                   }
-                                }}
-                              />
-                            </label>
+                                  const media = [...editing.media];
+                                  media[idx] = {
+                                    ...m,
+                                    type: up.type,
+                                    url: up.url,
+                                    alt: file.name,
+                                  };
+                                  setEditing({ ...editing, media });
+                                  setMediaMsg("File replaced");
+                                } catch (err) {
+                                  setError(
+                                    err instanceof Error
+                                      ? err.message
+                                      : "Upload failed"
+                                  );
+                                } finally {
+                                  setMediaBusy(false);
+                                }
+                              }}
+                            />
                             <button
                               type="button"
                               className="tt-btn tt-btn-outline text-xs font-bold"
@@ -1699,7 +1853,9 @@ export default function AdminProductsPage() {
                   4 · Sizes / variations *
                 </p>
                 <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                  {editing.pricingMode === "bundle"
+                  {isSqftUnit(editing.unit)
+                    ? "₹/pc and ₹/pkt are computed from L × W × pcs/packet × ₹/sqft. Stock is packets."
+                    : editing.pricingMode === "bundle"
                     ? "Price = rate × weight(kg) × qty. Weight per size; stock per size × color."
                     : "Price = rate × qty. Weight for shipping; stock per size × color."}
                 </p>
@@ -1861,19 +2017,104 @@ export default function AdminProductsPage() {
                       />
                     </div>
                     <div>
-                      <label className="tt-label">Rate (₹) *</label>
+                      <label className="tt-label">
+                        {isSqftUnit(editing.unit) ? "Rate ₹ / sqft *" : "Rate (₹) *"}
+                      </label>
                       <NumberField
                         className="tt-input"
                         min={0}
                         emptyAs={null}
-                        value={v.rate}
+                        value={
+                          isSqftUnit(editing.unit)
+                            ? v.ratePerSqft ?? editing.ratePerSqft ?? 0
+                            : v.rate
+                        }
                         onValueChange={(val) =>
-                          updateVariation(i, {
-                            rate: typeof val === "number" ? val : 0,
-                          })
+                          updateVariation(i, isSqftUnit(editing.unit)
+                            ? {
+                                ratePerSqft:
+                                  typeof val === "number" ? val : 0,
+                              }
+                            : {
+                                rate: typeof val === "number" ? val : 0,
+                              })
                         }
                       />
                     </div>
+                    {isSqftUnit(editing.unit) ? (
+                      <>
+                        <div>
+                          <label className="tt-label">Length (ft) *</label>
+                          <NumberField
+                            className="tt-input"
+                            min={0}
+                            step={0.01}
+                            emptyAs={null}
+                            value={v.lengthFt ?? editing.lengthFt ?? ""}
+                            onValueChange={(val) => {
+                              const lengthFt =
+                                typeof val === "number" ? val : 0;
+                              const widthFt =
+                                v.widthFt ?? editing.widthFt ?? 0;
+                              const sizeEn = sqftSizeLabel(lengthFt, widthFt);
+                              updateVariation(i, {
+                                lengthFt,
+                                size: sizeEn
+                                  ? { en: sizeEn, hi: sizeEn }
+                                  : v.size,
+                                label: sizeEn
+                                  ? { en: sizeEn, hi: sizeEn }
+                                  : v.label,
+                              });
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="tt-label">Width (ft) *</label>
+                          <NumberField
+                            className="tt-input"
+                            min={0}
+                            step={0.01}
+                            emptyAs={null}
+                            value={v.widthFt ?? editing.widthFt ?? ""}
+                            onValueChange={(val) => {
+                              const widthFt =
+                                typeof val === "number" ? val : 0;
+                              const lengthFt =
+                                v.lengthFt ?? editing.lengthFt ?? 0;
+                              const sizeEn = sqftSizeLabel(lengthFt, widthFt);
+                              updateVariation(i, {
+                                widthFt,
+                                size: sizeEn
+                                  ? { en: sizeEn, hi: sizeEn }
+                                  : v.size,
+                                label: sizeEn
+                                  ? { en: sizeEn, hi: sizeEn }
+                                  : v.label,
+                              });
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <label className="tt-label">Pcs / packet *</label>
+                          <NumberField
+                            className="tt-input"
+                            min={0}
+                            integer
+                            emptyAs={null}
+                            value={
+                              v.pcsPerPacket ?? editing.pcsPerPacket ?? ""
+                            }
+                            onValueChange={(val) =>
+                              updateVariation(i, {
+                                pcsPerPacket:
+                                  typeof val === "number" ? val : 0,
+                              })
+                            }
+                          />
+                        </div>
+                      </>
+                    ) : null}
                     <div>
                       <label className="tt-label">
                         Weight / bundle (kg)
@@ -1956,7 +2197,33 @@ export default function AdminProductsPage() {
                       </div>
                     )}
                   </div>
-                  {v.rate > 0 && (v.weightKg ?? 0) > 0 ? (
+                  {isSqftUnit(editing.unit) ? (
+                    <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                      {(() => {
+                        const lengthFt = v.lengthFt ?? editing.lengthFt ?? 0;
+                        const widthFt = v.widthFt ?? editing.widthFt ?? 0;
+                        const pcs = v.pcsPerPacket ?? editing.pcsPerPacket ?? 0;
+                        const rps =
+                          v.ratePerSqft ?? editing.ratePerSqft ?? 0;
+                        const sqft = sqftPerPiece(lengthFt, widthFt);
+                        const pc = ratePerPiece(rps, lengthFt, widthFt);
+                        const pkt = ratePerPacket(
+                          rps,
+                          lengthFt,
+                          widthFt,
+                          pcs
+                        );
+                        if (!(sqft > 0 && pcs > 0 && rps > 0)) {
+                          return "Enter L, W, pcs/packet and ₹/sqft to see ₹/pc and ₹/pkt.";
+                        }
+                        return `${sqftSizeLabel(lengthFt, widthFt)} = ${sqft} sqft/pc · ${formatInr(pc, locale)}/pc · ${formatInr(pkt, locale)}/pkt${
+                          (v.weightKg ?? 0) > 0
+                            ? ` · pack ${v.weightKg} kg (shipping)`
+                            : ""
+                        }`;
+                      })()}
+                    </p>
+                  ) : v.rate > 0 && (v.weightKg ?? 0) > 0 ? (
                     <p className="mt-2 text-xs text-[var(--ink-muted)]">
                       {editing.pricingMode === "bundle"
                         ? `1 bundle ≈ ${formatInr(v.rate * (v.weightKg || 0), locale)} (${formatInr(v.rate, locale)} × ${v.weightKg} kg)`
@@ -2071,41 +2338,31 @@ export default function AdminProductsPage() {
                         title="Hex swatch"
                       />
                     )}
-                    <label className="tt-btn tt-btn-outline cursor-pointer text-sm">
-                      {c.imageUrl
-                        ? locale === "hi"
-                          ? "फ़ोटो बदलें"
-                          : "Change photo"
-                        : locale === "hi"
-                          ? "फ़ोटो अपलोड"
-                          : "Upload photo"}
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          e.target.value = "";
-                          if (!file) return;
-                          try {
-                            setBusy(true);
-                            setError("");
-                            const up = await uploadProductMedia(file);
-                            const colors = [...editing.colors];
-                            colors[i] = { ...c, imageUrl: up.url };
-                            setEditing({ ...editing, colors });
-                          } catch (err) {
-                            setError(
-                              err instanceof Error
-                                ? err.message
-                                : "Upload failed"
-                            );
-                          } finally {
-                            setBusy(false);
-                          }
-                        }}
-                      />
-                    </label>
+                    <FilePick
+                      kind="photo"
+                      compact
+                      busy={busy}
+                      onPick={async (files) => {
+                        const file = files[0];
+                        if (!file) return;
+                        try {
+                          setBusy(true);
+                          setError("");
+                          const up = await uploadProductMedia(file);
+                          const colors = [...editing.colors];
+                          colors[i] = { ...c, imageUrl: up.url };
+                          setEditing({ ...editing, colors });
+                        } catch (err) {
+                          setError(
+                            err instanceof Error
+                              ? err.message
+                              : "Upload failed"
+                          );
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    />
                     {c.imageUrl ? (
                       <button
                         type="button"
@@ -2281,6 +2538,26 @@ export default function AdminProductsPage() {
             />
             Active on store
           </label>
+          {session.role === "super_admin" ? (
+            <>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={homeNew}
+              onChange={(e) => setHomeNew(e.target.checked)}
+            />
+            {t("admin.showOnHomeNew")}
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={homePromo}
+              onChange={(e) => setHomePromo(e.target.checked)}
+            />
+            {t("admin.showOnHomePromo")}
+          </label>
+            </>
+          ) : null}
 
           <div className="flex flex-wrap gap-3">
             <button

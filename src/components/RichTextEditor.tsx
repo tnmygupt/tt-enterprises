@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { FilePick } from "@/components/FilePick";
 
 export interface RichTextEditorProps {
   value: string;
@@ -84,45 +85,32 @@ export function RichTextEditor({
     flush();
   };
 
-  const insertImage = async () => {
+  const insertImageUrl = () => {
     const url = window.prompt(
-      locale === "hi"
-        ? "इमेज URL डालें (या खाली छोड़कर PC से अपलोड करें)"
-        : "Image URL (leave empty to upload from PC)"
+      locale === "hi" ? "इमेज URL डालें" : "Image URL"
     );
-    if (url === null) return;
+    if (!url) return;
     const trimmed = url.trim();
-    if (trimmed) {
-      insertHtml(`<p><img src="${escapeHtml(trimmed)}" alt="" /></p>`);
-      return;
-    }
-    if (!uploadImage) {
-      setMsg(
-        locale === "hi" ? "अपलोडर उपलब्ध नहीं" : "Uploader unavailable"
+    if (!trimmed) return;
+    insertHtml(`<p><img src="${escapeHtml(trimmed)}" alt="" /></p>`);
+  };
+
+  const pickImageFile = async (files: File[]) => {
+    const file = files[0];
+    if (!file || !uploadImage) return;
+    setBusy(true);
+    setMsg("");
+    try {
+      const uploadedUrl = await uploadImage(file);
+      insertHtml(
+        `<p><img src="${escapeHtml(uploadedUrl)}" alt="${escapeHtml(file.name)}" /></p>`
       );
-      return;
+      setMsg(locale === "hi" ? "इमेज जोड़ी" : "Image inserted");
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Upload failed");
+    } finally {
+      setBusy(false);
     }
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      setBusy(true);
-      setMsg("");
-      try {
-        const uploadedUrl = await uploadImage(file);
-        insertHtml(
-          `<p><img src="${escapeHtml(uploadedUrl)}" alt="${escapeHtml(file.name)}" /></p>`
-        );
-        setMsg(locale === "hi" ? "इमेज जोड़ी" : "Image inserted");
-      } catch (e) {
-        setMsg(e instanceof Error ? e.message : "Upload failed");
-      } finally {
-        setBusy(false);
-      }
-    };
-    input.click();
   };
 
   const insertTable = () => {
@@ -199,13 +187,8 @@ export function RichTextEditor({
         <button type="button" onClick={insertLink} title={t("Insert link", "लिंक")}>
           🔗 {t("Link", "लिंक")}
         </button>
-        <button
-          type="button"
-          onClick={insertImage}
-          disabled={busy}
-          title={t("Insert image", "इमेज")}
-        >
-          {busy ? "…" : `🖼 ${t("Image", "इमेज")}`}
+        <button type="button" onClick={insertImageUrl} title={t("Insert image URL", "इमेज URL")}>
+          🖼 {t("Image URL", "इमेज URL")}
         </button>
         <button type="button" onClick={insertTable} title={t("Insert table", "टेबल")}>
           ▦ {t("Table", "टेबल")}
@@ -219,6 +202,16 @@ export function RichTextEditor({
           {t("Clear", "साफ़")}
         </button>
       </div>
+      {uploadImage ? (
+        <div className="border-b border-[var(--line)] bg-white px-3 py-2">
+          <FilePick
+            kind="photo"
+            compact
+            busy={busy}
+            onPick={pickImageFile}
+          />
+        </div>
+      ) : null}
       <div
         ref={editorRef}
         contentEditable

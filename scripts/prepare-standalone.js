@@ -43,4 +43,15 @@ for (const name of [".env.production", ".env"]) {
   }
 }
 
+const configDir = path.join(standalone, "config");
+fs.mkdirSync(configDir, { recursive: true });
+for (const name of ["tally-wa.cfg", "ops.cfg"]) {
+  const from = path.join(root, "config", name);
+  if (!fs.existsSync(from)) continue;
+  fs.copyFileSync(from, path.join(configDir, name));
+  if (name === "tally-wa.cfg") {
+    fs.copyFileSync(from, path.join(standalone, "tally-wa.cfg"));
+  }
+}
+
 console.log("Standalone package ready (.next/standalone)");

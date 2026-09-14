@@ -76,6 +76,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoReorderEnabled: false,
   autoReorderCron: "0 6 * * 1",
   autoReorderMinQty: 1,
+  autoReorderUseVelocity: true,
+  autoReorderLookbackDays: 30,
+  autoReorderLeadTimeDays: 10,
+  autoReorderSafetyDays: 7,
+  autoReorderSeasonMonths: [5, 6, 7, 8, 9],
+  autoReorderSeasonMultiplier: 1.4,
+  homeNewProductIds: [],
+  homePromoProductIds: [],
 };
 
 /** Demo logins removed — production bootstraps from cloud DB only. */

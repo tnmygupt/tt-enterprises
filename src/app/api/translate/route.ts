@@ -11,16 +11,16 @@ const MAX_LEN = 500;
 
 function isAuthorized(req: NextRequest): boolean {
   try {
+    if (readSessionCookie(req)?.id) return true;
     const required = (process.env.TRANSLATE_KEY || "").trim();
-    if (!required) return true;
+    if (!required) return process.env.NODE_ENV !== "production";
     const key =
       req.headers.get("x-translate-key") ||
       req.nextUrl.searchParams.get("key") ||
       "";
-    if (key === required) return true;
-    return Boolean(readSessionCookie(req)?.id);
+    return key === required;
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -54,7 +54,7 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json(
       { error: "Invalid JSON", fields: [] },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json(
       { error: "Provide text, texts, or fields" },
-      { status: 400 }
+      { status: 400 },
     );
   } catch (err) {
     console.warn("[translate] error", err);

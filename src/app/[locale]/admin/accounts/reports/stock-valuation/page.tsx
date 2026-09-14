@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { stockValuation } from "@/lib/accounting";
 import { ExportButtons } from "@/components/ExportButtons";
@@ -68,12 +69,10 @@ export default function StockValuationPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        Stock Valuation
-      </h1>
-      <p className="mt-2 text-sm text-gray-600">
-        FIFO perpetual inventory valuation
-      </p>
+      <AccountsPageHeader
+        title={t("accounts.stockValuation")}
+        hint={t("accounts.stockValuationHint")}
+      />
 
       <div className="mt-4 flex items-center gap-3">
         <ExportButtons options={exportOptions} disabled={!report} />

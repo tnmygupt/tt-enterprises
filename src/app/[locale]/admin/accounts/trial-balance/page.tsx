@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { trialBalance } from "@/lib/accounting";
 import { ExportButtons } from "@/components/ExportButtons";
@@ -27,15 +29,25 @@ export default function TrialBalancePage() {
       return {
         title: t("accounts.trialBalance"),
         filename: `trial-balance-${asOf}.pdf`,
-        columns: ["Code", "Account", "Debit", "Credit"],
+        columns: [
+          t("accounts.colCode"),
+          t("accounts.accountLabel"),
+          t("accounts.colDebit"),
+          t("accounts.colCredit"),
+        ],
         rows: [] as string[][],
       };
     }
     return {
       title: t("accounts.trialBalance"),
-      subtitle: `As of ${asOf}`,
+      subtitle: `${t("common.asOf")} ${asOf}`,
       filename: `trial-balance-${asOf}.pdf`,
-      columns: ["Code", "Account", "Debit", "Credit"],
+      columns: [
+        t("accounts.colCode"),
+        t("accounts.accountLabel"),
+        t("accounts.colDebit"),
+        t("accounts.colCredit"),
+      ],
       rows: report.rows.map((r) => [
         r.code,
         r.name,
@@ -61,12 +73,13 @@ export default function TrialBalancePage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)] print:text-2xl">
-        {t("accounts.trialBalance")}
-      </h1>
+      <AccountsPageHeader
+        title={t("accounts.trialBalance")}
+        hint={t("accounts.reportTbHint")}
+      />
       <div className="mt-4 flex flex-wrap items-end gap-3 print:hidden">
         <div>
-          <label className="tt-label">As of</label>
+          <label className="tt-label">{t("common.asOf")}</label>
           <input
             type="date"
             className="tt-input"
@@ -87,10 +100,10 @@ export default function TrialBalancePage() {
         <table className="tt-table min-w-[640px]">
           <thead>
             <tr>
-              <th>Code</th>
-              <th>Account</th>
-              <th>Debit</th>
-              <th>Credit</th>
+              <th>{t("accounts.colCode")}</th>
+              <th>{t("accounts.accountLabel")}</th>
+              <th>{t("accounts.colDebit")}</th>
+              <th>{t("accounts.colCredit")}</th>
             </tr>
           </thead>
           <tbody>
@@ -109,6 +122,13 @@ export default function TrialBalancePage() {
             </tr>
           </tbody>
         </table>
+        {!report?.rows.length ? (
+          <AccountsEmpty
+            message={t("accounts.emptyTrialBalance")}
+            href="/admin/orders/new"
+            cta={t("accounts.emptyTrialBalanceCta")}
+          />
+        ) : null}
       </div>
     </AccountsShell>
   );

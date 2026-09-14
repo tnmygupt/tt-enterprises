@@ -1,13 +1,15 @@
 "use client";
 
 import { Suspense, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { ExportButtons } from "@/components/ExportButtons";
 import { filterStockMovements } from "@/lib/accounting";
-import { toDateInputValue } from "@/lib/date-range";
 import { useDb, useSession } from "@/lib/hooks";
 import { checkCapability } from "@/lib/store/db";
 import type { StockMovementType } from "@/lib/types";
@@ -26,12 +28,13 @@ const TYPES: StockMovementType[] = [
 ];
 
 function StockMovementsInner() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db } = useDb();
   const search = useSearchParams();
-  const today = toDateInputValue();
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState(today);
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
   // Stock alerts and the on-hand table deep-link a single product in here
   const [productId, setProductId] = useState(search.get("product") || "");
   const [type, setType] = useState("");
@@ -80,7 +83,7 @@ function StockMovementsInner() {
     [db, from, rows, to]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -90,39 +93,24 @@ function StockMovementsInner() {
 
   return (
     <AccountsShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            Stock movements
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Full register — filter by date, product, type.
-          </p>
-        </div>
-        <Link href="/admin/accounts/inventory" className="tt-btn tt-btn-outline">
-          Stock on hand
-        </Link>
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.stockMovements")}
+        hint={t("accounts.stockMovementsHint")}
+        actions={
+          <Link href="/admin/accounts/inventory" className="tt-btn tt-btn-outline">
+            {t("accounts.stockOnHand")}
+          </Link>
+        }
+      />
 
       <div className="mt-4 flex flex-wrap gap-3">
-        <input
-          type="date"
-          className="tt-input"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <input
-          type="date"
-          className="tt-input"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
+        <DateRangeBar value={range} onChange={setRange} />
         <select
           className="tt-select min-w-[180px]"
           value={productId}
           onChange={(e) => setProductId(e.target.value)}
         >
-          <option value="">All products</option>
+          <option value="">{t("accounts.allProducts")}</option>
           {products.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name.en}
@@ -134,7 +122,7 @@ function StockMovementsInner() {
           value={type}
           onChange={(e) => setType(e.target.value)}
         >
-          <option value="">All types</option>
+          <option value="">{t("accounts.allTypes")}</option>
           {TYPES.map((t) => (
             <option key={t} value={t}>
               {t}

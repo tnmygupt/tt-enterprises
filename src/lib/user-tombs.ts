@@ -71,3 +71,13 @@ export function syncTombFields(tombs: TombMap): {
     deletedUserAt: tombs,
   };
 }
+
+/** Stamp a delete so later pulls/pushes cannot put this login back. */
+export function stampUserTomb<
+  T extends { deletedUserIds?: string[]; deletedUserAt?: TombMap },
+>(db: T, userId: string, at = new Date().toISOString()): void {
+  const tombs = new Set(db.deletedUserIds ?? []);
+  tombs.add(userId);
+  db.deletedUserIds = [...tombs];
+  db.deletedUserAt = { ...(db.deletedUserAt ?? {}), [userId]: at };
+}

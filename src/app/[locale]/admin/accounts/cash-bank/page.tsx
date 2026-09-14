@@ -2,15 +2,18 @@
 
 import { useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
+import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { ACCT, accountBalance, cashBankAccounts } from "@/lib/accounting";
 import { ExportButtons } from "@/components/ExportButtons";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr, roundMoney } from "@/lib/pricing";
 import { checkCapability } from "@/lib/store/db";
-import { toDateInputValue } from "@/lib/date-range";
 
 export default function CashBankBookPage() {
   const t = useTranslations();
@@ -18,9 +21,9 @@ export default function CashBankBookPage() {
   const { session } = useSession();
   const { db } = useDb();
   const [accountId, setAccountId] = useState<string>(ACCT.cash);
-  const today = toDateInputValue();
-  const [from, setFrom] = useState(today);
-  const [to, setTo] = useState(today);
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
 
   const rows = useMemo(() => {
     if (!db) return [];
@@ -89,7 +92,7 @@ export default function CashBankBookPage() {
     };
   }, [accountId, cashBankOpts, from, locale, opening, rowsWithBal, t, to]);
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -99,72 +102,104 @@ export default function CashBankBookPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)] print:text-2xl">
-        {t("accounts.cashBankBook")}
-      </h1>
-      <div className="mt-4 flex flex-wrap gap-3 print:hidden">
-        <select
-          className="tt-select"
-          value={accountId}
-          onChange={(e) => setAccountId(e.target.value)}
-        >
-          {cashBankOpts.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name[locale] || a.name.en}
-            </option>
-          ))}
-        </select>
-        <input
-          type="date"
-          className="tt-input"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <input
-          type="date"
-          className="tt-input"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
-        <button
-          type="button"
-          className="tt-btn tt-btn-outline"
-          onClick={() => window.print()}
-        >
-          {t("accounts.print")}
-        </button>
-        <ExportButtons options={exportOptions} />
+      <AccountsPageHeader
+        title={t("accounts.cashBankBook")}
+        extra={
+          <div className="flex flex-wrap gap-3">
+            <select
+              className="tt-select"
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+            >
+              {cashBankOpts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name[locale] || a.name.en}
+                </option>
+              ))}
+            </select>
+            <DateRangeBar value={range} onChange={setRange} />
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              onClick={() => window.print()}
+            >
+              {t("accounts.print")}
+            </button>
+            <ExportButtons options={exportOptions} />
+            <Link href="/admin/accounts/brs" className="tt-btn tt-btn-outline">
+              {t("accounts.brs")} · Alt+B
+            </Link>
+          </div>
+        }
+      />
+      <div className="tt-acct-cards mt-4 sm:hidden">
+        <div className="tt-panel tt-acct-card">
+          <p className="text-xs font-bold uppercase text-[var(--ink-muted)]">
+            {t("accounts.colOpening")}
+          </p>
+          <p className="mt-1 text-sm font-semibold tabular-nums">
+            {formatInr(opening, locale)}
+          </p>
+        </div>
+        {rowsWithBal.map(({ e, bal }) => (
+          <div key={e.id} className="tt-panel tt-acct-card">
+            <p className="text-xs text-[var(--ink-muted)]">{e.date}</p>
+            <p className="font-mono text-sm font-semibold">
+              <VoucherNumberLink id={e.voucherId} number={e.voucherNumber} />
+            </p>
+            <p className="mt-1 text-xs text-[var(--ink-muted)]">
+              {e.narration || "—"}
+            </p>
+            <p className="mt-1 text-sm tabular-nums">
+              {e.debit
+                ? `Dr ${formatInr(e.debit, locale)}`
+                : e.credit
+                  ? `Cr ${formatInr(e.credit, locale)}`
+                  : "—"}
+              <span className="ml-2 text-[var(--ink-muted)]">
+                {formatInr(bal, locale)}
+              </span>
+            </p>
+          </div>
+        ))}
       </div>
-      <div className="tt-panel mt-4 overflow-x-auto">
+      <div className="tt-panel tt-acct-table-wrap mt-4 hidden sm:block">
         <table className="tt-table min-w-[720px]">
           <thead>
             <tr>
-              <th>Date</th>
-              <th>Voucher</th>
-              <th>Narration</th>
-              <th>Debit</th>
-              <th>Credit</th>
-              <th>Balance</th>
+              <th>{t("accounts.colDate")}</th>
+              <th>{t("accounts.colVoucher")}</th>
+              <th>{t("accounts.colNarration")}</th>
+              <th>{t("accounts.colDebit")}</th>
+              <th>{t("accounts.colCredit")}</th>
+              <th>{t("accounts.colBalance")}</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td colSpan={5}>Opening</td>
-              <td>{formatInr(opening, locale)}</td>
+              <td colSpan={5}>{t("accounts.colOpening")}</td>
+              <td className="tabular-nums">{formatInr(opening, locale)}</td>
             </tr>
             {rowsWithBal.map(({ e, bal }) => (
               <tr key={e.id}>
                 <td>{e.date}</td>
                 <td><VoucherNumberLink id={e.voucherId} number={e.voucherNumber} /></td>
                 <td className="text-sm">{e.narration || "—"}</td>
-                <td>{e.debit ? formatInr(e.debit, locale) : ""}</td>
-                <td>{e.credit ? formatInr(e.credit, locale) : ""}</td>
-                <td>{formatInr(bal, locale)}</td>
+                <td className="tabular-nums">{e.debit ? formatInr(e.debit, locale) : ""}</td>
+                <td className="tabular-nums">{e.credit ? formatInr(e.credit, locale) : ""}</td>
+                <td className="tabular-nums">{formatInr(bal, locale)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {!rowsWithBal.length ? (
+        <AccountsEmpty
+          message={t("accounts.emptyCashBank")}
+          href="/admin/accounts/vouchers?new=receipt"
+          cta={t("accounts.recordReceipt")}
+        />
+      ) : null}
     </AccountsShell>
   );
 }

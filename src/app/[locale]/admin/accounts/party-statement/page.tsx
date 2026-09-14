@@ -6,9 +6,14 @@ import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
+import { SearchSelect } from "@/components/SearchSelect";
 import {
   ACCT,
+  invoiceSettlementLines,
   openInvoicesForParty,
   partyAging,
   partyBalance,
@@ -27,8 +32,8 @@ import {
 import {
   notifyPartyStatementWhatsApp,
   whatsappCountryCode,
+  whatsappResultCopy,
 } from "@/lib/whatsapp";
-import { toDateInputValue } from "@/lib/date-range";
 
 function PartyStatementInner() {
   const t = useTranslations();
@@ -42,17 +47,16 @@ function PartyStatementInner() {
    * here — the page already requires it, so that check never blocks anyone.
    */
   const canSeeSuppliers =
-    isOwner || (!!session && checkCapability(session, db?.users, "view_financials"));
-  const today = toDateInputValue();
+    isOwner || (!!session && checkCapability(session, db, "view_financials"));
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
   const [partyId, setPartyId] = useState("");
   const [partyType, setPartyType] = useState<"all" | "customer" | "supplier">(
     "customer"
   );
   const [view, setView] = useState<"money" | "goods">("money");
-  const [q, setQ] = useState("");
   const [msg, setMsg] = useState("");
-  const [from, setFrom] = useState(today);
-  const [to, setTo] = useState(today);
 
   useEffect(() => {
     // URL query drives selected party — intentional sync
@@ -72,12 +76,18 @@ function PartyStatementInner() {
       .filter((p) => p.active)
       .filter((p) => canSeeSuppliers || p.type !== "supplier")
       .filter((p) => (partyType === "all" ? true : p.type === partyType))
-      .filter((p) => {
-        const hay = `${p.name} ${p.phone} ${p.gstin ?? ""}`.toLowerCase();
-        return hay.includes(q.trim().toLowerCase());
-      })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [db, partyType, q, canSeeSuppliers]);
+  }, [db, partyType, canSeeSuppliers]);
+
+  const partyOptions = useMemo(
+    () =>
+      parties.map((p) => ({
+        value: p.id,
+        label: `${p.name} (${p.type === "customer" ? "Debtor" : "Creditor"})`,
+        searchText: `${p.name} ${p.phone} ${p.gstin ?? ""}`,
+      })),
+    [parties]
+  );
 
   const party = db?.parties.find((p) => p.id === partyId);
   // A supplier id can still arrive via the URL — block the data, not just the picker
@@ -244,7 +254,7 @@ function PartyStatementInner() {
     view,
   ]);
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -275,35 +285,30 @@ function PartyStatementInner() {
         due: r.voucher.dueDate || r.voucher.date,
         amount: r.outstanding,
       })),
-    }).then((ok) => {
+    }).then((result) => {
       setMsg(
-        ok
-          ? t("common.whatsappOpened")
-          : "Could not open WhatsApp"
+        whatsappResultCopy(result, {
+          sent: t("common.whatsappSent"),
+          opened: t("common.whatsappOpened"),
+          fail: t("common.whatsappSendFailed"),
+          noPhone: t("common.whatsappNoPhone"),
+        })
       );
     });
   };
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)] print:text-2xl">
-        {partyType === "customer"
-          ? t("accounts.customerLedger")
-          : t("accounts.partyStatement")}
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)] print:hidden">
-        {locale === "hi"
-          ? "ग्राहक चुनें — लेजर देखें, PDF लें या WhatsApp पर भेजें"
-          : "Pick a customer to see ledger, export PDF, or send on WhatsApp"}
-      </p>
+      <AccountsPageHeader
+        title={
+          partyType === "customer"
+            ? t("accounts.customerLedger")
+            : t("accounts.partyStatement")
+        }
+        hint={t("accounts.statementHint")}
+      />
 
-      <div className="mt-4 flex flex-wrap gap-3 print:hidden">
-        <input
-          className="tt-input min-w-[180px]"
-          placeholder={t("accounts.searchParty")}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
+      <div className="mt-4 flex flex-wrap items-end gap-3 print:hidden">
         {canSeeSuppliers ? (
           <select
             className="tt-select"
@@ -317,32 +322,15 @@ function PartyStatementInner() {
             <option value="supplier">{t("accounts.suppliers")}</option>
           </select>
         ) : null}
-        <select
-          className="tt-select min-w-[220px]"
+        <SearchSelect
+          className="min-w-[220px]"
+          options={partyOptions}
           value={partyId}
-          onChange={(e) => setPartyId(e.target.value)}
-        >
-          <option value="">
-            {locale === "hi" ? "पार्टी चुनें…" : "Select party…"}
-          </option>
-          {parties.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.type === "customer" ? "Debtor" : "Creditor"})
-            </option>
-          ))}
-        </select>
-        <input
-          type="date"
-          className="tt-input"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
+          onChange={setPartyId}
+          placeholder={t("accounts.searchParty")}
+          emptyLabel={t("accounts.selectParty")}
         />
-        <input
-          type="date"
-          className="tt-input"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
+        <DateRangeBar value={range} onChange={setRange} />
         <button
           type="button"
           className="tt-btn tt-btn-outline"
@@ -357,14 +345,14 @@ function PartyStatementInner() {
             className={`tt-btn ${view === "money" ? "tt-btn-dark" : "tt-btn-outline"} border-0`}
             onClick={() => setView("money")}
           >
-            {locale === "hi" ? "पैसे" : "Money"}
+            {t("accounts.viewMoney")}
           </button>
           <button
             type="button"
             className={`tt-btn ${view === "goods" ? "tt-btn-dark" : "tt-btn-outline"} border-0`}
             onClick={() => setView("goods")}
           >
-            {locale === "hi" ? "माल (रेट/किग्रा)" : "Goods (rate/kg)"}
+            {t("accounts.viewGoods")}
           </button>
         </div>
         <button
@@ -380,7 +368,7 @@ function PartyStatementInner() {
             href={`/admin/accounts/match-statement?party=${party.id}&type=${party.type}`}
             className="tt-btn tt-btn-outline"
           >
-            Match their statement
+            {t("accounts.matchTheirStatement")}
           </Link>
         ) : null}
       </div>
@@ -414,37 +402,67 @@ function PartyStatementInner() {
             </div>
           ) : null}
 
-          <div className="tt-panel mt-4 overflow-x-auto">
+          <div className="mt-4">
             {view === "money" ? (
-              <table className="tt-table min-w-[720px]">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Voucher</th>
-                    <th>Debit</th>
-                    <th>Credit</th>
-                    <th>Balance</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <>
+                <div className="tt-acct-cards sm:hidden">
                   {entriesWithBal.map(({ e, bal }) => (
-                    <tr key={e.id}>
-                      <td>{e.date}</td>
-                      <td className="font-mono text-sm">
+                    <div key={e.id} className="tt-panel tt-acct-card">
+                      <p className="text-xs text-[var(--ink-muted)]">
+                        {e.date} · {e.voucherType}
+                      </p>
+                      <p className="font-mono text-sm font-semibold">
                         <VoucherNumberLink
                           id={e.voucherId}
                           number={e.voucherNumber}
-                        />{" "}
-                        · {e.voucherType}
-                      </td>
-                      <td>{e.debit ? formatInr(e.debit, locale) : ""}</td>
-                      <td>{e.credit ? formatInr(e.credit, locale) : ""}</td>
-                      <td>{formatInr(bal, locale)}</td>
-                    </tr>
+                        />
+                      </p>
+                      <p className="mt-1 text-sm tabular-nums">
+                        {e.debit
+                          ? `Dr ${formatInr(e.debit, locale)}`
+                          : e.credit
+                            ? `Cr ${formatInr(e.credit, locale)}`
+                            : "—"}
+                        <span className="ml-2 text-[var(--ink-muted)]">
+                          {formatInr(bal, locale)}
+                        </span>
+                      </p>
+                    </div>
                   ))}
-                </tbody>
-              </table>
+                </div>
+                <div className="tt-panel tt-acct-table-wrap hidden sm:block">
+                  <table className="tt-table min-w-[720px]">
+                    <thead>
+                      <tr>
+                        <th>{t("accounts.colDate")}</th>
+                        <th>{t("accounts.colVoucher")}</th>
+                        <th>{t("accounts.colDebit")}</th>
+                        <th>{t("accounts.colCredit")}</th>
+                        <th>{t("accounts.colBalance")}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {entriesWithBal.map(({ e, bal }) => (
+                        <tr key={e.id}>
+                          <td>{e.date}</td>
+                          <td className="font-mono text-sm">
+                            <VoucherNumberLink
+                              id={e.voucherId}
+                              number={e.voucherNumber}
+                            />{" "}
+                            · {e.voucherType}
+                          </td>
+                          <td>{e.debit ? formatInr(e.debit, locale) : ""}</td>
+                          <td>{e.credit ? formatInr(e.credit, locale) : ""}</td>
+                          <td>{formatInr(bal, locale)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             ) : (
+              <div className="tt-panel overflow-x-auto">
               <table className="tt-table min-w-[880px]">
                 <thead>
                   <tr>
@@ -487,11 +505,10 @@ function PartyStatementInner() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
             {view === "goods" && !goods.length ? (
-              <p className="p-4 text-sm text-[var(--ink-muted)]">
-                {t("common.empty")}
-              </p>
+              <AccountsEmpty message={t("accounts.emptyStatementNone")} />
             ) : null}
           </div>
 
@@ -550,6 +567,7 @@ function PartyStatementInner() {
                   <th>{t("accounts.dueDate")}</th>
                   <th>Days</th>
                   <th>{t("accounts.outstanding")}</th>
+                  <th>{t("accounts.stmtLastReceipt")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -563,6 +581,17 @@ function PartyStatementInner() {
                         (24 * 60 * 60 * 1000)
                     )
                   );
+                  const lastPay = db
+                    ? [...invoiceSettlementLines(
+                        r.voucher.id,
+                        db.vouchers,
+                        allocations
+                      )]
+                        .reverse()
+                        .find(
+                          (s) => s.kind === "receipt" || s.kind === "payment"
+                        )
+                    : undefined;
                   return (
                     <tr key={r.voucher.id}>
                       <td className="font-mono text-sm">
@@ -581,24 +610,33 @@ function PartyStatementInner() {
                         {days}
                       </td>
                       <td>{formatInr(r.outstanding, locale)}</td>
+                      <td className="text-sm">
+                        {lastPay ? (
+                          <>
+                            <VoucherNumberLink
+                              id={lastPay.voucherId}
+                              number={lastPay.number}
+                            />
+                            <span className="ml-1 text-[var(--ink-muted)]">
+                              {formatInr(lastPay.amount, locale)}
+                            </span>
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
             {!open.length ? (
-              <p className="p-4 text-sm text-[var(--ink-muted)]">
-                {t("common.empty")}
-              </p>
+              <AccountsEmpty message={t("accounts.emptyStatementNone")} />
             ) : null}
           </div>
         </>
       ) : (
-        <p className="mt-6 text-sm text-[var(--ink-muted)]">
-          {locale === "hi"
-            ? "स्टेटमेंट देखने के लिए पार्टी चुनें।"
-            : "Select a party to view the statement."}
-        </p>
+        <AccountsEmpty message={t("accounts.emptyStatement")} />
       )}
     </AccountsShell>
   );

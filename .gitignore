@@ -24,13 +24,14 @@
 
 # misc
 .DS_Store
+._*
 *.pem
 
 # media uploads (keep folders)
 /public/uploads/**/*
 !/public/uploads/**/.gitkeep
 
-# server-side tally sync payload
+# server-side runtime data (uploads, etc.)
 /data/*
 !/data/.gitkeep
 
@@ -50,7 +51,7 @@ tt-enterprises-*.zip
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
-!tally-bridge/.env.example
+config/*.cfg
 
 # vercel
 .vercel

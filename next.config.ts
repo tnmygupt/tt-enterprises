@@ -1,11 +1,15 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
+import { dirname } from "path";
+import { fileURLToPath } from "url";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+const projectRoot = dirname(fileURLToPath(import.meta.url));
 
 const nextConfig: NextConfig = {
   // Standalone build is best for Hostinger VPS / Node.js hosting
   output: "standalone",
+  outputFileTracingRoot: projectRoot,
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "images.unsplash.com" },

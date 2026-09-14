@@ -5,13 +5,16 @@ import { Link, usePathname } from "@/i18n/routing";
 import { useLocale, useTranslations } from "next-intl";
 import { useDb, useSession } from "@/lib/hooks";
 import { getAdminQueues } from "@/lib/admin-queues";
-import { checkCapability, isStaff } from "@/lib/store/db";
+import { checkCapability, isSalesDeskStaff, isStaff } from "@/lib/store/db";
+import { SALES_DESK_HREFS } from "@/lib/capabilities";
+import { refreshCloudDealerDirectory } from "@/lib/cloud-dealers";
 import { playStaffNewOrderChime } from "@/lib/whatsapp";
 import { notifyStaffPush } from "@/lib/push-client";
 import { WhatsAppOutbox } from "@/components/WhatsAppOutbox";
-import type { Capability } from "@/lib/types";
+import type { Capability, UserRole } from "@/lib/types";
 
 const NEED_CONFIRM_SEEN_KEY = "tt_staff_need_confirm_seen";
+const NEED_VERIFY_SEEN_KEY = "tt_staff_need_verify_seen";
 const PENDING_DEALER_SEEN_KEY = "tt_staff_pending_dealer_seen";
 
 function readSeen(key: string): number {
@@ -34,8 +37,11 @@ type NavItem = {
   href: string;
   labelKey: string;
   cap?: Capability;
+  /** Visible if the staffer has any of these (used with or instead of cap). */
+  anyCap?: Capability[];
   /** Only show for owner / super_admin */
   superOnly?: boolean;
+  roles?: UserRole[];
   badge?: keyof ReturnType<typeof getAdminQueues>["counts"];
 };
 
@@ -47,14 +53,44 @@ const GROUPS: NavGroup[] = [
     items: [
       { href: "/admin", labelKey: "admin.dashboard" },
       {
+        href: "/admin/whatsapp",
+        labelKey: "admin.whatsappDesk",
+        anyCap: [
+          "manage_users",
+          "manage_accounts",
+          "verify_payment",
+          "approve_dealers",
+          "manage_shipping",
+        ],
+      },
+      {
         href: "/admin/tracking",
         labelKey: "admin.trackingMatrix",
-        cap: "manage_orders",
+        anyCap: [
+          "manage_shipping",
+          "manage_accounts",
+          "manage_users",
+          "view_financials",
+        ],
       },
       {
         href: "/admin/owner",
         labelKey: "admin.ownerTracking",
         superOnly: true,
+      },
+      {
+        href: "/admin/owner/monthly-audit",
+        labelKey: "admin.monthlyAudit",
+        superOnly: true,
+      },
+      {
+        href: "/admin/audit",
+        labelKey: "admin.auditHub",
+        anyCap: [
+          "manage_accounts",
+          "manage_reorder",
+          "view_financials",
+        ],
       },
       { href: "/admin/help", labelKey: "admin.helpGuide" },
     ],
@@ -78,11 +114,23 @@ const GROUPS: NavGroup[] = [
         labelKey: "admin.accountsBook",
         cap: "manage_accounts",
       },
+      {
+        href: "/admin/accounts/payments",
+        labelKey: "admin.paymentsDesk",
+        cap: "manage_accounts",
+        badge: "need_verify_payment",
+      },
     ],
   },
   {
     titleKey: "admin.moduleCatalog",
     items: [
+      {
+        href: "/admin/home",
+        labelKey: "admin.homePage",
+        cap: "manage_products",
+        superOnly: true,
+      },
       {
         href: "/admin/products",
         labelKey: "admin.products",
@@ -92,7 +140,6 @@ const GROUPS: NavGroup[] = [
         href: "/admin/rates",
         labelKey: "admin.rates",
         cap: "manage_products",
-        superOnly: true,
       },
       {
         href: "/admin/categories",
@@ -102,7 +149,24 @@ const GROUPS: NavGroup[] = [
       {
         href: "/admin/accounts/inventory",
         labelKey: "admin.stock",
-        cap: "manage_accounts",
+        anyCap: ["manage_accounts", "manage_reorder"],
+      },
+      {
+        href: "/admin/accounts/reports/stock-alerts",
+        labelKey: "admin.stockAlerts",
+        anyCap: ["manage_accounts", "manage_reorder"],
+        badge: "need_reorder",
+      },
+      {
+        href: "/admin/audit/stock-count",
+        labelKey: "admin.stockCount",
+        roles: ["dispatch", "plant_manager", "accounts", "super_admin"],
+        anyCap: ["manage_accounts", "manage_reorder", "view_financials"],
+      },
+      {
+        href: "/admin/accounts/purchases?tab=orders",
+        labelKey: "admin.openPurchaseOrders",
+        cap: "manage_reorder",
       },
       {
         href: "/admin/schemes",
@@ -114,7 +178,15 @@ const GROUPS: NavGroup[] = [
   {
     titleKey: "admin.modulePeople",
     items: [
-      { href: "/admin/users", labelKey: "admin.users", cap: "manage_users" },
+      {
+        href: "/admin/hr",
+        labelKey: "admin.hrDesk",
+      },
+      {
+        href: "/admin/hr/punch",
+        labelKey: "admin.hrPunch",
+      },
+      { href: "/admin/users", labelKey: "admin.users", anyCap: ["manage_users", "approve_dealers"] },
       {
         href: "/admin/wallets",
         labelKey: "admin.wallets",
@@ -130,7 +202,6 @@ const GROUPS: NavGroup[] = [
         labelKey: "admin.shipping",
         cap: "manage_shipping",
       },
-      { href: "/admin/tally", labelKey: "admin.tallyStockBooks", cap: "manage_tally" },
       {
         href: "/admin/settings",
         labelKey: "admin.settings",
@@ -143,16 +214,20 @@ const GROUPS: NavGroup[] = [
 export function AdminShell({
   children,
   wide = false,
+  hideNav = false,
 }: {
   children: React.ReactNode;
   wide?: boolean;
+  /** Hide the outer admin sidebar (accounts uses its own nav). */
+  hideNav?: boolean;
 }) {
   const t = useTranslations();
   const locale = useLocale();
   const pathname = usePathname();
   const { session, ready } = useSession();
-  const { db } = useDb();
+  const { db, refresh } = useDb();
   const queues = getAdminQueues(db);
+  const salesDesk = isSalesDeskStaff(session, db);
   const [navOpen, setNavOpen] = useState(false);
   const [pendingOpen, setPendingOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; href: string } | null>(
@@ -160,9 +235,32 @@ export function AdminShell({
   );
   const audioReady = useRef(false);
   const pendingDealers = (db?.users ?? []).filter(
-    (u) => u.role === "customer" && !u.approved && u.active
+    (u) => u.role === "customer" && u.approved !== true && u.active !== false
   ).length;
   const closeLabel = locale === "hi" ? "मेनू बंद करें" : "Close menu";
+
+  useEffect(() => {
+    if (!ready || !session || !isStaff(session.role)) return;
+    if (
+      !checkCapability(session, db, "manage_users") &&
+      !checkCapability(session, db, "manage_orders") &&
+      !checkCapability(session, db, "approve_dealers")
+    ) {
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      const result = await refreshCloudDealerDirectory();
+      if (!cancelled && result?.changed) refresh();
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, session?.id]);
 
   useEffect(() => {
     // Close admin nav on route change — intentional sync of derived UI state
@@ -189,7 +287,7 @@ export function AdminShell({
   // Browser chime + toast when new estimates arrive
   useEffect(() => {
     if (!session || !isStaff(session.role)) return;
-    if (!checkCapability(session, db?.users, "manage_orders")) return;
+    if (!checkCapability(session, db, "manage_orders")) return;
     const count = queues.counts.need_confirm;
     const prev = readSeen(NEED_CONFIRM_SEEN_KEY);
     if (count > prev) {
@@ -218,12 +316,52 @@ export function AdminShell({
     writeSeen(NEED_CONFIRM_SEEN_KEY, count);
   }, [queues.counts.need_confirm, session, locale, db?.users]);
 
+  // Same chime + toast + push when payment proofs arrive
+  useEffect(() => {
+    if (!session || !isStaff(session.role)) return;
+    if (
+      !checkCapability(session, db, "manage_orders") &&
+      !checkCapability(session, db, "verify_payment")
+    ) {
+      return;
+    }
+    const count = queues.counts.need_verify_payment;
+    const prev = readSeen(NEED_VERIFY_SEEN_KEY);
+    if (count > prev) {
+      if (audioReady.current || prev > 0) {
+        playStaffNewOrderChime();
+      }
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setToast({
+        text:
+          locale === "hi"
+            ? `पेमेंट प्रूफ · जाँच करें (${count})`
+            : `Payment proof · verify (${count})`,
+        href: "/admin/orders?filter=need_verify",
+      });
+      window.setTimeout(() => setToast(null), 5000);
+      void notifyStaffPush({
+        title: locale === "hi" ? "पेमेंट प्रूफ" : "Payment proof",
+        body:
+          locale === "hi"
+            ? `${count} पेमेंट जाँच के लिए तैयार`
+            : `${count} payment(s) waiting to verify`,
+        url: "/en/admin/orders?filter=need_verify",
+      });
+    }
+    writeSeen(NEED_VERIFY_SEEN_KEY, count);
+  }, [queues.counts.need_verify_payment, session, locale, db?.users]);
+
   // Same treatment for dealers waiting on approval. The signup itself pushes
   // from the server (nobody is logged in then); this covers staff already in
   // the admin when the sync poll brings the new registration in.
   useEffect(() => {
     if (!session || !isStaff(session.role)) return;
-    if (!checkCapability(session, db?.users, "manage_users")) return;
+    if (
+      !checkCapability(session, db, "manage_users") &&
+      !checkCapability(session, db, "approve_dealers")
+    )
+      return;
     const prev = readSeen(PENDING_DEALER_SEEN_KEY);
     if (pendingDealers > prev) {
       if (audioReady.current || prev > 0) {
@@ -262,8 +400,6 @@ export function AdminShell({
     );
   }
 
-  const canOrders =
-    !!session && checkCapability(session, db?.users, "manage_orders");
   const pendingTotal =
     queues.counts.need_confirm +
     queues.counts.need_bill +
@@ -307,7 +443,32 @@ export function AdminShell({
       label: locale === "hi" ? "फुल ट्रक" : "Full truck",
       count: queues.counts.full_truck,
     },
-  ].filter((q) => q.count > 0);
+    {
+      key: "need_voucher",
+      href: "/admin/orders?filter=need_voucher",
+      label: locale === "hi" ? "सेल वाउचर बाकी" : "Sale voucher due",
+      count: queues.counts.need_voucher,
+    },
+    {
+      key: "need_reorder",
+      href: "/admin/accounts/reports/stock-alerts",
+      label: locale === "hi" ? "रीऑर्डर स्टॉक" : "Reorder stock",
+      count: queues.counts.need_reorder,
+    },
+  ].filter((q) => {
+    if (q.count <= 0) return false;
+    if (salesDesk && q.href.startsWith("/admin/accounts")) return false;
+    if (q.key === "need_voucher") {
+      return checkCapability(session, db, "manage_accounts");
+    }
+    if (q.key === "need_reorder") {
+      return (
+        checkCapability(session, db, "manage_accounts") ||
+        checkCapability(session, db, "manage_reorder")
+      );
+    }
+    return true;
+  });
 
   const nav = (
     <>
@@ -332,7 +493,7 @@ export function AdminShell({
         <p className="text-xs capitalize text-[var(--ink-muted)]">
           {session.role.replaceAll("_", " ")}
         </p>
-        {canOrders && pendingTotal > 0 ? (
+        {pendingQueues.length > 0 ? (
           <div className="mt-3">
             <button
               type="button"
@@ -341,7 +502,8 @@ export function AdminShell({
               className="flex w-full items-center justify-between gap-2 rounded-lg bg-[var(--brand-soft)] px-2.5 py-2 text-left text-xs font-bold text-[var(--brand-deep)] transition hover:bg-[var(--brand)] hover:text-white"
             >
               <span>
-                {t("common.pendingWork")}: {pendingTotal}
+                {t("common.pendingWork")}:{" "}
+                {pendingQueues.reduce((s, q) => s + q.count, 0)}
               </span>
               <span className="text-[10px] font-semibold opacity-80">
                 {pendingOpen
@@ -393,11 +555,16 @@ export function AdminShell({
       </div>
       <nav className="max-h-[60vh] space-y-3 overflow-y-auto p-2 lg:max-h-[75vh]">
         {GROUPS.map((g) => {
-          const items = g.items.filter(
-            (l) =>
-              (!l.cap || checkCapability(session, db?.users, l.cap)) &&
-              (!l.superOnly || session.role === "super_admin")
-          );
+          const items = g.items.filter((l) => {
+            if (salesDesk && !SALES_DESK_HREFS.has(l.href)) return false;
+            if (l.superOnly && session.role !== "super_admin") return false;
+            if (l.roles?.length && l.roles.includes(session.role)) return true;
+            if (l.anyCap?.length) {
+              return l.anyCap.some((c) => checkCapability(session, db, c));
+            }
+            if (l.cap) return checkCapability(session, db, l.cap);
+            return !l.roles?.length;
+          });
           if (!items.length) return null;
           return (
             <div key={g.titleKey}>
@@ -429,7 +596,12 @@ export function AdminShell({
                           : "text-[var(--ink-muted)] hover:bg-[var(--brand-soft)] hover:text-[var(--brand-deep)]"
                       }`}
                     >
-                      <span>{t(l.labelKey as "admin.dashboard")}</span>
+                      <span>
+                        {l.href === "/admin/hr" &&
+                        session.role !== "super_admin"
+                          ? t("admin.hrMyDesk")
+                          : t(l.labelKey as "admin.dashboard")}
+                      </span>
                       {showBadge > 0 ? (
                         <span
                           className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
@@ -476,29 +648,35 @@ export function AdminShell({
         </Link>
       ) : null}
       <div
-        className={`${wide ? "tt-admin-wrap" : "tt-wrap"} grid gap-4 py-4 lg:grid-cols-[220px_1fr] lg:gap-5 lg:py-5`}
+        className={`${wide ? "tt-admin-wrap" : "tt-wrap"} grid gap-4 py-4 ${
+          hideNav ? "" : "lg:grid-cols-[220px_1fr]"
+        } lg:gap-5 lg:py-5`}
       >
-        <div className="lg:hidden print:hidden">
-          <button
-            type="button"
-            className="tt-btn tt-btn-outline w-full"
-            onClick={() => setNavOpen((o) => !o)}
-            aria-expanded={navOpen}
-          >
-            {navOpen
-              ? closeLabel
-              : `${t("nav.admin")} menu${pendingTotal > 0 ? ` · ${pendingTotal}` : ""}`}
-          </button>
-          {navOpen ? (
-            <aside className="tt-panel mt-3 max-h-[min(70dvh,calc(100dvh-8rem))] overflow-y-auto p-0">
-              {nav}
-            </aside>
-          ) : null}
-        </div>
+        {hideNav ? null : (
+          <div className="lg:hidden print:hidden">
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline w-full"
+              onClick={() => setNavOpen((o) => !o)}
+              aria-expanded={navOpen}
+            >
+              {navOpen
+                ? closeLabel
+                : `${t("nav.admin")} menu${pendingTotal > 0 ? ` · ${pendingTotal}` : ""}`}
+            </button>
+            {navOpen ? (
+              <aside className="tt-panel mt-3 max-h-[min(70dvh,calc(100dvh-8rem))] overflow-y-auto p-0">
+                {nav}
+              </aside>
+            ) : null}
+          </div>
+        )}
 
-        <aside className="tt-panel admin-shell-nav hidden h-fit overflow-hidden p-0 print:hidden lg:sticky lg:top-16 lg:block">
-          {nav}
-        </aside>
+        {hideNav ? null : (
+          <aside className="tt-panel admin-shell-nav hidden h-fit overflow-hidden p-0 print:hidden lg:sticky lg:top-16 lg:block">
+            {nav}
+          </aside>
+        )}
         <div className="admin-shell-main min-w-0">{children}</div>
       </div>
     </div>

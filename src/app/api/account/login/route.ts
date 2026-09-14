@@ -1,31 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  cloudGetAppDb,
-  cloudPutAppDb,
-  createServerSupabase,
-} from "@/lib/server/app-db";
+import { cloudGetAppDb } from "@/lib/server/app-db";
+import { liveLoginUser, liveSessionUser } from "@/lib/server/live-login";
 import { rateLimit } from "@/lib/server/rate-limit";
 import {
   clearSessionCookieOptions,
   createSessionToken,
-  hashPasswordSecure,
-  needsPasswordUpgrade,
+  getSessionSecret,
   readSessionCookie,
   sessionCookieOptions,
   verifyPassword,
 } from "@/lib/server/session";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
-import { sanitizeDbForCloud } from "@/lib/supabase/sanitize";
-import {
-  appendAccessPlace,
-  buildAccessPlace,
-} from "@/lib/server/access-log";
-
-function phonesMatch(a: string, b: string): boolean {
-  const na = (a || "").replace(/\D/g, "").slice(-10);
-  const nb = (b || "").replace(/\D/g, "").slice(-10);
-  return na.length === 10 && na === nb;
-}
 
 function clientKey(req: NextRequest, phone: string): string {
   const fwd = req.headers.get("x-forwarded-for") || "";
@@ -34,6 +19,19 @@ function clientKey(req: NextRequest, phone: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  try {
+    return await postLogin(req);
+  } catch (err) {
+    const raw = err instanceof Error ? err.message : "Login failed";
+    const message =
+      raw.includes("SESSION_SECRET") || raw.includes("TT_APP_DB_GATE")
+        ? "Server auth is misconfigured. Contact admin."
+        : raw;
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+async function postLogin(req: NextRequest) {
   let body: { phone?: string; password?: string };
   try {
     body = (await req.json()) as { phone?: string; password?: string };
@@ -47,6 +45,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: "Phone and password required" },
       { status: 400 }
+    );
+  }
+
+  // Cookie HMAC must work before we touch the password or cloud DB.
+  try {
+    getSessionSecret();
+  } catch {
+    return NextResponse.json(
+      { error: "Server auth is misconfigured. Contact admin." },
+      { status: 503 }
     );
   }
 
@@ -64,16 +72,7 @@ export async function POST(req: NextRequest) {
       { status: 503 }
     );
   }
-
-  const supabase = createServerSupabase();
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Server auth unavailable" },
-      { status: 503 }
-    );
-  }
-
-  const { db, updatedAt, error } = await cloudGetAppDb(supabase);
+  const { db, error } = await cloudGetAppDb();
   if (error) {
     return NextResponse.json({ error }, { status: 500 });
   }
@@ -84,7 +83,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const user = db.users.find((u) => phonesMatch(u.phone, phone));
+  const user = liveLoginUser(db, phone);
   if (!user || !verifyPassword(password, user.passwordHash)) {
     return NextResponse.json(
       { error: "Invalid phone or password" },
@@ -93,11 +92,11 @@ export async function POST(req: NextRequest) {
   }
   if (!user.active) {
     return NextResponse.json(
-      { error: "Account is disabled. Contact admin." },
+      { error: "Account is disabled. Contact T T Enterprises." },
       { status: 403 }
     );
   }
-  if (user.role === "customer" && !user.approved) {
+  if (user.role === "customer" && user.approved !== true) {
     return NextResponse.json(
       {
         error:
@@ -106,26 +105,6 @@ export async function POST(req: NextRequest) {
       { status: 403 }
     );
   }
-
-  // Upgrade legacy demo_* hashes to scrypt on successful login
-  if (needsPasswordUpgrade(user.passwordHash)) {
-    user.passwordHash = hashPasswordSecure(password);
-    delete (user as { passwordVisible?: string }).passwordVisible;
-  }
-
-  try {
-    const place = await buildAccessPlace({
-      headers: req.headers,
-      source: "login",
-      user,
-    });
-    appendAccessPlace(db, place);
-  } catch {
-    /* analytics must never block login */
-  }
-
-  const cleaned = sanitizeDbForCloud(db);
-  await cloudPutAppDb(supabase, cleaned, updatedAt ?? null);
 
   const session = {
     id: user.id,
@@ -147,14 +126,53 @@ export async function GET(req: NextRequest) {
   if (!session) {
     return NextResponse.json({ user: null }, { status: 401 });
   }
+
+  if (!isSupabaseConfigured()) {
+    return NextResponse.json({
+      user: {
+        id: session.id,
+        phone: session.phone,
+        email: session.email,
+        name: session.name,
+        role: session.role,
+        locale: session.locale,
+      },
+    });
+  }
+  const { db, error } = await cloudGetAppDb();
+  if (error || !db) {
+    // Do not log everyone out on a transient cloud blip.
+    return NextResponse.json({
+      user: {
+        id: session.id,
+        phone: session.phone,
+        email: session.email,
+        name: session.name,
+        role: session.role,
+        locale: session.locale,
+      },
+    });
+  }
+
+  const user = liveSessionUser(db, session.id);
+  if (!user) {
+    const res = NextResponse.json(
+      { user: null, error: "Account removed. Please log in again." },
+      { status: 401 }
+    );
+    const cookie = clearSessionCookieOptions();
+    res.cookies.set(cookie.name, cookie.value, cookie);
+    return res;
+  }
+
   return NextResponse.json({
     user: {
-      id: session.id,
-      phone: session.phone,
-      email: session.email,
-      name: session.name,
-      role: session.role,
-      locale: session.locale,
+      id: user.id,
+      phone: user.phone,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      locale: (user.locale === "hi" ? "hi" : "en") as "en" | "hi",
     },
   });
 }

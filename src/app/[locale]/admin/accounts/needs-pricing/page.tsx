@@ -1,11 +1,14 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { NumberField } from "@/components/NumberField";
 import { PURCHASE_CHARGE_PRESETS, partyBalance } from "@/lib/accounting";
+import { resolveOpenContract } from "@/lib/contracts";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr, roundMoney, roundOffRupees } from "@/lib/pricing";
 import {
@@ -36,6 +39,7 @@ function blankExpense(): ExpenseDraft {
 }
 
 export default function NeedsPricingPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db, refresh } = useDb();
   const [activeId, setActiveId] = useState<string>("");
@@ -45,6 +49,7 @@ export default function NeedsPricingPage() {
   const [expenses, setExpenses] = useState<ExpenseDraft[]>([]);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const queue = useMemo(
     () => (db ? listUnpricedGoodsReceipts(db) : []),
@@ -63,11 +68,25 @@ export default function NeedsPricingPage() {
     const next: Record<string, string> = {};
     for (const line of row.grn.lines) {
       const poLine = row.po.lines.find((l) => l.id === line.poLineId);
-      next[line.id] = poLine && poLine.rate > 0 ? String(poLine.rate) : "";
+      if (poLine && poLine.rate > 0) {
+        next[line.id] = String(poLine.rate);
+        continue;
+      }
+      const contract = resolveOpenContract(
+        db.supplierContracts ?? [],
+        db.products,
+        row.po.supplierId,
+        line.productId || poLine?.productId,
+        row.grn.date,
+        {
+          contractId: poLine?.contractId,
+          variationId: line.variationId || poLine?.variationId,
+        }
+      );
+      next[line.id] = contract ? String(contract.rate) : "";
     }
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRates(next);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setExpenses([]);
     if (!activeId) setActiveId(activeGrnId);
   }, [activeGrnId, activeId, db]);
@@ -75,7 +94,7 @@ export default function NeedsPricingPage() {
   if (!session || !canViewFinancials(session.role)) {
     return (
       <AccountsShell>
-        <AdminAccessDenied title="Owner only — purchase rates" />
+        <AdminAccessDenied title={t("accounts.ownerOnlyPurchaseRates")} />
       </AccountsShell>
     );
   }
@@ -90,8 +109,25 @@ export default function NeedsPricingPage() {
     const next: Record<string, string> = {};
     for (const line of row.grn.lines) {
       const poLine = row.po.lines.find((l) => l.id === line.poLineId);
+      if (poLine && poLine.rate > 0) {
+        next[line.id] = String(poLine.rate);
+        continue;
+      }
+      const contract = db
+        ? resolveOpenContract(
+            db.supplierContracts ?? [],
+            db.products,
+            row.po.supplierId,
+            line.productId || poLine?.productId,
+            row.grn.date,
+            {
+              contractId: poLine?.contractId,
+              variationId: line.variationId || poLine?.variationId,
+            }
+          )
+        : undefined;
       next[line.id] =
-        poLine && poLine.rate > 0 ? String(poLine.rate) : rates[line.id] || "";
+        contract ? String(contract.rate) : rates[line.id] || "";
     }
     setRates(next);
   };
@@ -100,11 +136,26 @@ export default function NeedsPricingPage() {
     ? active.grn.lines.map((l) => {
         const qty = l.secondaryQty ?? l.qty;
         const rate = Number(rates[l.id]) || 0;
+        const poLine = active.po.lines.find((pl) => pl.id === l.poLineId);
+        const contract = db
+          ? resolveOpenContract(
+              db.supplierContracts ?? [],
+              db.products,
+              active.po.supplierId,
+              l.productId || poLine?.productId,
+              active.grn.date,
+              {
+                contractId: poLine?.contractId,
+                variationId: l.variationId || poLine?.variationId,
+              }
+            )
+          : undefined;
         return {
           ...l,
           measure: qty,
           rate,
           amount: roundMoney(qty * rate),
+          contractRate: contract?.rate,
         };
       })
     : [];
@@ -163,6 +214,7 @@ export default function NeedsPricingPage() {
     if (!active) return;
     setError("");
     setMsg("");
+    setSaving(true);
     try {
       const rateNums: Record<string, number> = {};
       for (const line of active.grn.lines) {
@@ -194,6 +246,8 @@ export default function NeedsPricingPage() {
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -201,26 +255,23 @@ export default function NeedsPricingPage() {
     <AccountsShell>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold text-[var(--ink)]">
-            Needs pricing
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Enter rates and optional freight / expenses, then post the supplier
-            bill. Stock does not change again.
-          </p>
+          <AccountsPageHeader
+            title={t("accounts.needsPricing")}
+            hint={t("accounts.needsPricingHint")}
+          />
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
             href="/admin/accounts/payables"
             className="tt-btn tt-btn-outline"
           >
-            Bills payable
+            {t("accounts.billsPayable")}
           </Link>
           <Link
             href="/admin/accounts/goods-received"
             className="tt-btn tt-btn-outline"
           >
-            ← Goods received
+            ← {t("accounts.goodsReceived")}
           </Link>
         </div>
       </div>
@@ -427,6 +478,11 @@ export default function NeedsPricingPage() {
                               required
                               autoFocus={linePreview[0]?.id === l.id}
                             />
+                            {l.contractRate != null && l.contractRate > 0 ? (
+                              <p className="mt-0.5 text-right text-[10px] text-[var(--ink-muted)]">
+                                Contract rate {formatInr(l.contractRate)}
+                              </p>
+                            ) : null}
                           </td>
                           <td className="text-right font-medium tabular-nums">
                             {formatInr(l.amount)}
@@ -642,8 +698,8 @@ export default function NeedsPricingPage() {
                   >
                     Pay this supplier
                   </Link>
-                  <button type="submit" className="tt-btn tt-btn-dark">
-                    Approve &amp; post purchase bill
+                  <button type="submit" className="tt-btn tt-btn-dark" disabled={saving}>
+                    {saving ? "Saving…" : "Approve & post purchase bill"}
                   </button>
                 </div>
               </div>

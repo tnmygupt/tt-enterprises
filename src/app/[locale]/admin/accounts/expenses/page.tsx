@@ -1,11 +1,14 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { ExportButtons } from "@/components/ExportButtons";
+import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
 import { ACCT, EXPENSE_PRESETS, accountBalance, cashBankAccounts } from "@/lib/accounting";
 import { toDateInputValue } from "@/lib/date-range";
@@ -18,6 +21,7 @@ import {
 } from "@/lib/store/db";
 
 export default function ExpensesPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db, refresh } = useDb();
   const isOwner = session ? canViewFinancials(session.role) : false;
@@ -32,6 +36,7 @@ export default function ExpensesPage() {
   const [billFile, setBillFile] = useState<File | null>(null);
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const presets = useMemo(
     () => EXPENSE_PRESETS.filter((p) => !p.ownerOnly || isOwner),
@@ -106,7 +111,7 @@ export default function ExpensesPage() {
     [db, recent, today]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -125,6 +130,7 @@ export default function ExpensesPage() {
     e.preventDefault();
     setMsg("");
     setError("");
+    setSaving(true);
     try {
       let packingSlipDataUrl: string | undefined;
       let packingSlipName: string | undefined;
@@ -149,31 +155,28 @@ export default function ExpensesPage() {
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
     <AccountsShell focusMode>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            Log expense
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Pick a head, amount, cash or bank. Attach the bill photo if you
-            have it.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <ExportButtons options={exportOptions} disabled={!recent.length} />
-          <Link
-            href="/admin/accounts/journal"
-            className="tt-btn tt-btn-outline"
-          >
-            Journal
-          </Link>
-        </div>
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.expenseTitle")}
+        hint={t("accounts.expenseHint")}
+        actions={
+          <>
+            <ExportButtons options={exportOptions} disabled={!recent.length} />
+            <Link
+              href="/admin/accounts/journal"
+              className="tt-btn tt-btn-outline"
+            >
+              {t("accounts.journal")}
+            </Link>
+          </>
+        }
+      />
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {payFromBalances.map((b) => (
@@ -276,23 +279,19 @@ export default function ExpensesPage() {
           />
         </div>
 
-        <div>
-          <label className="tt-label">Bill photo (optional)</label>
-          <input
-            type="file"
-            accept="image/*,.pdf"
-            className="tt-input"
-            onChange={(e) => setBillFile(e.target.files?.[0] || null)}
-          />
-          {billFile ? (
-            <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              {billFile.name}
-            </p>
-          ) : null}
-        </div>
+        <FilePick
+          kind="photoOrPdf"
+          value={billFile}
+          onChange={(files) => setBillFile(files[0] || null)}
+          label="Bill photo (optional)"
+        />
 
-        <button type="submit" className="tt-btn tt-btn-dark min-h-12 w-full sm:w-auto">
-          Save expense
+        <button
+          type="submit"
+          className="tt-btn tt-btn-dark min-h-12 w-full sm:w-auto"
+          disabled={saving}
+        >
+          {saving ? t("accounts.saving") : "Save expense"}
         </button>
       </form>
 

@@ -4,14 +4,14 @@ import { FormEvent, useEffect, useState } from "react";
 import { TransportInput } from "@/components/TransportInput";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
-import { useDb, useSession } from "@/lib/hooks";
-import { updateCustomerProfile } from "@/lib/store/db";
+import { useDb, useSession, retryCloudCatalog } from "@/lib/hooks";
+import { updateCustomerProfile, changeOwnPasswordAsync } from "@/lib/store/db";
 
 export default function ProfilePage() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
   const { session, ready } = useSession();
-  const { db, refresh } = useDb();
+  const { db, refresh, cloudReady } = useDb();
   const user = db?.users.find((u) => u.id === session?.id);
 
   const [editing, setEditing] = useState(false);
@@ -25,6 +25,12 @@ export default function ProfilePage() {
   const [msg, setMsg] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState("");
+  const [pwError, setPwError] = useState("");
 
   useEffect(() => {
     if (!user) return;
@@ -39,6 +45,11 @@ export default function ProfilePage() {
     setTransport(user.transport || "");
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [user]);
+
+  useEffect(() => {
+    if (!session || user || !cloudReady) return;
+    void retryCloudCatalog().then(() => refresh());
+  }, [session, user, cloudReady, refresh]);
 
   if (!ready) {
     return (
@@ -69,8 +80,19 @@ export default function ProfilePage() {
   if (!user) {
     return (
       <section className="tt-section">
-        <div className="tt-wrap">
-          <p>{t("common.loading")}</p>
+        <div className="tt-wrap tt-panel max-w-lg p-6">
+          <p className="text-[var(--ink-muted)]">
+            {!cloudReady ? t("common.loading") : t("shop.userMissing")}
+          </p>
+          {cloudReady ? (
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline mt-4"
+              onClick={() => void retryCloudCatalog().then(() => refresh())}
+            >
+              {t("connection.retry")}
+            </button>
+          ) : null}
         </div>
       </section>
     );
@@ -95,11 +117,7 @@ export default function ProfilePage() {
     setMsg("");
     const pin = pincode.replace(/\D/g, "").slice(0, 6);
     if (!name.trim() || !phone.trim() || !address.trim() || pin.length !== 6) {
-      setError(
-        locale === "hi"
-          ? "नाम, मोबाइल, पता और 6 अंकों का पिनकोड ज़रूरी है"
-          : "Name, phone, address and 6-digit pincode are required"
-      );
+      setError(t("shop.profileRequired"));
       return;
     }
     setBusy(true);
@@ -115,13 +133,39 @@ export default function ProfilePage() {
       });
       refresh();
       setEditing(false);
-      setMsg(
-        locale === "hi" ? "प्रोफ़ाइल सेव हो गई।" : "Profile saved."
-      );
+      setMsg(t("shop.profileSaved"));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const onChangePassword = async (e: FormEvent) => {
+    e.preventDefault();
+    if (pwBusy) return;
+    setPwError("");
+    setPwMsg("");
+    if (pwNew.trim().length < 6) {
+      setPwError(t("auth.passwordMin"));
+      return;
+    }
+    if (pwNew !== pwConfirm) {
+      setPwError(t("auth.passwordMismatch"));
+      return;
+    }
+    setPwBusy(true);
+    try {
+      await changeOwnPasswordAsync(pwCurrent, pwNew);
+      setPwCurrent("");
+      setPwNew("");
+      setPwConfirm("");
+      setPwMsg(t("auth.passwordChanged"));
+      refresh();
+    } catch (err) {
+      setPwError(err instanceof Error ? err.message : "Could not change password");
+    } finally {
+      setPwBusy(false);
     }
   };
 
@@ -293,6 +337,73 @@ export default function ProfilePage() {
             </div>
           </form>
         )}
+
+        {user.passwordResetRequestedAt ? (
+          <p className="mt-4 rounded-xl bg-sky-50 px-4 py-3 text-sm text-sky-950">
+            {t("auth.resetRequestPending")}
+          </p>
+        ) : null}
+
+        <form onSubmit={onChangePassword} className="tt-panel mt-5 space-y-4 p-5">
+          <div>
+            <h2 className="font-semibold text-[var(--brand-deep)]">
+              {t("auth.changePassword")}
+            </h2>
+            <p className="mt-1 text-xs text-[var(--ink-muted)]">
+              {t("auth.passwordChangeHint")}
+            </p>
+          </div>
+          {pwMsg ? (
+            <p className="text-sm font-medium text-[var(--ok)]">{pwMsg}</p>
+          ) : null}
+          {pwError ? (
+            <p className="text-sm font-medium text-[var(--danger)]">{pwError}</p>
+          ) : null}
+          <div>
+            <label className="tt-label">{t("auth.currentPassword")}</label>
+            <input
+              className="tt-input"
+              type="password"
+              autoComplete="current-password"
+              value={pwCurrent}
+              onChange={(e) => setPwCurrent(e.target.value)}
+              required
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="tt-label">{t("auth.newPassword")}</label>
+              <input
+                className="tt-input"
+                type="password"
+                autoComplete="new-password"
+                value={pwNew}
+                onChange={(e) => setPwNew(e.target.value)}
+                required
+                minLength={6}
+              />
+            </div>
+            <div>
+              <label className="tt-label">{t("auth.confirmPassword")}</label>
+              <input
+                className="tt-input"
+                type="password"
+                autoComplete="new-password"
+                value={pwConfirm}
+                onChange={(e) => setPwConfirm(e.target.value)}
+                required
+                minLength={6}
+              />
+            </div>
+          </div>
+          <button
+            type="submit"
+            className="tt-btn tt-btn-dark"
+            disabled={pwBusy}
+          >
+            {pwBusy ? t("common.saving") : t("auth.changePassword")}
+          </button>
+        </form>
       </div>
     </section>
   );

@@ -38,11 +38,46 @@ export function canTransitionOrderStatus(
       from === "payment_pending"
     );
   }
+  if (to === "dispatched" || to === "delivered") {
+    if (
+      from !== "payment_verified" &&
+      from !== "dispatched" &&
+      from !== "delivered"
+    ) {
+      return false;
+    }
+  }
   const fi = orderStageIndex(from);
   const ti = orderStageIndex(to);
   if (fi < 0 || ti < 0) return false;
   // Forward only (billing may skip confirmed → payment_pending)
   return ti >= fi;
+}
+
+/** Drop dispatch/deliver (and other illegal jumps) that the previous row would not allow. */
+export function revertIllegalOrderStatus<T extends { id: string; status: OrderStatus }>(
+  incoming: T,
+  previous: T | undefined
+): T {
+  if (!previous) {
+    if (incoming.status === "dispatched" || incoming.status === "delivered") {
+      return { ...incoming, status: "estimate" };
+    }
+    return incoming;
+  }
+  if (incoming.status === previous.status) return incoming;
+  if (!canTransitionOrderStatus(previous.status, incoming.status)) {
+    return { ...incoming, status: previous.status };
+  }
+  return incoming;
+}
+
+export function clampMergedOrders<T extends { id: string; status: OrderStatus }>(
+  merged: T[],
+  previous: T[] | undefined
+): T[] {
+  const prev = new Map((previous ?? []).map((o) => [o.id, o]));
+  return merged.map((o) => revertIllegalOrderStatus(o, prev.get(o.id)));
 }
 
 export function allowedNextOrderStatuses(from: OrderStatus): OrderStatus[] {

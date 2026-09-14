@@ -1,16 +1,19 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
+import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { ExportButtons } from "@/components/ExportButtons";
 import { NumberField } from "@/components/NumberField";
 import { deriveSecondaryQty, inventoryRows } from "@/lib/inventory";
 import { useDb, useSession } from "@/lib/hooks";
 import { unitLabel } from "@/lib/pricing";
-import { adjustStockBatch, checkCapability } from "@/lib/store/db";
+import { adjustStockBatch, checkAnyCapability, checkCapability } from "@/lib/store/db";
 
 type InventoryRow = ReturnType<typeof inventoryRows>[number];
 
@@ -26,16 +29,39 @@ function rowKey(r: Pick<InventoryRow, "productId" | "variationId" | "colorId">) 
 }
 
 export default function AccountsInventoryPage() {
+  return (
+    <Suspense
+      fallback={
+        <AccountsShell>
+          <p>Loading…</p>
+        </AccountsShell>
+      }
+    >
+      <InventoryFromParams />
+    </Suspense>
+  );
+}
+
+function InventoryFromParams() {
+  const search = useSearchParams();
+  const initialQ = search.get("q") || "";
+  return <InventoryInner key={initialQ} initialQ={initialQ} />;
+}
+
+function InventoryInner({ initialQ }: { initialQ: string }) {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
   const { session } = useSession();
   const { db, refresh } = useDb();
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(initialQ);
   const [lowOnly, setLowOnly] = useState(false);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const [pending, setPending] = useState<Record<string, PendingAdj>>({});
+  const canBooks =
+    !!session && checkCapability(session, db, "manage_accounts");
+  const canAdjust = canBooks;
 
   const allRows = useMemo(() => (db ? inventoryRows(db) : []), [db]);
 
@@ -103,7 +129,7 @@ export default function AccountsInventoryPage() {
     [locale, rows, t]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkAnyCapability(session, db, ["manage_accounts", "manage_reorder"])) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -208,14 +234,10 @@ export default function AccountsInventoryPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {t("accounts.inventory")}
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)]">
-        {locale === "hi"
-          ? "कई आइटम एक साथ एडजस्ट करें — + जोड़ें, − घटाएँ, फिर एक बार सेव"
-          : "Adjust many items at once — type + to add, − to remove, then save once"}
-      </p>
+      <AccountsPageHeader
+        title={t("accounts.inventory")}
+        hint={t("accounts.inventoryHint")}
+      />
 
       <div className="mt-4 flex flex-wrap items-end gap-3">
         <input
@@ -233,17 +255,19 @@ export default function AccountsInventoryPage() {
           {locale === "hi" ? "कम स्टॉक" : "Low / out"} ({lowCount})
         </button>
         <ExportButtons options={exportOptions} />
-        <Link
-          href="/admin/accounts/reports/stock-movements"
-          className="tt-btn tt-btn-outline"
-        >
-          Full movements
-        </Link>
+        {canBooks ? (
+          <Link
+            href="/admin/accounts/reports/stock-movements"
+            className="tt-btn tt-btn-outline"
+          >
+            {t("accounts.stockMovements")}
+          </Link>
+        ) : null}
         <Link
           href="/admin/accounts/reports/stock-alerts"
           className="tt-btn tt-btn-outline"
         >
-          Stock alerts
+          {t("accounts.stockAlerts")}
         </Link>
       </div>
 
@@ -255,6 +279,8 @@ export default function AccountsInventoryPage() {
               <th>Item</th>
               <th>{t("common.bundles")}</th>
               <th>Kg / Pcs</th>
+              {canAdjust ? (
+                <>
               <th className="min-w-[7rem]">
                 {locale === "hi" ? "Δ बंडल" : "Δ Bundles"}
               </th>
@@ -262,6 +288,8 @@ export default function AccountsInventoryPage() {
                 {locale === "hi" ? "Δ किग्रा/पीस" : "Δ Kg / Pcs"}
               </th>
               <th />
+                </>
+              ) : null}
             </tr>
           </thead>
           <tbody>
@@ -308,6 +336,8 @@ export default function AccountsInventoryPage() {
                       </span>
                     ) : null}
                   </td>
+                  {canAdjust ? (
+                    <>
                   <td>
                     <NumberField
                       className="tt-input w-[6.5rem] tabular-nums"
@@ -347,13 +377,15 @@ export default function AccountsInventoryPage() {
                       {locale === "hi" ? "इतिहास" : "History"}
                     </Link>
                   </td>
+                    </>
+                  ) : null}
                 </tr>
               );
             })}
           </tbody>
         </table>
         {!rows.length ? (
-          <p className="p-4 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+          <AccountsEmpty message={t("common.empty")} />
         ) : null}
       </div>
 
@@ -362,7 +394,7 @@ export default function AccountsInventoryPage() {
       ) : null}
 
       {/* Sticky multi-save bar — only when something is typed */}
-      {pendingCount > 0 ? (
+      {canAdjust && pendingCount > 0 ? (
         <div className="sticky bottom-3 z-20 mt-4 rounded-2xl border border-[var(--brand)] bg-white/95 p-3 shadow-[var(--shadow)] backdrop-blur sm:p-4">
           <div className="flex flex-wrap items-end gap-3">
             <div className="min-w-[12rem] flex-1">
@@ -468,7 +500,7 @@ export default function AccountsInventoryPage() {
           </tbody>
         </table>
         {!movements.length ? (
-          <p className="p-4 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+          <AccountsEmpty message={t("common.empty")} />
         ) : null}
       </div>
     </AccountsShell>

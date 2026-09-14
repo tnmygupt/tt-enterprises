@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getVapidPublicKey, vapidConfigured } from "@/lib/server/web-push";
 
 export async function GET() {

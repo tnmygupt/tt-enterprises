@@ -31,6 +31,7 @@ export type SearchableDb = {
   accounts: Account[];
   orders: Order[];
   goodsReceipts?: GoodsReceipt[];
+  purchaseOrders?: { id: string; supplierId: string }[];
 };
 
 function scoreMatch(hay: string, q: string): number {
@@ -99,7 +100,7 @@ export function searchAccountsEverywhere(
       id: p.id,
       title: p.name.en,
       subtitle: `${p.code} · stock ${p.stock}`,
-      href: `/admin/products`,
+      href: `/admin/accounts/inventory?q=${encodeURIComponent(p.code || p.name.en)}`,
       score: s,
     });
   }
@@ -136,15 +137,17 @@ export function searchAccountsEverywhere(
 
   for (const g of db.goodsReceipts ?? []) {
     if (g.voided) continue;
-    const hay = `${g.number} ${g.narration ?? ""} ${g.poId}`;
+    const po = db.purchaseOrders?.find((p) => p.id === g.poId);
+    const supplier = db.parties.find((p) => p.id === po?.supplierId);
+    const hay = `${g.number} ${g.narration ?? ""} ${g.poId} ${supplier?.name ?? ""}`;
     const s = scoreMatch(hay, q);
     if (!s) continue;
     hits.push({
       kind: "grn",
       id: g.id,
       title: g.number,
-      subtitle: `GRN · ${g.date}`,
-      href: `/admin/accounts/goods-received`,
+      subtitle: `GRN · ${g.date}${supplier ? ` · ${supplier.name}` : ""}`,
+      href: `/admin/accounts/goods-received?id=${encodeURIComponent(g.id)}`,
       score: s,
     });
   }

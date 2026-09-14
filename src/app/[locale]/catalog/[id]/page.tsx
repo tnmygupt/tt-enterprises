@@ -8,13 +8,23 @@ import { NumberField } from "@/components/NumberField";
 import { sanitizeHtml, hasRichContent } from "@/components/RichTextEditor";
 import { categoryLabel } from "@/lib/categories";
 import { useDb, useSession } from "@/lib/hooks";
-import { getSizeColorStock } from "@/lib/inventory";
+import {
+  firstInStockColorId,
+  firstInStockSelection,
+  getSizeColorStock,
+} from "@/lib/inventory";
 import { loc } from "@/lib/localized";
 import {
   calcLineTotal,
   formatInr,
+  isSqftUnit,
+  ratePerPacket,
+  ratePerPiece,
   resolveRate,
+  resolveSqftPack,
   resolveWeightKg,
+  sqftPerPiece,
+  unitLabel,
   variationDisplayLabel,
 } from "@/lib/pricing";
 import { getCart, saveCart } from "@/lib/store/db";
@@ -48,13 +58,17 @@ export default function ProductDetailPage() {
         ? [`${product.id}_logo`]
         : []),
     ];
+    const pick = firstInStockSelection(product);
     setVariationId((prev) => {
       if (prev && variations.some((v) => v.id === prev)) return prev;
-      return variations[0]?.id ?? "";
+      return pick.variationId;
     });
     setColorId((prev) => {
-      if (prev && colors.some((c) => c.id === prev)) return prev;
-      return colors[0]?.id ?? "";
+      if (prev && colors.some((c) => c.id === prev)) {
+        const keepStock = getSizeColorStock(product, pick.variationId || prev, prev);
+        if (keepStock > 0) return prev;
+      }
+      return pick.colorId;
     });
     setActiveMediaId((prev) => {
       if (prev && galleryIds.includes(prev)) return prev;
@@ -63,9 +77,11 @@ export default function ProductDetailPage() {
         (product.logoUrl ? `${product.id}_logo` : "")
       );
     });
-    const v0 = variations[0];
-    const c0 = colors[0];
-    const firstStock = getSizeColorStock(product, v0?.id, c0?.id);
+    const firstStock = getSizeColorStock(
+      product,
+      pick.variationId,
+      pick.colorId || undefined
+    );
     const lo = Math.min(product.minOrderQty ?? 1, firstStock || 0);
     setQuantity(firstStock > 0 ? Math.max(lo || 1, 1) : 0);
     /* eslint-enable react-hooks/set-state-in-effect */
@@ -230,7 +246,7 @@ export default function ProductDetailPage() {
                       role="img"
                       aria-label={productTitle}
                     >
-                      {locale === "hi" ? "कोई इमेज नहीं" : "No image"}
+                      {t("shop.noImage")}
                     </div>
                   )}
                 </div>
@@ -298,7 +314,7 @@ export default function ProductDetailPage() {
             <div className="min-w-0">
               {brandName ? (
                 <p className="text-sm font-bold uppercase tracking-wider text-[var(--brand)]">
-                  {locale === "hi" ? "ब्रांड" : "Brand"}: {brandName}
+                  {t("shop.brand")}: {brandName}
                 </p>
               ) : null}
               <p className="text-xs font-bold uppercase tracking-wider text-[var(--ink-muted)]">
@@ -341,7 +357,9 @@ export default function ProductDetailPage() {
 
           <p className="mt-4 text-2xl font-semibold">
             {loggedIn
-              ? formatInr(rate, locale)
+              ? isSqftUnit(product.unit)
+                ? formatInr(resolveSqftPack(product, variation).ratePerSqft, locale)
+                : formatInr(rate, locale)
               : locale === "hi"
                 ? "रेट के लिए लॉगिन करें"
                 : "Login to see rates"}
@@ -351,19 +369,43 @@ export default function ProductDetailPage() {
                 /{" "}
                 {product.pricingMode === "bundle"
                   ? t("common.kg")
-                  : product.unit}
+                  : unitLabel(product.unit, locale)}
               </span>
             ) : null}
           </p>
+          {loggedIn && isSqftUnit(product.unit) ? (
+            <p className="mt-1 text-sm text-[var(--ink-muted)]">
+              {(() => {
+                const spec = resolveSqftPack(product, variation);
+                const pc = ratePerPiece(
+                  spec.ratePerSqft,
+                  spec.lengthFt,
+                  spec.widthFt
+                );
+                const pkt = ratePerPacket(
+                  spec.ratePerSqft,
+                  spec.lengthFt,
+                  spec.widthFt,
+                  spec.pcsPerPacket
+                );
+                const sqft = sqftPerPiece(spec.lengthFt, spec.widthFt);
+                return `${sqft} sqft/pc · ${formatInr(pc, locale)}/pc · ${formatInr(pkt, locale)}/pkt`;
+              })()}
+            </p>
+          ) : null}
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
             {product.pricingMode === "bundle"
               ? t("common.bundleHint")
+              : isSqftUnit(product.unit)
+                ? locale === "hi"
+                  ? "पैकेट रेट × मात्रा (पैकेट)"
+                  : "Packet price = ₹/pkt × packets"
               : locale === "hi"
                 ? "पीस रेट × मात्रा"
                 : "Piece price = rate × quantity"}
           </p>
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {locale === "hi" ? "स्टॉक" : "Stock"}:{" "}
+            {t("shop.stock")}:{" "}
             <strong
               className={outOfStock ? "text-[var(--danger)]" : "text-[var(--ink)]"}
             >
@@ -390,7 +432,13 @@ export default function ProductDetailPage() {
                     <button
                       key={v.id}
                       type="button"
-                      onClick={() => setVariationId(v.id)}
+                      onClick={() => {
+                        setVariationId(v.id);
+                        if (product) {
+                          const nextColor = firstInStockColorId(product, v.id);
+                          if (nextColor) setColorId(nextColor);
+                        }
+                      }}
                       className={`rounded-lg border px-3 py-2 text-left text-sm ${
                         selected
                           ? "tt-selected border-[var(--brand)] bg-[var(--brand-deep)] text-white"
@@ -533,7 +581,9 @@ export default function ProductDetailPage() {
                   <span>
                     {product.pricingMode === "bundle"
                       ? `${formatInr(rate, locale)}/${t("common.kg")} × ${qty} ${locale === "hi" ? "बंडल" : "bundles"}`
-                      : `${formatInr(rate, locale)} × ${qty}`}
+                      : isSqftUnit(product.unit)
+                        ? `${formatInr(rate, locale)}/pkt × ${qty}`
+                        : `${formatInr(rate, locale)} × ${qty}`}
                   </span>
                   <span>
                     {t("common.total")}:{" "}
@@ -554,7 +604,7 @@ export default function ProductDetailPage() {
 
           {added ? (
             <p className="mt-3 text-sm text-[var(--ok)]">
-              {locale === "hi" ? "कार्ट में जोड़ा गया" : "Added to cart"}
+              {t("shop.addedToCart")}
             </p>
           ) : null}
 

@@ -1,8 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { ExportButtons } from "@/components/ExportButtons";
 import { runBooksHealthCheck } from "@/lib/accounting";
@@ -15,6 +17,7 @@ import {
 } from "@/lib/store/db";
 
 export default function HealthCheckPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db, refresh } = useDb();
   const isOwner = session ? canViewFinancials(session.role) : false;
@@ -83,7 +86,7 @@ export default function HealthCheckPage() {
     }
   };
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -93,19 +96,15 @@ export default function HealthCheckPage() {
 
   return (
     <AccountsShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            Health check
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Trial balance, debtors control, billed orders, and inventory layers.
-          </p>
-        </div>
-        <Link href="/admin/accounts/controls" className="tt-btn tt-btn-outline">
-          Controls
-        </Link>
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.healthCheck")}
+        hint={t("accounts.healthHint")}
+        actions={
+          <Link href="/admin/accounts/controls" className="tt-btn tt-btn-outline">
+            {t("accounts.navControls")}
+          </Link>
+        }
+      />
 
       <div className="mt-4 flex flex-wrap gap-3">
         <input

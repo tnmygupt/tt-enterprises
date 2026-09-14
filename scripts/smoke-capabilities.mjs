@@ -18,6 +18,7 @@ const ROLE_CAPABILITIES = {
     "manage_schemes",
     "manage_accounts",
     "manage_contracts",
+    "approve_dealers",
     "view_reports",
   ],
   dispatch: ["manage_orders", "upload_lr", "manage_shipping", "view_reports"],
@@ -31,11 +32,11 @@ const ROLE_CAPABILITIES = {
     "upload_bill",
     "verify_payment",
     "upload_lr",
-    "manage_tally",
     "manage_accounts",
     "manage_contracts",
     "view_reports",
     "view_financials",
+    "manage_hr",
   ],
 };
 
@@ -49,10 +50,10 @@ const ALL = [
   "upload_bill",
   "verify_payment",
   "upload_lr",
-  "manage_tally",
   "manage_accounts",
   "manage_contracts",
   "view_reports",
+  "manage_hr",
   "view_financials",
 ];
 
@@ -126,5 +127,12 @@ function overridesFromChecked(role, checked) {
     )
   );
 }
+
+assert.ok(!ROLE_CAPABILITIES.sales.includes("manage_accounts"));
+assert.ok(!ROLE_CAPABILITIES.sales.includes("manage_hr"));
+assert.ok(!ROLE_CAPABILITIES.accounts.includes("manage_hr"));
+assert.ok(!ROLE_CAPABILITIES.sales.includes("view_financials"));
+assert.ok(!ROLE_CAPABILITIES.sales.includes("manage_wallet"));
+assert.ok(ROLE_CAPABILITIES.sales.includes("manage_orders"));
 
 console.log("smoke-capabilities: ok");

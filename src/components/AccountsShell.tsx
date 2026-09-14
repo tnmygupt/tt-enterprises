@@ -1,248 +1,202 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useTranslations } from "next-intl";
+import { useSearchParams } from "next/navigation";
 import { Link, usePathname } from "@/i18n/routing";
 import { AdminShell } from "@/components/AdminShell";
-import { AccountsHotkeys } from "@/components/AccountsHotkeys";
+import { AccountsHotkeys, openAccountsShortcuts } from "@/components/AccountsHotkeys";
 import { AccountsSearch } from "@/components/AccountsSearch";
-import {useSession, useDb} from "@/lib/hooks";
+import { useSession, useDb } from "@/lib/hooks";
 import { checkCapability } from "@/lib/store/db";
 import type { Capability } from "@/lib/types";
 
 type NavItem = {
   href: string;
-  /** Plain-language label shown to the user */
-  label: string;
-  /** Book-keeping term, shown small and grey so an accountant recognises it */
+  labelKey: string;
+  /** Book-keeping term or shortcut, shown small and grey */
   term?: string;
   exact?: boolean;
   ownerOnly?: boolean;
   cap?: Capability;
 };
 
-type NavGroup = { title: string; items: NavItem[] };
+type NavGroup = { titleKey: string; items: NavItem[] };
+
+const EVERYDAY: NavItem[] = [
+  { href: "/admin/accounts", labelKey: "home", exact: true },
+  { href: "/admin/accounts/search", labelKey: "search", term: "Ctrl+K" },
+  {
+    href: "/admin/orders/new",
+    labelKey: "newSale",
+    term: "F8",
+    cap: "manage_orders",
+  },
+  { href: "/admin/accounts/goods-received", labelKey: "goodsReceived", term: "F9" },
+  {
+    href: "/admin/accounts/vouchers?new=receipt",
+    labelKey: "moneyReceived",
+    term: "F6",
+  },
+  { href: "/admin/accounts/payments", labelKey: "paymentDesk" },
+  { href: "/admin/accounts/expenses", labelKey: "logExpense", term: "Alt+E" },
+];
 
 const GROUPS: NavGroup[] = [
+  { titleKey: "navEveryday", items: EVERYDAY },
   {
-    title: "Every day",
-    items: [
-      { href: "/admin/accounts", label: "Home", exact: true },
-      {
-        href: "/admin/accounts/search",
-        label: "Search",
-        term: "Ctrl+K",
-      },
-      {
-        href: "/admin/orders/new",
-        label: "New sale",
-        term: "F8",
-        cap: "manage_orders",
-      },
-      {
-        href: "/admin/accounts/goods-received",
-        label: "Goods received",
-        term: "F9",
-      },
-      {
-        href: "/admin/accounts/needs-pricing",
-        label: "Needs pricing",
-        term: "Owner rates",
-        ownerOnly: true,
-      },
-      {
-        href: "/admin/accounts/purchases",
-        label: "Purchase bills",
-        term: "Alt+U",
-        ownerOnly: true,
-      },
-      {
-        href: "/admin/accounts/vouchers?new=receipt",
-        label: "Money received",
-        term: "F6",
-      },
-      {
-        href: "/admin/accounts/vouchers?new=payment",
-        label: "Money paid",
-        term: "F5",
-      },
-      {
-        href: "/admin/accounts/expenses",
-        label: "Log expense",
-        term: "Expense",
-      },
-      {
-        href: "/admin/accounts/journal",
-        label: "Journal",
-        term: "F7",
-      },
-      {
-        href: "/admin/accounts/vouchers?new=credit_note",
-        label: "Sale return",
-        term: "Credit note",
-      },
-    ],
-  },
-  {
-    title: "Who owes what",
+    titleKey: "navWhoOwes",
     items: [
       {
         href: "/admin/accounts/receivables",
-        label: "Money to collect",
+        labelKey: "moneyToCollect",
         term: "Alt+R",
       },
       {
         href: "/admin/accounts/payables",
-        label: "Money to pay",
+        labelKey: "moneyToPay",
         term: "Alt+P",
       },
       {
         href: "/admin/accounts/party-statement",
-        label: "Statement",
-        term: "Party statement",
+        labelKey: "statement",
+        term: "Alt+S",
       },
-      {
-        href: "/admin/accounts/match-statement",
-        label: "Match statement",
-        term: "Cross-check",
-      },
+      { href: "/admin/accounts/match-statement", labelKey: "matchStatement" },
     ],
   },
   {
-    title: "Records",
+    titleKey: "navRecords",
     items: [
+      { href: "/admin/accounts/vouchers", labelKey: "allEntries", term: "Alt+V" },
+      { href: "/admin/accounts/daybook", labelKey: "daybook", term: "Alt+F1" },
+      { href: "/admin/accounts/ledger", labelKey: "ledger", term: "Alt+L" },
+      { href: "/admin/accounts/inventory", labelKey: "stock", term: "Alt+F2" },
       {
-        href: "/admin/accounts/vouchers",
-        label: "All entries",
-        term: "Alt+V",
+        href: "/admin/accounts/cash-bank",
+        labelKey: "cashBankBook",
+        term: "Alt+C",
       },
+      { href: "/admin/accounts/brs", labelKey: "brs", term: "Alt+B" },
+      { href: "/admin/accounts/journal", labelKey: "journal", term: "F7" },
       {
-        href: "/admin/accounts/vouchers?new=sale",
-        label: "Sale voucher",
-        term: "Free-form bill",
-      },
-      { href: "/admin/accounts/daybook", label: "Day book", term: "Alt+F1" },
-      { href: "/admin/accounts/ledger", label: "Ledger", term: "Alt+L" },
-      { href: "/admin/accounts/inventory", label: "Stock", term: "Alt+F2" },
-    ],
-  },
-  {
-    title: "Set up",
-    items: [
-      {
-        href: "/admin/accounts/parties",
-        label: "Customers & suppliers",
-        term: "Parties",
-      },
-      {
-        href: "/admin/accounts/openings",
-        label: "Opening balances",
-        term: "From Tally",
+        href: "/admin/accounts/needs-pricing",
+        labelKey: "needsPricing",
+        term: "Alt+N",
         ownerOnly: true,
       },
       {
-        href: "/admin/accounts/ledgers",
-        label: "Account heads",
-        term: "Chart of accounts",
+        href: "/admin/accounts/purchases",
+        labelKey: "purchaseBills",
+        term: "Alt+U",
+        ownerOnly: true,
       },
       {
+        href: "/admin/accounts/vouchers?new=payment",
+        labelKey: "moneyPaid",
+        term: "F5",
+        ownerOnly: true,
+      },
+    ],
+  },
+  {
+    titleKey: "navReports",
+    items: [{ href: "/admin/accounts/reports", labelKey: "reportsHub" }],
+  },
+  {
+    titleKey: "navSetup",
+    items: [
+      { href: "/admin/accounts/parties", labelKey: "customersSuppliers" },
+      {
+        href: "/admin/accounts/openings",
+        labelKey: "openingBalances",
+        ownerOnly: true,
+      },
+      { href: "/admin/accounts/ledgers", labelKey: "accountHeads" },
+      {
         href: "/admin/accounts/contracts",
-        label: "Supplier contracts",
+        labelKey: "supplierContracts",
         cap: "manage_contracts",
       },
     ],
   },
   {
-    title: "Controls",
+    titleKey: "navControls",
     items: [
       {
         href: "/admin/accounts/controls",
-        label: "Controls",
+        labelKey: "navControls",
         term: "FY · Lock · Backup",
         exact: true,
       },
-      {
-        href: "/admin/accounts/controls/audit",
-        label: "Audit trail",
-        term: "Who posted",
-      },
-      {
-        href: "/admin/accounts/controls/health",
-        label: "Health check",
-        term: "Books integrity",
-      },
-      {
-        href: "/admin/accounts/controls/flow-audit",
-        label: "Flow audit",
-        term: "E2E checklist",
-      },
-    ],
-  },
-  {
-    title: "Reports",
-    items: [
-      {
-        href: "/admin/accounts/cash-bank",
-        label: "Cash & bank book",
-        term: "Alt+C",
-      },
-      {
-        href: "/admin/accounts/reports/sales-analysis",
-        label: "Sales analysis",
-      },
-      {
-        href: "/admin/accounts/reports/purchase-analysis",
-        label: "Purchase analysis",
-        ownerOnly: true,
-      },
-      {
-        href: "/admin/accounts/reports/profit-analysis",
-        label: "Profit analysis",
-        ownerOnly: true,
-      },
-      {
-        href: "/admin/accounts/reports/stock-movements",
-        label: "Stock movements",
-      },
-      {
-        href: "/admin/accounts/reports/stock-alerts",
-        label: "Stock alerts",
-        term: "Reorder / dead",
-      },
-      {
-        href: "/admin/accounts/reports/stock-valuation",
-        label: "Stock valuation",
-        ownerOnly: true,
-      },
-      {
-        href: "/admin/accounts/reports/cash-flow",
-        label: "Cash flow",
-        ownerOnly: true,
-      },
-      {
-        href: "/admin/accounts/reports/pl",
-        label: "Profit & Loss",
-        ownerOnly: true,
-      },
-      {
-        href: "/admin/accounts/reports/balance-sheet",
-        label: "Balance sheet",
-        ownerOnly: true,
-      },
-      {
-        href: "/admin/accounts/trial-balance",
-        label: "Trial balance",
-        ownerOnly: true,
-      },
-      { href: "/admin/accounts/item-sales", label: "Sales by item" },
+      { href: "/admin/accounts/controls/audit", labelKey: "auditTrail" },
+      { href: "/admin/accounts/controls/health", labelKey: "healthCheck" },
+      { href: "/admin/accounts/controls/flow-audit", labelKey: "flowAudit" },
     ],
   },
 ];
 
-const PIN_KEY = "tt_accounts_pins_v1";
+const PLANT_ITEMS: NavItem[] = [
+  { href: "/admin/accounts/inventory", labelKey: "stock" },
+  { href: "/admin/accounts/reports/stock-alerts", labelKey: "stockAlerts" },
+  { href: "/admin/accounts/purchases?tab=orders", labelKey: "tabOrders" },
+];
+const PLANT_HREFS = new Set(PLANT_ITEMS.map((i) => i.href));
 
-function readPins(): string[] {
+/** Extra routes so Recent can show a label after we collapse Reports. */
+const EXTRA_LABELS: NavItem[] = [
+  { href: "/admin/accounts/vouchers?new=sale", labelKey: "saleVoucher" },
+  { href: "/admin/accounts/vouchers?new=credit_note", labelKey: "saleReturn" },
+  { href: "/admin/accounts/reports/sales-analysis", labelKey: "salesAnalysis" },
+  {
+    href: "/admin/accounts/reports/purchase-analysis",
+    labelKey: "purchaseAnalysis",
+    ownerOnly: true,
+  },
+  {
+    href: "/admin/accounts/reports/profit-analysis",
+    labelKey: "profitAnalysis",
+    ownerOnly: true,
+  },
+  { href: "/admin/accounts/reports/stock-movements", labelKey: "stockMovements" },
+  { href: "/admin/accounts/reports/stock-alerts", labelKey: "stockAlerts" },
+  {
+    href: "/admin/accounts/reports/stock-valuation",
+    labelKey: "stockValuation",
+    ownerOnly: true,
+  },
+  {
+    href: "/admin/accounts/reports/cash-flow",
+    labelKey: "cashFlow",
+    ownerOnly: true,
+  },
+  { href: "/admin/accounts/reports/pl", labelKey: "pl", ownerOnly: true },
+  {
+    href: "/admin/accounts/reports/balance-sheet",
+    labelKey: "balanceSheet",
+    ownerOnly: true,
+  },
+  {
+    href: "/admin/accounts/trial-balance",
+    labelKey: "trialBalance",
+    ownerOnly: true,
+  },
+  { href: "/admin/accounts/item-sales", labelKey: "salesByItem" },
+];
+
+const ALL_ITEMS = [
+  ...GROUPS.flatMap((g) => g.items),
+  ...EXTRA_LABELS,
+  ...PLANT_ITEMS,
+];
+
+const PIN_KEY = "tt_accounts_pins_v1";
+const RECENT_KEY = "tt_accounts_recent_v1";
+const RECENT_MAX = 6;
+
+function readHrefs(key: string): string[] {
   try {
-    const raw = window.localStorage.getItem(PIN_KEY);
+    const raw = window.localStorage.getItem(key);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
     return parsed.filter((h): h is string => typeof h === "string");
@@ -251,13 +205,60 @@ function readPins(): string[] {
   }
 }
 
-function isActive(pathname: string, item: NavItem) {
-  // Links carrying a query open a form rather than a place. The shell can't read
-  // the query without useSearchParams (which would force a Suspense boundary on
-  // every accounts page), so these never light up — the plain page link does.
-  if (item.href.includes("?")) return false;
-  if (item.exact) return pathname === item.href;
-  return pathname === item.href || pathname.startsWith(`${item.href}/`);
+function writeHrefs(key: string, hrefs: string[]) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(hrefs));
+  } catch {
+    // private mode — list just doesn't persist
+  }
+}
+
+function isActive(
+  pathname: string,
+  searchParams: { get(name: string): string | null },
+  item: NavItem
+) {
+  const qIndex = item.href.indexOf("?");
+  const path = qIndex === -1 ? item.href : item.href.slice(0, qIndex);
+  const want = qIndex === -1 ? "" : item.href.slice(qIndex + 1);
+  if (want) {
+    if (pathname !== path) return false;
+    const wantParams = new URLSearchParams(want);
+    for (const [k, v] of wantParams) {
+      if (searchParams.get(k) !== v) return false;
+    }
+    return true;
+  }
+  // Don't light "All entries" while a typed voucher form is open.
+  if (path === "/admin/accounts/vouchers" && searchParams.get("new")) {
+    return false;
+  }
+  if (item.exact) return pathname === path;
+  return pathname === path || pathname.startsWith(`${path}/`);
+}
+
+function canonicalHref(
+  pathname: string,
+  searchParams: { get(name: string): string | null }
+) {
+  const hits = ALL_ITEMS.filter((item) =>
+    isActive(pathname, searchParams, item)
+  ).sort((a, b) => b.href.length - a.href.length);
+  return hits[0]?.href ?? pathname;
+}
+
+export function BackToBooksBar() {
+  const t = useTranslations("accounts");
+  return (
+    <div className="mb-3 print:hidden">
+      <Link
+        href="/admin/accounts"
+        className="text-sm font-semibold text-[var(--brand)] hover:underline"
+      >
+        ← {t("backToBooks")}
+      </Link>
+    </div>
+  );
 }
 
 export function AccountsShell({
@@ -268,53 +269,132 @@ export function AccountsShell({
   /** Hide the accounts side nav so entry forms get full width */
   focusMode?: boolean;
 }) {
+  return (
+    <Suspense
+      fallback={
+        <AccountsShellFrame focusMode={focusMode} searchParams={null}>
+          {children}
+        </AccountsShellFrame>
+      }
+    >
+      <AccountsShellWithQuery focusMode={focusMode}>{children}</AccountsShellWithQuery>
+    </Suspense>
+  );
+}
+
+function AccountsShellWithQuery({
+  children,
+  focusMode,
+}: {
+  children: React.ReactNode;
+  focusMode: boolean;
+}) {
+  const searchParams = useSearchParams();
+  return (
+    <AccountsShellFrame focusMode={focusMode} searchParams={searchParams}>
+      {children}
+    </AccountsShellFrame>
+  );
+}
+
+function AccountsShellFrame({
+  children,
+  focusMode = false,
+  searchParams,
+}: {
+  children: React.ReactNode;
+  focusMode?: boolean;
+  searchParams: { get(name: string): string | null } | null;
+}) {
+  const t = useTranslations("accounts");
   const pathname = usePathname();
   const { session } = useSession();
   const { db } = useDb();
-  const owner = checkCapability(session, db?.users, "view_financials");
+  const owner = checkCapability(session, db, "view_financials");
+  const booksNav = checkCapability(session, db, "manage_accounts");
+  const plantDesk =
+    !!session &&
+    checkCapability(session, db, "manage_reorder") &&
+    !checkCapability(session, db, "manage_accounts");
   const [navOpen, setNavOpen] = useState(false);
+  const [allBooks, setAllBooks] = useState(false);
   const [pins, setPins] = useState<string[]>([]);
+  const [recents, setRecents] = useState<string[]>([]);
 
   useEffect(() => {
     // Close the accounts drawer on route change — derived UI state
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setNavOpen(false);
+    setAllBooks(false);
   }, [pathname]);
 
   useEffect(() => {
+    if (!navOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [navOpen]);
+
+  useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPins(readPins());
+    setPins(readHrefs(PIN_KEY));
+    setRecents(readHrefs(RECENT_KEY));
   }, []);
+
+  useEffect(() => {
+    const params = searchParams ?? new URLSearchParams();
+    const href = canonicalHref(pathname, params);
+    if (href === "/admin/accounts") return;
+    setRecents((cur) => {
+      const next = [href, ...cur.filter((h) => h !== href)].slice(0, RECENT_MAX);
+      writeHrefs(RECENT_KEY, next);
+      return next;
+    });
+  }, [pathname, searchParams]);
 
   const togglePin = (href: string) => {
     setPins((cur) => {
       const next = cur.includes(href)
         ? cur.filter((h) => h !== href)
         : [...cur, href];
-      try {
-        window.localStorage.setItem(PIN_KEY, JSON.stringify(next));
-      } catch {
-        // private mode — pins just don't persist
-      }
+      writeHrefs(PIN_KEY, next);
       return next;
     });
   };
 
   const allowed = (item: NavItem) => {
+    if (plantDesk) return PLANT_HREFS.has(item.href);
     if (item.ownerOnly && !owner) return false;
-    if (item.cap && session && !checkCapability(session, db?.users, item.cap)) {
+    if (item.cap && session && !checkCapability(session, db, item.cap)) {
       return false;
     }
     return true;
   };
 
+  const findItem = (href: string) =>
+    ALL_ITEMS.find((i) => i.href === href);
+
   const pinnedItems = pins
-    .map((href) => GROUPS.flatMap((g) => g.items).find((i) => i.href === href))
+    .map(findItem)
     .filter((i): i is NavItem => !!i && allowed(i));
 
+  const recentItems = recents
+    .map(findItem)
+    .filter((i): i is NavItem => !!i && allowed(i) && !pins.includes(i.href))
+    .slice(0, RECENT_MAX);
+
+  const labelOf = (item: NavItem) => t(item.labelKey);
+
   const renderItem = (item: NavItem, keyPrefix = "") => {
-    const active = isActive(pathname, item);
+    const active = isActive(
+      pathname,
+      searchParams ?? new URLSearchParams(),
+      item
+    );
     const pinned = pins.includes(item.href);
+    const label = labelOf(item);
     return (
       <div key={`${keyPrefix}${item.href}`} className="flex items-center gap-1">
         <Link
@@ -326,7 +406,7 @@ export function AccountsShell({
               : "text-[var(--ink-muted)] hover:bg-[var(--surface-2)] hover:text-[var(--ink)]"
           }`}
         >
-          <span>{item.label}</span>
+          <span>{label}</span>
           {item.term ? (
             <span
               className={`text-[10px] ${
@@ -345,7 +425,9 @@ export function AccountsShell({
               : "text-[var(--ink-muted)] opacity-40 hover:opacity-100"
           }`}
           aria-pressed={pinned}
-          aria-label={pinned ? `Unpin ${item.label}` : `Pin ${item.label}`}
+          aria-label={
+            pinned ? t("unpin", { label }) : t("pin", { label })
+          }
           onClick={() => togglePin(item.href)}
         >
           {pinned ? "★" : "☆"}
@@ -354,75 +436,179 @@ export function AccountsShell({
     );
   };
 
-  const navBody = (
-    <>
-      <div className="space-y-2 border-b border-[var(--line)] px-3 py-3">
-        <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-          Accounts
+  const renderGroup = (g: NavGroup) => {
+    const items = g.items.filter(allowed);
+    if (!items.length) return null;
+    return (
+      <div key={g.titleKey}>
+        <p className="tt-acct-nav-title px-2 pb-1 pt-1 text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
+          {t(g.titleKey)}
         </p>
-        <AccountsSearch compact />
+        <div className="flex flex-col gap-0.5">
+          {items.map((item) => renderItem(item))}
+        </div>
       </div>
-      <nav className="max-h-[70vh] space-y-3 overflow-y-auto p-2">
-        {pinnedItems.length ? (
-          <div>
-            <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
-              Pinned
-            </p>
-            <div className="flex flex-col gap-0.5">
-              {pinnedItems.map((item) => renderItem(item, "pin-"))}
-            </div>
+    );
+  };
+
+  const searchBlock = (
+    <div className="space-y-2 border-b border-[var(--line)] px-3 py-3">
+      <div className="flex items-center justify-between gap-2">
+        <Link
+          href="/admin"
+          className="text-xs font-semibold text-[var(--brand)] hover:underline"
+        >
+          ← {t("allAdmin")}
+        </Link>
+        <button
+          type="button"
+          className="inline-flex min-h-9 items-center rounded-md border border-[var(--line)] px-2 text-xs font-semibold text-[var(--ink-muted)] hover:bg-[var(--surface-2)]"
+          onClick={openAccountsShortcuts}
+        >
+          ? {t("shortcutsBtn")}
+        </button>
+      </div>
+      <AccountsSearch compact />
+    </div>
+  );
+
+  const pinRecent = (
+    <>
+      {pinnedItems.length ? (
+        <div>
+          <p className="tt-acct-nav-title px-2 pb-1 pt-1 text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
+            {t("pinned")}
+          </p>
+          <div className="flex flex-col gap-0.5">
+            {pinnedItems.map((item) => renderItem(item, "pin-"))}
           </div>
-        ) : null}
-        {GROUPS.map((g) => {
-          const items = g.items.filter(allowed);
-          if (!items.length) return null;
-          return (
-            <div key={g.title}>
-              <p className="px-2 pb-1 text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
-                {g.title}
-              </p>
-              <div className="flex flex-col gap-0.5">
-                {items.map((item) => renderItem(item))}
-              </div>
-            </div>
-          );
-        })}
+        </div>
+      ) : null}
+      {recentItems.length ? (
+        <div>
+          <p className="tt-acct-nav-title px-2 pb-1 pt-1 text-[10px] font-bold uppercase tracking-wider text-[var(--ink-muted)]">
+            {t("recent")}
+          </p>
+          <div className="flex flex-col gap-0.5">
+            {recentItems.map((item) => renderItem(item, "recent-"))}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+
+  const navGroups = plantDesk
+    ? [{ titleKey: "navPlant", items: PLANT_ITEMS }]
+    : GROUPS;
+
+  const desktopNav = (
+    <>
+      {plantDesk ? (
+        <div className="border-b border-[var(--line)] px-3 py-3">
+          <Link
+            href="/admin"
+            className="text-xs font-semibold text-[var(--brand)] hover:underline"
+          >
+            ← {t("allAdmin")}
+          </Link>
+        </div>
+      ) : (
+        searchBlock
+      )}
+      <nav className="min-h-0 flex-1 space-y-3 overflow-y-auto p-2">
+        {plantDesk ? null : pinRecent}
+        {navGroups.map(renderGroup)}
       </nav>
     </>
   );
 
+  const restGroups = navGroups.filter((g) => g.titleKey !== "navEveryday");
+
+  const mobileNav = plantDesk ? (
+    <>
+      <nav className="space-y-3 p-2 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        {navGroups.map(renderGroup)}
+      </nav>
+    </>
+  ) : (
+    <>
+      {searchBlock}
+      <nav className="space-y-3 p-2 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        {pinRecent}
+        {renderGroup(GROUPS[0])}
+        <button
+          type="button"
+          className="tt-btn tt-btn-outline w-full"
+          aria-expanded={allBooks}
+          onClick={() => setAllBooks((o) => !o)}
+        >
+          {allBooks ? t("closeMenu") : t("allBooks")}
+        </button>
+        {allBooks ? restGroups.map(renderGroup) : null}
+      </nav>
+    </>
+  );
+
+  if (!plantDesk && !booksNav) {
+    return <AdminShell wide>{children}</AdminShell>;
+  }
+
   return (
-    <AdminShell wide>
-      <AccountsHotkeys />
+    <AdminShell wide hideNav>
+      {plantDesk ? null : <AccountsHotkeys />}
       <div
         className={`grid gap-5 ${
-          focusMode ? "grid-cols-1" : "lg:grid-cols-[216px_1fr]"
+          focusMode ? "grid-cols-1" : "lg:grid-cols-[240px_1fr]"
         }`}
       >
         {focusMode ? null : (
           <>
-            {/* Phone: the long accounts list collapses so reports start at the top */}
             <div className="lg:hidden print:hidden">
               <button
                 type="button"
                 className="tt-btn tt-btn-outline w-full"
                 aria-expanded={navOpen}
-                onClick={() => setNavOpen((o) => !o)}
+                onClick={() => setNavOpen(true)}
               >
-                {navOpen ? "Close accounts menu" : "Accounts menu"}
+                {t("menu")}
               </button>
               {navOpen ? (
-                <aside className="tt-panel mt-3 max-h-[min(70dvh,calc(100dvh-8rem))] overflow-y-auto p-0 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
-                  {navBody}
-                </aside>
+                <div className="tt-acct-sheet" role="dialog" aria-modal="true">
+                  <button
+                    type="button"
+                    className="absolute inset-0 bg-black/40"
+                    aria-label={t("closeMenu")}
+                    onClick={() => setNavOpen(false)}
+                  />
+                  <aside className="tt-acct-sheet-panel">
+                    <div className="sticky top-0 z-10 flex items-center justify-between border-b border-[var(--line)] bg-[var(--surface)] px-4 py-3">
+                      <p className="text-sm font-semibold">{t("menu")}</p>
+                      <button
+                        type="button"
+                        className="text-sm font-semibold text-[var(--brand)]"
+                        onClick={() => setNavOpen(false)}
+                      >
+                        {t("closeMenu")}
+                      </button>
+                    </div>
+                    {mobileNav}
+                  </aside>
+                </div>
               ) : null}
             </div>
-            <aside className="tt-panel hidden h-fit overflow-hidden p-0 print:hidden lg:sticky lg:top-20 lg:block">
-              {navBody}
+            <aside className="tt-panel hidden max-h-[calc(100dvh-5.5rem)] flex-col overflow-hidden p-0 print:hidden lg:sticky lg:top-20 lg:flex">
+              {desktopNav}
             </aside>
           </>
         )}
-        <div className="min-w-0">{children}</div>
+        <div className="min-w-0">
+          {!db ? (
+            <p className="mb-3 text-sm text-[var(--ink-muted)]">
+              {t("loadingBooks")}
+            </p>
+          ) : null}
+          {children}
+        </div>
       </div>
     </AdminShell>
   );

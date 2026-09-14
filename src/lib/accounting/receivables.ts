@@ -64,6 +64,65 @@ export function invoiceSettledAmount(
   return roundMoney(allocated + returns);
 }
 
+export type InvoiceSettlementKind =
+  | "receipt"
+  | "payment"
+  | "credit_note"
+  | "debit_note";
+
+export interface InvoiceSettlementLine {
+  kind: InvoiceSettlementKind;
+  voucherId: string;
+  number: string;
+  date: string;
+  amount: number;
+}
+
+/** Receipts, payments, and linked notes that reduced this invoice. */
+export function invoiceSettlementLines(
+  invoiceId: string,
+  vouchers: Voucher[],
+  allocations: BillAllocation[]
+): InvoiceSettlementLine[] {
+  const lines: InvoiceSettlementLine[] = [];
+  for (const a of allocations) {
+    if (a.invoiceVoucherId !== invoiceId || a.amount <= 0.009) continue;
+    const v = vouchers.find((x) => x.id === a.receiptOrPaymentVoucherId);
+    if (!v || v.voided) continue;
+    lines.push({
+      kind: v.type === "payment" ? "payment" : "receipt",
+      voucherId: v.id,
+      number: v.number,
+      date: a.date || v.date,
+      amount: roundMoney(a.amount),
+    });
+  }
+  for (const v of vouchers) {
+    if (v.voided) continue;
+    if (v.type === "credit_note" && v.linkedInvoiceId === invoiceId) {
+      lines.push({
+        kind: "credit_note",
+        voucherId: v.id,
+        number: v.number,
+        date: v.date,
+        amount: roundMoney(v.total),
+      });
+    }
+    if (v.type === "debit_note" && v.linkedPurchaseId === invoiceId) {
+      lines.push({
+        kind: "debit_note",
+        voucherId: v.id,
+        number: v.number,
+        date: v.date,
+        amount: roundMoney(v.total),
+      });
+    }
+  }
+  return lines.sort(
+    (a, b) => a.date.localeCompare(b.date) || a.number.localeCompare(b.number)
+  );
+}
+
 export function invoiceOutstanding(
   invoice: Voucher,
   vouchers: Voucher[],
@@ -210,6 +269,29 @@ export function allocateOldestFirst(
     left = roundMoney(left - take);
   }
   return out;
+}
+
+/** Receipts with leftover not applied to any sale invoice. */
+export function leftoverReceipts(
+  vouchers: Voucher[],
+  allocations: BillAllocation[]
+): { voucher: Voucher; leftover: number }[] {
+  return vouchers
+    .filter((v) => v.type === "receipt" && !v.voided && v.partyId)
+    .map((v) => {
+      const allocated: Record<string, number> = {};
+      for (const a of allocations) {
+        if (a.receiptOrPaymentVoucherId !== v.id) continue;
+        allocated[a.invoiceVoucherId] = roundMoney(
+          (allocated[a.invoiceVoucherId] || 0) + a.amount
+        );
+      }
+      return {
+        voucher: v,
+        leftover: unallocatedAdvance(v.total, allocated),
+      };
+    })
+    .filter((row) => row.leftover > 0.05);
 }
 
 /** Portion of payment/receipt not applied to any bill → advance. */

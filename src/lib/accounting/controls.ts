@@ -10,6 +10,7 @@ import type {
   UserProfile,
   Voucher,
 } from "../types";
+import { staffMustHideVoucherRupees } from "../owner-sensitive";
 import { roundMoney } from "../pricing";
 import { ACCT } from "./seed";
 import { accountBalance, partyBalance, trialBalance } from "./engine";
@@ -99,6 +100,7 @@ export function runBooksHealthCheck(input: {
   items.push({
     id: "trial_balance",
     label: "Trial balance",
+    ownerOnly: true,
     ok: Math.abs(tbDiff) < 0.02,
     detail:
       Math.abs(tbDiff) < 0.02
@@ -176,6 +178,7 @@ export function runBooksHealthCheck(input: {
   items.push({
     id: "creditors_control",
     label: "Supplier balances = Creditors control",
+    ownerOnly: true,
     ok: Math.abs(payDiff) < 0.5,
     detail:
       Math.abs(payDiff) < 0.5
@@ -286,6 +289,8 @@ export function listAuditRows(input: {
   from?: string;
   to?: string;
   q?: string;
+  /** Hide purchase / mill payment rupees in the summary line. */
+  hideSensitiveAmounts?: boolean;
 }): AuditRow[] {
   const from = input.from?.slice(0, 10);
   const to = input.to?.slice(0, 10);
@@ -299,7 +304,11 @@ export function listAuditRows(input: {
       date: v.date,
       kind: v.isOpening ? `opening_${v.type}` : v.type,
       number: v.number,
-      summary: v.narration || `${v.type} · ${v.total}`,
+      summary:
+        v.narration ||
+        (staffMustHideVoucherRupees(v.type, !input.hideSensitiveAmounts)
+          ? v.type
+          : `${v.type} · ${v.total}`),
       byUserId: v.createdBy,
       byName: userDisplayName(input.users, v.createdBy),
       voided: v.voided,
@@ -329,8 +338,21 @@ export function listAuditRows(input: {
       summary: g.narration || "Goods received",
       byUserId: g.createdBy,
       byName: userDisplayName(input.users, g.createdBy),
-      voided: false,
+      voided: g.voided,
     });
+    if (g.voided && g.voidedAt) {
+      rows.push({
+        id: `${g.id}_void`,
+        at: g.voidedAt,
+        date: g.date,
+        kind: "void_grn",
+        number: g.number,
+        summary: "Voided goods receipt",
+        byUserId: g.voidedBy || "—",
+        byName: userDisplayName(input.users, g.voidedBy),
+        voided: true,
+      });
+    }
   }
 
   return rows

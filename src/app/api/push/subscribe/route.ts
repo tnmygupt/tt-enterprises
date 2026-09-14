@@ -1,9 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  cloudGetAppDb,
-  cloudPutAppDb,
-  createServerSupabase,
-} from "@/lib/server/app-db";
+import { cloudGetAppDb, cloudPutAppDb } from "@/lib/server/app-db";
 import { readSessionCookie } from "@/lib/server/session";
 import { mergePushSubscription, type PushSub } from "@/lib/server/web-push";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
@@ -26,7 +22,7 @@ export async function POST(req: NextRequest) {
   if (!sub?.endpoint || !sub.keys?.p256dh || !sub.keys?.auth) {
     return NextResponse.json(
       { error: "Invalid push subscription" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -37,38 +33,25 @@ export async function POST(req: NextRequest) {
       hint: "Cloud off — save subscription on device via client upsert",
     });
   }
-
-  const supabase = createServerSupabase();
-  if (!supabase) {
-    return NextResponse.json({ error: "Cloud unavailable" }, { status: 503 });
-  }
-
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { db, updatedAt, error } = await cloudGetAppDb(supabase);
+    const { db, updatedAt, error } = await cloudGetAppDb();
     if (error || !db) {
       return NextResponse.json(
         { error: error || "Cloud empty" },
-        { status: 500 }
+        { status: 500 },
       );
     }
     const user = db.users.find((u) => u.id === session.id);
     if (!user) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
-    user.pushSubscriptions = mergePushSubscription(
-      user.pushSubscriptions,
-      sub
-    );
-    const put = await cloudPutAppDb(
-      supabase,
-      sanitizeDbForCloud(db),
-      updatedAt ?? null
-    );
+    user.pushSubscriptions = mergePushSubscription(user.pushSubscriptions, sub);
+    const put = await cloudPutAppDb(sanitizeDbForCloud(db), updatedAt ?? null);
     if (put.conflict) continue;
     if (!put.ok) {
       return NextResponse.json(
         { error: put.error || "Save failed" },
-        { status: 500 }
+        { status: 500 },
       );
     }
     return NextResponse.json({ ok: true, mode: "cloud" });

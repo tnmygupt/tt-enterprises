@@ -5,7 +5,7 @@ import type {
   VoucherLine,
   UnitOfSale,
 } from "../types";
-import { roundMoney } from "../pricing";
+import { isSqftUnit, roundMoney } from "../pricing";
 
 /** Measure voucher line in secondary units (kg/pcs) */
 export function lineMeasure(line: VoucherLine): number {
@@ -69,6 +69,26 @@ export function addPurchaseLayers(
   for (const line of voucher.lines) {
     if (!line.productId) continue;
     const measure = lineMeasure(line);
+    if (isSqftUnit(line.unit)) {
+      const packets = line.qty;
+      if (!(packets > 0)) continue;
+      const pktRate = roundMoney(line.amount / packets);
+      batches.push(
+        createBatchFromLine({
+          date: voucher.date,
+          productId: line.productId,
+          variationId: line.variationId,
+          colorId: line.colorId,
+          qty: packets,
+          rate: pktRate,
+          unit: line.unit,
+          source,
+          voucherId: voucher.id,
+          provisional: opts.provisional,
+        })
+      );
+      continue;
+    }
     if (measure <= 0) continue;
     batches.push(
       createBatchFromLine({

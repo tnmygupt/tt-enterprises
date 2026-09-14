@@ -35,7 +35,7 @@ export default function AdminWalletsPage() {
   const [assign, setAssign] = useState({ userId: "", schemeId: "" });
   const [range, setRange] = useAdminDateRange("today");
 
-  const canWallet = !!session && checkCapability(session, db?.users, "manage_wallet");
+  const canWallet = !!session && checkCapability(session, db, "manage_wallet");
 
   const dealers = useMemo(() => {
     const list = (db?.users ?? []).filter((u) => u.role === "customer");

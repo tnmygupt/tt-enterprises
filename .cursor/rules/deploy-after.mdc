@@ -1,0 +1,10 @@
+---
+description: Deploy to Hostinger immediately after finishing site work
+alwaysApply: true
+---
+
+# Deploy right after
+
+When the user asks to implement, fix, or ship website work, finish the code then **deploy to Hostinger in the same turn** unless they say not to.
+
+Use `scripts/make-deploy-zip.py` and `/tmp/tt-hostinger-deploy.py` for `tanmayphotos.space`. Do not put `.env*` or Hostinger tokens in the repo. Confirm the live site returns 200 after `BUILD OK`.

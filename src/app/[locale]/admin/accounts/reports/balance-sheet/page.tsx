@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { balanceSheet } from "@/lib/accounting";
 import { ExportButtons } from "@/components/ExportButtons";
@@ -80,9 +81,10 @@ export default function AccountsBalanceSheetPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {t("accounts.balanceSheet")}
-      </h1>
+      <AccountsPageHeader
+        title={t("accounts.balanceSheet")}
+        hint={t("accounts.reportBsHint")}
+      />
       <div className="mt-4 flex flex-wrap items-end gap-3">
         <div className="max-w-xs">
           <label className="tt-label">As of</label>

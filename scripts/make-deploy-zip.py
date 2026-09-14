@@ -2,9 +2,21 @@ import os
 import zipfile
 from pathlib import Path
 
-root = Path(r"D:\TT ENTERPRISES NEW WEBSITE\TT ENTERPRISES NEW WEBSITE")
-out = Path(r"D:\TT ENTERPRISES NEW WEBSITE\TT ENTERPRISES NEW WEBSITE\tt-enterprises-tanmayphotos.zip")
-skip_dirs = {".git", "node_modules", ".next", "out", ".cursor", "agent-transcripts", "coverage", ".vercel", "data", "tmp"}
+root = Path(__file__).resolve().parents[1]
+out = root / "tt-enterprises-tanmayphotos.zip"
+skip_dirs = {
+    ".git",
+    "node_modules",
+    ".next",
+    "out",
+    ".cursor",
+    ".agents",
+    "agent-transcripts",
+    "coverage",
+    ".vercel",
+    "data",
+    "tmp",
+}
 skip_suffixes = (".zip", ".tar.gz", ".tgz")
 
 if out.exists():
@@ -20,7 +32,9 @@ def keep(path: Path) -> bool:
         return False
     if name.endswith(skip_suffixes) and path.is_file():
         return False
-    if name in {".env", ".env.local"}:
+    if name.startswith(".env") and name != ".env.example":
+        return False
+    if name in {"tally-wa.cfg", "ops.cfg"}:
         return False
     if name.endswith(".pem"):
         return False
@@ -56,3 +70,82 @@ with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
 
 print(f"ZIP={out}")
 print(f"SIZE={out.stat().st_size}")
+
+
+def read_env_key(name: str) -> str:
+    for fname in (".env.local", ".env.production"):
+        p = root / fname
+        if not p.is_file():
+            continue
+        for line in p.read_text(encoding="utf-8").splitlines():
+            trimmed = line.strip()
+            if not trimmed or trimmed.startswith("#"):
+                continue
+            eq = trimmed.find("=")
+            if eq < 1:
+                continue
+            key = trimmed[:eq].strip()
+            if key != name:
+                continue
+            return trimmed[eq + 1 :].strip().strip("'\"")
+    return (os.environ.get(name) or "").strip()
+
+
+def read_cfg_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        trimmed = line.strip()
+        if not trimmed or trimmed.startswith("#"):
+            continue
+        eq = trimmed.find("=")
+        if eq < 1:
+            continue
+        out[trimmed[:eq].strip()] = trimmed[eq + 1 :].strip().strip("'\"")
+    return out
+
+
+instance = read_env_key("TALLY_WA_INSTANCE_KEY")
+base = read_env_key("TALLY_WA_BASE_URL") or "https://app.tallywebsolutions.in"
+ops = read_cfg_file(root / "config" / "ops.cfg")
+cron = ops.get("CRON_SECRET") or read_env_key("CRON_SECRET")
+vapid_pub = ops.get("NEXT_PUBLIC_VAPID_PUBLIC_KEY") or read_env_key(
+    "NEXT_PUBLIC_VAPID_PUBLIC_KEY"
+)
+vapid_priv = ops.get("VAPID_PRIVATE_KEY") or read_env_key("VAPID_PRIVATE_KEY")
+vapid_sub = (
+    ops.get("VAPID_SUBJECT")
+    or read_env_key("VAPID_SUBJECT")
+    or "mailto:admin@ttenterprises.shop"
+)
+print("TALLY_WA_INSTANCE_KEY", "SET" if instance else "MISSING")
+print("CRON_SECRET", "SET" if cron else "MISSING")
+print("VAPID", "SET" if vapid_pub and vapid_priv else "MISSING")
+
+lines: list[str] = []
+if instance:
+    lines.append(f"TALLY_WA_INSTANCE_KEY={instance}")
+    lines.append(f"TALLY_WA_BASE_URL={base}")
+if cron:
+    lines.append(f"CRON_SECRET={cron}")
+if vapid_pub and vapid_priv:
+    lines.append(f"NEXT_PUBLIC_VAPID_PUBLIC_KEY={vapid_pub}")
+    lines.append(f"VAPID_PRIVATE_KEY={vapid_priv}")
+    lines.append(f"VAPID_SUBJECT={vapid_sub}")
+if lines:
+    body = "\n".join(lines) + "\n"
+    with zipfile.ZipFile(out, "a") as zf:
+        dir_info = zipfile.ZipInfo("config/")
+        dir_info.create_system = 3
+        dir_info.external_attr = DIR_ATTR
+        try:
+            zf.writestr(dir_info, b"")
+        except Exception:
+            pass
+        for arc in ("config/tally-wa.cfg", "config/ops.cfg", ".env.production"):
+            info = zipfile.ZipInfo(arc)
+            info.create_system = 3
+            info.external_attr = FILE_ATTR
+            zf.writestr(info, body)
+    print("INJECTED server config (secrets not printed)")

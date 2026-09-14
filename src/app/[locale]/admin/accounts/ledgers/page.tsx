@@ -5,6 +5,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { ExportButtons } from "@/components/ExportButtons";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { NumberField } from "@/components/NumberField";
 import {
@@ -68,7 +69,7 @@ export default function AccountsLedgersPage() {
     [db, isOwner, locale, t, today]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -160,29 +161,24 @@ export default function AccountsLedgersPage() {
     <AccountsShell>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            {t("accounts.ledgers")}
-          </h1>
+          <AccountsPageHeader
+            title={t("accounts.ledgers")}
+          />
           <p className="mt-1 max-w-2xl text-sm text-[var(--ink-muted)]">
-            Chart of accounts. Create{" "}
-            <strong className="font-semibold text-[var(--ink)]">Bank</strong> as
-            Asset (tick Bank book),{" "}
-            <strong className="font-semibold text-[var(--ink)]">Capital</strong>{" "}
-            as Equity. Seeded Cash / Bank / Capital stay for posting. Use{" "}
+            {t("accounts.ledgersHint")}{" "}
             <Link
               href="/admin/accounts/journal"
               className="underline text-[var(--brand-deep)]"
             >
-              Journal
-            </Link>{" "}
-            or{" "}
+              {t("accounts.journal")}
+            </Link>
+            {" · "}
             <Link
               href="/admin/accounts/openings"
               className="underline text-[var(--brand-deep)]"
             >
-              Openings
-            </Link>{" "}
-            to move opening funds.
+              {t("accounts.openingBalances")}
+            </Link>
           </p>
         </div>
       </div>
@@ -192,7 +188,7 @@ export default function AccountsLedgersPage() {
         className="mt-6 grid max-w-2xl gap-3 rounded-2xl border border-[var(--line)] bg-white p-5 sm:grid-cols-2"
       >
         <p className="sm:col-span-2 text-sm font-semibold text-[var(--brand-deep)]">
-          {editId ? "Edit account" : "Add account"}
+          {editId ? t("accounts.editAccount") : t("accounts.addAccount")}
         </p>
         <input
           className="tt-input"

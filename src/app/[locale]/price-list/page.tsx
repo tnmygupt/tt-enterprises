@@ -4,9 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { useDb, useSession } from "@/lib/hooks";
-import { getSizeColorStock, productStockSummary } from "@/lib/inventory";
 import { loc } from "@/lib/localized";
-import { formatInr } from "@/lib/pricing";
+import { formatInr, isSqftUnit, resolveSqftPack, unitLabel } from "@/lib/pricing";
+import { CatalogRetry } from "@/components/CatalogRetry";
 import type { ProductCategory } from "@/lib/types";
 
 /** Prefer real size text; strip leading "Size" / "साइज़" so list shows "12x18" not "Size 12x18". */
@@ -35,7 +35,7 @@ const PINS_KEY = "tt_price_list_pins_v1";
 export default function PriceListPage() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
-  const { db } = useDb();
+  const { db, cloudReady } = useDb();
   const { session, ready } = useSession();
   const [category, setCategory] = useState<ProductCategory | "all">("all");
   const [q, setQ] = useState("");
@@ -92,8 +92,6 @@ export default function PriceListPage() {
 
     for (const p of db.products ?? []) {
       if (!p?.active) continue;
-      // Hide fully out-of-stock products from the price list
-      if (productStockSummary(p).bundles <= 0) continue;
       if (category !== "all" && p.category !== category) continue;
 
       const productName = loc(p.name, locale, p.code || "Product");
@@ -115,22 +113,18 @@ export default function PriceListPage() {
             },
           ];
 
-      const unitLabel =
+      const unitText =
         p.pricingMode === "bundle"
           ? locale === "hi"
             ? "किग्रा"
             : "kg"
-          : p.unit;
+          : unitLabel(p.unit, locale);
 
       for (const v of variations) {
-        const rate = v.rate || p.baseRate;
+        const rate = isSqftUnit(p.unit)
+          ? resolveSqftPack(p, v).ratePerSqft
+          : v.rate || p.baseRate;
         if (!(rate > 0)) continue;
-        // Skip sizes with no stock
-        if (v.id === "base" || !(p.variations ?? []).length) {
-          if (productStockSummary(p).bundles <= 0) continue;
-        } else if (getSizeColorStock(p, v.id) <= 0) {
-          continue;
-        }
 
         const sizeRaw = cleanSizeLabel(v, locale);
         const size =
@@ -140,7 +134,7 @@ export default function PriceListPage() {
             : "";
 
         // Key includes productId so same-rate products stay in separate blocks
-        const key = `${p.id}|${rate}|${unitLabel}`;
+        const key = `${p.id}|${rate}|${unitText}`;
         let block = map.get(key);
         if (!block) {
           block = {
@@ -149,7 +143,7 @@ export default function PriceListPage() {
             productName,
             sizes: [],
             rate,
-            unitLabel,
+            unitLabel: unitText,
           };
           map.set(key, block);
         }
@@ -186,7 +180,17 @@ export default function PriceListPage() {
       });
   }, [db, category, q, locale, pinnedSet]);
 
-  if (ready && !session) {
+  if (!ready) {
+    return (
+      <section className="tt-section">
+        <div className="tt-wrap">
+          <p className="text-sm text-[var(--ink-muted)]">{t("common.loading")}</p>
+        </div>
+      </section>
+    );
+  }
+
+  if (!session) {
     return (
       <section className="tt-section">
         <div className="tt-wrap tt-panel max-w-lg p-6">
@@ -194,9 +198,7 @@ export default function PriceListPage() {
             {t("nav.priceList")}
           </h1>
           <p className="mt-2 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "रेट लिस्ट देखने के लिए लॉगिन करें।"
-              : "Log in to view wholesale rates."}
+            {t("shop.priceListLogin")}
           </p>
           <Link href="/" className="tt-btn tt-btn-dark mt-4 inline-flex">
             {t("nav.login")}
@@ -240,10 +242,20 @@ export default function PriceListPage() {
         </div>
 
         <div className="tt-panel mt-4 overflow-hidden">
-          {!blocks.length ? (
+          {!cloudReady || !db ? (
+            <p className="px-3 py-4 text-sm text-[var(--ink-muted)]">
+              {t("common.loading")}
+            </p>
+          ) : !blocks.length ? (
+            (db.products?.length ?? 0) === 0 ? (
+              <div className="px-3 py-4">
+                <CatalogRetry />
+              </div>
+            ) : (
             <p className="px-3 py-4 text-sm text-[var(--ink-muted)]">
               {t("common.empty")}
             </p>
+            )
           ) : (
             <ul>
               {blocks.map((g) => (

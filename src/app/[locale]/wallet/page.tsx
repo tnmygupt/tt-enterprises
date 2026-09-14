@@ -1,11 +1,13 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { PaymentInstructions } from "@/components/PaymentInstructions";
+import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
-import { useDb, useSession } from "@/lib/hooks";
+import { useDb, useSession, retryCloudCatalog } from "@/lib/hooks";
+import { dealerOpenBilledOrders } from "@/lib/dealer-statement";
 import { formatInr } from "@/lib/pricing";
 import { getProofItems } from "@/lib/proofs";
 import {
@@ -38,7 +40,7 @@ export default function WalletPage() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
   const { session } = useSession();
-  const { db, refresh } = useDb();
+  const { db, refresh, cloudReady } = useDb();
   const [filter, setFilter] = useState<LedgerFilter>("all");
   const [q, setQ] = useState("");
   const [depositAmount, setDepositAmount] = useState("");
@@ -49,6 +51,11 @@ export default function WalletPage() {
   const [depositMsg, setDepositMsg] = useState("");
 
   const user = db?.users.find((u) => u.id === session?.id);
+
+  useEffect(() => {
+    if (!session || user || !cloudReady) return;
+    void retryCloudCatalog().then(() => refresh());
+  }, [session, user, cloudReady, refresh]);
 
   const myDeposits = useMemo(() => {
     if (!db || !session) return [] as WalletDeposit[];
@@ -128,6 +135,31 @@ export default function WalletPage() {
     }
     return Math.round(total * 100) / 100;
   }, [db, user]);
+
+  const linkedParty = useMemo(
+    () =>
+      session && db
+        ? db.parties.find((p) => p.linkedUserId === session.id)
+        : undefined,
+    [db, session]
+  );
+
+  const openBilled = useMemo(
+    () =>
+      session && db
+        ? dealerOpenBilledOrders(db.orders, session.id).slice(0, 6)
+        : [],
+    [db, session]
+  );
+
+  const statementReceipts = linkedParty?.statementReceipts ?? [];
+  const outstanding =
+    linkedParty?.statementOutstanding != null
+      ? linkedParty.statementOutstanding
+      : 0;
+  const showStatement =
+    !!session &&
+    (!!linkedParty || openBilled.length > 0 || statementReceipts.length > 0);
 
   const onStartDeposit = (e: FormEvent) => {
     e.preventDefault();
@@ -237,25 +269,23 @@ export default function WalletPage() {
         <div className="tt-wallet-hero">
           <div className="tt-wallet-hero-copy">
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/70">
-              {locale === "hi" ? "आपका वॉलेट" : "Your wallet"}
+              {t("shop.walletTitle")}
             </p>
             <p className="mt-2 text-sm text-white/80">
-              {locale === "hi" ? "उपलब्ध क्रेडिट" : "Available credit"}
+              {t("shop.walletCredit")}
             </p>
             <p className="mt-1 text-4xl font-bold tabular-nums sm:text-5xl">
               {formatInr(user?.walletBalance ?? 0, locale)}
             </p>
             <p className="mt-3 max-w-md text-sm text-white/80">
-              {locale === "hi"
-                ? "अग्रिम जमा करें — भविष्य के ऑर्डर पर चेकआउट में इस्तेमाल करें।"
-                : "Deposit advance — use it at checkout on future orders."}
+              {t("shop.walletHint")}
             </p>
             <div className="mt-5 flex flex-wrap gap-2">
               <a
                 href="#wallet-deposit"
                 className="tt-btn border border-white/40 bg-white/10 text-white hover:bg-white/20"
               >
-                {locale === "hi" ? "पैसे जमा करें" : "Deposit money"}
+                {t("shop.walletDeposit")}
               </a>
               <Link
                 href="/quick-order"
@@ -300,6 +330,78 @@ export default function WalletPage() {
             </div>
           </div>
         </div>
+
+        {showStatement ? (
+          <div className="tt-panel p-5">
+            <h2 className="text-lg font-semibold text-[var(--brand-deep)]">
+              {t("shop.outstandingTitle")}
+            </h2>
+            <p className="mt-1 text-sm text-[var(--ink-muted)]">
+              {t("shop.outstandingHint")}
+            </p>
+            <p className="mt-3 text-3xl font-bold tabular-nums">
+              {outstanding > 0.05
+                ? formatInr(outstanding, locale)
+                : t("shop.outstandingNone")}
+            </p>
+            {openBilled.length ? (
+              <div className="mt-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
+                  {t("shop.openBills")}
+                </p>
+                <ul className="mt-2 space-y-1 text-sm">
+                  {openBilled.map((o) => (
+                    <li key={o.id}>
+                      <Link
+                        href={`/orders/${o.id}`}
+                        className="font-mono text-[var(--brand)]"
+                      >
+                        {o.orderNumber}
+                      </Link>
+                      <span className="text-[var(--ink-muted)]">
+                        {" "}
+                        · {formatInr(o.actualBillAmount || o.estimatedTotal, locale)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            <div className="mt-4">
+              <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
+                {t("shop.recentPayments")}
+              </p>
+              {statementReceipts.length ? (
+                <ul className="mt-2 space-y-1 text-sm">
+                  {statementReceipts.map((r) => (
+                    <li key={`${r.number}-${r.date}`}>
+                      <span className="tabular-nums">{r.date}</span>
+                      {" · "}
+                      {r.number}
+                      {" · "}
+                      {formatInr(r.amount, locale)}
+                      {r.linkedOrderId ? (
+                        <>
+                          {" · "}
+                          <Link
+                            href={`/orders/${r.linkedOrderId}`}
+                            className="text-[var(--brand)]"
+                          >
+                            {locale === "hi" ? "ऑर्डर" : "Order"}
+                          </Link>
+                        </>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-sm text-[var(--ink-muted)]">
+                  {t("shop.noRecentPayments")}
+                </p>
+              )}
+            </div>
+          </div>
+        ) : null}
 
         {/* --- Advance deposit ---------------------------------------- */}
         <div
@@ -423,7 +525,9 @@ export default function WalletPage() {
                 <PaymentInstructions
                   settings={db.settings}
                   amount={openDeposit.amount}
+                  remainingBalance={openDeposit.amount}
                   orderNumber={openDeposit.depositNumber}
+                  payRef={`${openDeposit.depositNumber}-P1`}
                   locale={locale}
                 />
               ) : null}
@@ -436,18 +540,15 @@ export default function WalletPage() {
                 </p>
               ) : (
                 <form onSubmit={onUploadDepositProof} className="space-y-3">
-                  <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-                    {locale === "hi"
-                      ? "पेमेंट के बाद प्रूफ अपलोड करें"
-                      : "Upload proof after paying"}
-                  </p>
-                  <input
-                    type="file"
-                    accept="image/jpeg,image/jpg,image/png,image/webp,image/*,.jpg,.jpeg,.png,.webp,.pdf,application/pdf"
+                  <FilePick
+                    kind="photoOrPdf"
                     multiple
-                    className="block w-full text-sm"
-                    onChange={(e) =>
-                      setProofFiles(Array.from(e.target.files || []))
+                    value={proofFiles}
+                    onChange={setProofFiles}
+                    label={
+                      locale === "hi"
+                        ? "पेमेंट के बाद प्रूफ अपलोड करें"
+                        : "Upload proof after paying"
                     }
                   />
                   <input

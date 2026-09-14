@@ -186,6 +186,108 @@ const lines5 = [{ ...lines10[0], quantity: 5, lineTotal: 5000 }];
 const none = resolveOrderDiscount(percentScheme, lines5, products);
 assert("below tier = 0", none.amount === 0);
 
+const itemMergeScheme = {
+  ...percentScheme,
+  id: "s-item",
+  levels: [
+    {
+      id: "t1",
+      name: { en: "T1", hi: "T1" },
+      targetAmount: 20,
+      ratePerUnit: 2,
+    },
+  ],
+};
+const productSized = {
+  ...product,
+  variations: [
+    {
+      id: "v12",
+      label: { en: "12x18", hi: "12x18" },
+      size: { en: "12x18", hi: "12x18" },
+      sku: "12",
+      rate: 100,
+      stock: 99,
+    },
+    {
+      id: "v15",
+      label: { en: "15x18", hi: "15x18" },
+      size: { en: "15x18", hi: "15x18" },
+      sku: "15",
+      rate: 100,
+      stock: 99,
+    },
+  ],
+};
+const split10 = [
+  {
+    ...lines10[0],
+    variationId: "v12",
+    quantity: 10,
+    lineTotal: 5000,
+    weightKg: 100,
+    estimatedWeightKg: 100,
+  },
+  {
+    ...lines10[0],
+    variationId: "v15",
+    quantity: 10,
+    lineTotal: 5000,
+    weightKg: 100,
+    estimatedWeightKg: 100,
+  },
+];
+const sameItemMerge = resolveOrderDiscount(itemMergeScheme, split10, [
+  productSized,
+]);
+assert(
+  "10+10 sizes of same item merge to 20",
+  sameItemMerge.amount === 200,
+  String(sameItemMerge.amount)
+);
+const otherProduct = { ...productSized, id: "p2" };
+const splitItems = [
+  split10[0],
+  { ...split10[1], productId: "p2" },
+];
+const noCrossItem = resolveOrderDiscount(itemMergeScheme, splitItems, [
+  productSized,
+  otherProduct,
+]);
+assert(
+  "10+10 different items do not merge to 20",
+  noCrossItem.amount === 0,
+  String(noCrossItem.amount)
+);
+const oneSize20 = [
+  {
+    ...lines10[0],
+    variationId: "v12",
+    quantity: 20,
+    lineTotal: 10000,
+    weightKg: 200,
+    estimatedWeightKg: 200,
+  },
+  {
+    ...lines10[0],
+    variationId: "v15",
+    quantity: 5,
+    lineTotal: 2500,
+    weightKg: 50,
+    estimatedWeightKg: 50,
+  },
+];
+const allSizesOfItem = resolveOrderDiscount(
+  itemMergeScheme,
+  oneSize20,
+  [productSized]
+);
+assert(
+  "all sizes of the item get 2% once 20 bundles",
+  allSizesOfItem.amount === 250,
+  String(allSizesOfItem.amount)
+);
+
 const ended = {
   ...percentScheme,
   endDate: new Date(now - 86400000).toISOString(),

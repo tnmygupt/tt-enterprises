@@ -10,7 +10,7 @@ import { AccessPlacesMapLazy } from "@/components/AccessPlacesMapLazy";
 import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
-import { canViewFinancials, checkCapability } from "@/lib/store/db";
+import { canViewFinancials, checkCapability, isSalesDeskStaff } from "@/lib/store/db";
 import {
   buildTrackingMatrix,
   type TrackingColumnKey,
@@ -61,12 +61,15 @@ function AdminTrackingInner() {
 
   const canTrack =
     !!session &&
-    (checkCapability(session, db?.users, "manage_orders") ||
-      checkCapability(session, db?.users, "manage_users"));
+    !isSalesDeskStaff(session, db) &&
+    (checkCapability(session, db, "manage_shipping") ||
+      checkCapability(session, db, "manage_accounts") ||
+      checkCapability(session, db, "manage_users") ||
+      canViewFinancials(session.role));
   const showMoney =
     !!session &&
     (canViewFinancials(session.role) ||
-      checkCapability(session, db?.users, "view_financials"));
+      checkCapability(session, db, "view_financials"));
 
   const matrix = useMemo(
     () =>
@@ -532,6 +535,7 @@ function AdminTrackingInner() {
                 <option value="sales">{t("tracking.roleSales")}</option>
                 <option value="accounts">{t("tracking.roleAccounts")}</option>
                 <option value="dispatch">{t("tracking.roleDispatch")}</option>
+                <option value="plant_manager">{t("tracking.rolePlant")}</option>
               </select>
             </label>
             <label className="block text-sm sm:col-span-2">

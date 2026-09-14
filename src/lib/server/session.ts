@@ -39,17 +39,59 @@ export function getAppDbGateSecret(): string {
 
 /**
  * Server-only session HMAC secret — must NOT equal NEXT_PUBLIC_DB_API_KEY.
+ * Hostinger often has DB_API_KEY === NEXT_PUBLIC_DB_API_KEY and no SESSION_SECRET;
+ * skip public twins and derive from a remaining server-only value.
  */
+export function sessionSecretDiagnostics() {
+  const pub = (process.env.NEXT_PUBLIC_DB_API_KEY || "").trim();
+  const sess = (process.env.SESSION_SECRET || "").trim();
+  const gate = (
+    process.env.TT_APP_DB_GATE ||
+    process.env.DB_GATE_SECRET ||
+    ""
+  ).trim();
+  const dbKey = (process.env.DB_API_KEY || "").trim();
+  const sr = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    ""
+  ).trim();
+  const api = (process.env.SUPABASE_API_KEY || "").trim();
+  return {
+    nodeEnv: process.env.NODE_ENV || "",
+    hasSession: Boolean(sess),
+    sessionEqPublic: Boolean(sess && pub && sess === pub),
+    hasGate: Boolean(gate),
+    gateEqPublic: Boolean(gate && pub && gate === pub),
+    hasDbKey: Boolean(dbKey),
+    dbEqPublic: Boolean(dbKey && pub && dbKey === pub),
+    hasServiceRole: Boolean(sr),
+    hasSupabaseApiKey: Boolean(api),
+  };
+}
+
 export function getSessionSecret(): string {
-  const secret = (process.env.SESSION_SECRET || "").trim();
-  if (secret) {
-    const pub = (process.env.NEXT_PUBLIC_DB_API_KEY || "").trim();
-    if (pub && secret === pub) {
-      throw new Error(
-        "SESSION_SECRET must differ from NEXT_PUBLIC_DB_API_KEY"
-      );
-    }
-    return secret;
+  const pub = (process.env.NEXT_PUBLIC_DB_API_KEY || "").trim();
+  const preferred = [
+    process.env.SESSION_SECRET,
+    process.env.TT_APP_DB_GATE,
+    process.env.DB_GATE_SECRET,
+    process.env.DB_API_KEY,
+  ];
+  for (const raw of preferred) {
+    const secret = (raw || "").trim();
+    if (secret && secret !== pub) return secret;
+  }
+  const supabaseMaterial = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.SUPABASE_API_KEY ||
+    ""
+  ).trim();
+  if (supabaseMaterial && supabaseMaterial !== pub) {
+    return createHmac("sha256", "tt-enterprises-session-v1")
+      .update(supabaseMaterial)
+      .digest("base64url");
   }
   if (process.env.NODE_ENV === "production") {
     throw new Error("SESSION_SECRET is required in production");

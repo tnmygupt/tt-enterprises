@@ -5,17 +5,20 @@ import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AdminShell } from "@/components/AdminShell";
 import { NumberField } from "@/components/NumberField";
+import { OrderDiscountExplain } from "@/components/OrderDiscountExplain";
 import { categoryLabel } from "@/lib/categories";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import {
+  adminSchemeLevelPreview,
+  dealerOrderDiscountView,
+  defaultSchemeTerms,
   estimateSchemePayout,
   formatSchemeDuration,
   getSchemeLevels,
   isOrderDiscountScheme,
   isPercentScheme,
   schemeProgressUnit,
-  schemeRewardLabel,
   schemeScopeLabel,
   schemeTierRate,
 } from "@/lib/schemes";
@@ -48,12 +51,15 @@ export default function AdminSchemesPage() {
   const [editing, setEditing] = useState<Scheme | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const blankLevel = (n: number): SchemeLevel => ({
-    id: `lvl_${crypto.randomUUID()}`,
-    name: { en: `Tier ${n}`, hi: `टियर ${n}` },
-    targetAmount: n === 1 ? 1000 : n === 2 ? 5000 : n * 5000,
-    ratePerUnit: n === 1 ? 1 : n === 2 ? 1.5 : 1 + n * 0.25,
-  });
+  const blankLevel = (n: number): SchemeLevel => {
+    const targetAmount = n === 1 ? 1000 : n === 2 ? 5000 : n * 5000;
+    return {
+      id: `lvl_${crypto.randomUUID()}`,
+      name: { en: `${targetAmount}+`, hi: `${targetAmount}+` },
+      targetAmount,
+      ratePerUnit: n === 1 ? 1 : n === 2 ? 1.5 : 1 + n * 0.25,
+    };
+  };
 
   const blank = (): Scheme => {
     const levels = [blankLevel(1), blankLevel(2), blankLevel(3)];
@@ -61,10 +67,7 @@ export default function AdminSchemesPage() {
       id: `scheme_${crypto.randomUUID()}`,
       name: { en: "", hi: "" },
       description: { en: "", hi: "" },
-      termsAndConditions: {
-        en: "Highest unlocked tier rate applies to full lift. Single wallet credit after scheme end date.",
-        hi: "ऊँचा अनलॉक टियर रेट पूरे लिफ्ट पर। स्कीम समाप्ति पर एक वॉलेट क्रेडिट।",
-      },
+      termsAndConditions: defaultSchemeTerms("per_kg_rate"),
       progressUnit: "kg",
       targetWeightKg: levels[levels.length - 1].targetAmount,
       rewardType: "per_kg_rate",
@@ -140,9 +143,13 @@ export default function AdminSchemesPage() {
           ? "percent"
           : editing.rewardType === "order_percent"
             ? "order_percent"
-            : editing.rewardType === "order_flat"
-              ? "order_flat"
-              : "per_kg_rate";
+            : editing.rewardType === "order_rate"
+              ? "order_rate"
+              : editing.rewardType === "order_flat"
+                ? "order_flat"
+                : editing.rewardType === "order_per_kg"
+                  ? "order_per_kg"
+                  : "per_kg_rate";
       upsertScheme({
         ...editing,
         name,
@@ -174,7 +181,7 @@ export default function AdminSchemesPage() {
     }
   };
 
-  if (!session || !checkCapability(session, db?.users, "manage_schemes")) {
+  if (!session || !checkCapability(session, db, "manage_schemes")) {
     return (
       <AdminShell>
         <AdminAccessDenied />
@@ -188,9 +195,7 @@ export default function AdminSchemesPage() {
         <div>
           <h1 className="text-2xl font-semibold">{t("admin.schemes")}</h1>
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "लिफ्टिंग (वॉलेट) या प्रति-ऑर्डर बिल छूट — टियर से मात्रा"
-              : "Lifting (wallet) or per-order bill discount — tiered by qty"}
+            {t("admin.schemesPageHint")}
           </p>
         </div>
         <button
@@ -198,7 +203,7 @@ export default function AdminSchemesPage() {
           className="tt-btn tt-btn-dark"
           onClick={() => setEditing(blank())}
         >
-          + New scheme
+          {t("admin.schemesNew")}
         </button>
       </div>
 
@@ -206,11 +211,11 @@ export default function AdminSchemesPage() {
         <table className="tt-table min-w-[960px]">
           <thead>
             <tr>
-              <th>Scheme</th>
-              <th>Scope</th>
-              <th>Reward</th>
-              <th>Duration</th>
-              <th>Active</th>
+              <th>{t("admin.schemesColScheme")}</th>
+              <th>{t("admin.schemesColScope")}</th>
+              <th>{t("admin.schemesColHow")}</th>
+              <th>{t("admin.schemesColDates")}</th>
+              <th>{t("admin.schemesColActive")}</th>
               <th></th>
             </tr>
           </thead>
@@ -231,12 +236,29 @@ export default function AdminSchemesPage() {
                     db?.categories
                   )}
                   {s.appliesToAllDealers ? (
-                    <div className="text-xs text-[var(--brand)]">All dealers</div>
+                    <div className="text-xs text-[var(--brand)]">
+                      {t("admin.schemesAllDealersBadge")}
+                    </div>
                   ) : (
-                    <div className="text-xs text-[var(--ink-muted)]">Assigned only</div>
+                    <div className="text-xs text-[var(--ink-muted)]">
+                      {t("admin.schemesAssignedBadge")}
+                    </div>
                   )}
                 </td>
-                <td className="text-sm">{schemeRewardLabel(s, locale)}</td>
+                <td className="text-sm">
+                  <div className="text-xs font-semibold text-[var(--brand-deep)]">
+                    {isOrderDiscountScheme(s)
+                      ? t("admin.schemesKindBill")
+                      : t("admin.schemesKindWallet")}
+                  </div>
+                  <ul className="mt-1 space-y-0.5 text-xs text-[var(--ink-muted)]">
+                    {getSchemeLevels(s).map((level) => (
+                      <li key={level.id}>
+                        {adminSchemeLevelPreview(s, level, locale)}
+                      </li>
+                    ))}
+                  </ul>
+                </td>
                 <td className="text-xs">{formatSchemeDuration(s, locale)}</td>
                 <td>
                   <input
@@ -259,16 +281,14 @@ export default function AdminSchemesPage() {
                       })
                     }
                   >
-                    Edit
+                    {t("admin.schemesEditBtn")}
                   </button>
                   <button
                     type="button"
                     className="text-sm font-semibold text-[var(--danger)]"
                     onClick={() => {
                       const ok = window.confirm(
-                        locale === "hi"
-                          ? `"${s.name[locale]}" स्कीम डिलीट करें? यह वापस नहीं आएगी।`
-                          : `Delete scheme "${s.name[locale]}"? This cannot be undone.`
+                        t("admin.schemesDeleteConfirm", { name: s.name[locale] })
                       );
                       if (!ok) return;
                       try {
@@ -282,7 +302,7 @@ export default function AdminSchemesPage() {
                       }
                     }}
                   >
-                    Delete
+                    {t("admin.schemesDeleteBtn")}
                   </button>
                 </td>
               </tr>
@@ -293,13 +313,11 @@ export default function AdminSchemesPage() {
 
       {editing ? (
         <form onSubmit={onSave} className="tt-panel mt-6 space-y-4 p-5">
-          <h2 className="text-lg font-semibold">
-            {locale === "hi" ? "स्कीम बनाएँ / संपादित करें" : "Create / edit scheme"}
-          </h2>
+          <h2 className="text-lg font-semibold">{t("admin.schemesEdit")}</h2>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="tt-label">Name (EN) *</label>
+              <label className="tt-label">{t("admin.schemesNameEn")}</label>
               <input
                 className="tt-input"
                 value={editing.name.en}
@@ -313,7 +331,7 @@ export default function AdminSchemesPage() {
               />
             </div>
             <div>
-              <label className="tt-label">Name (HI)</label>
+              <label className="tt-label">{t("admin.schemesNameHi")}</label>
               <input
                 className="tt-input"
                 value={editing.name.hi}
@@ -326,7 +344,7 @@ export default function AdminSchemesPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label className="tt-label">Short description (EN)</label>
+              <label className="tt-label">{t("admin.schemesDescEn")}</label>
               <textarea
                 className="tt-textarea"
                 value={editing.description.en}
@@ -339,7 +357,7 @@ export default function AdminSchemesPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label className="tt-label">Short description (HI)</label>
+              <label className="tt-label">{t("admin.schemesDescHi")}</label>
               <textarea
                 className="tt-textarea"
                 value={editing.description.hi}
@@ -356,13 +374,17 @@ export default function AdminSchemesPage() {
           <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-                {editing.rewardType === "order_percent"
-                  ? "Tiers (% off this order — unlock by order qty)"
+                {editing.rewardType === "order_rate"
+                  ? t("admin.schemesSectionBillRate")
+                  : editing.rewardType === "order_per_kg"
+                  ? t("admin.schemesSectionBillPerKg")
+                  : editing.rewardType === "order_percent"
+                  ? t("admin.schemesSectionBillPct")
                   : editing.rewardType === "order_flat"
-                    ? "Tiers (₹ off this order — unlock by order qty)"
+                    ? t("admin.schemesSectionBillFlat")
                     : isPercentScheme(editing)
-                      ? "Tiers (% of sales — unlock by lift)"
-                      : "Tiers (₹ per unit on full lift)"}
+                      ? t("admin.schemesSectionWalletPct")
+                      : t("admin.schemesSectionWalletRate")}
               </p>
               <div className="flex flex-wrap gap-2">
                 <select
@@ -370,28 +392,35 @@ export default function AdminSchemesPage() {
                   value={editing.rewardType}
                   onChange={(e) => {
                     const rewardType = e.target.value as SchemeRewardType;
-                    const terms =
-                      rewardType === "order_percent" ||
-                      rewardType === "order_flat"
-                        ? {
-                            en: "Highest unlocked tier by this order’s qty. Discount applied on the order bill (not wallet).",
-                            hi: "इस ऑर्डर की मात्रा से ऊँचा टियर। छूट बिल पर लगेगी (वॉलेट नहीं)।",
-                          }
-                        : {
-                            en: "Highest unlocked tier rate applies to full lift. Single wallet credit after scheme end date.",
-                            hi: "ऊँचा अनलॉक टियर रेट पूरे लिफ्ट पर। स्कीम समाप्ति पर एक वॉलेट क्रेडिट।",
-                          };
                     setEditing({
                       ...editing,
                       rewardType,
-                      termsAndConditions: terms,
+                      termsAndConditions: defaultSchemeTerms(rewardType),
                     });
                   }}
                 >
-                  <option value="per_kg_rate">Lifting: ₹ / unit → wallet</option>
-                  <option value="percent">Lifting: % of sales → wallet</option>
-                  <option value="order_percent">Per-order: % off bill</option>
-                  <option value="order_flat">Per-order: ₹ off bill</option>
+                  <optgroup label={t("admin.schemesKindBill")}>
+                    <option value="order_rate">
+                      {t("admin.schemesTypeBillRate")}
+                    </option>
+                    <option value="order_percent">
+                      {t("admin.schemesTypeBillPct")}
+                    </option>
+                    <option value="order_per_kg">
+                      {t("admin.schemesTypeBillPerKg")}
+                    </option>
+                    <option value="order_flat">
+                      {t("admin.schemesTypeBillFlat")}
+                    </option>
+                  </optgroup>
+                  <optgroup label={t("admin.schemesKindWallet")}>
+                    <option value="per_kg_rate">
+                      {t("admin.schemesTypeWalletRate")}
+                    </option>
+                    <option value="percent">
+                      {t("admin.schemesTypeWalletPct")}
+                    </option>
+                  </optgroup>
                 </select>
                 <select
                   className="tt-select w-auto min-w-[7rem]"
@@ -405,13 +434,13 @@ export default function AdminSchemesPage() {
                 >
                   <option value="kg">
                     {isOrderDiscountScheme(editing)
-                      ? "Order qty: kg"
-                      : "Lift unit: kg"}
+                      ? t("admin.schemesQtyKg")
+                      : t("admin.schemesLiftKg")}
                   </option>
                   <option value="bundles">
                     {isOrderDiscountScheme(editing)
-                      ? "Order qty: bundles"
-                      : "Lift unit: bundles"}
+                      ? t("admin.schemesQtyBundles")
+                      : t("admin.schemesLiftBundles")}
                   </option>
                 </select>
                 <button
@@ -427,30 +456,75 @@ export default function AdminSchemesPage() {
                     setEditing({ ...editing, levels });
                   }}
                 >
-                  + Tier
+                  {isOrderDiscountScheme(editing)
+                    ? t("admin.schemesAddQtyStep")
+                    : t("admin.schemesAddLiftStep")}
                 </button>
               </div>
             </div>
             <p className="mt-2 text-xs text-[var(--ink-muted)]">
-              {editing.rewardType === "order_percent"
-                ? "Example: 10 bundles → 2% off. 50 bundles → 5% off. Discount = % of this order’s scoped items only. Applied on each order bill."
+              {editing.rewardType === "order_rate"
+                ? t("admin.schemesHintBillRate")
+                : editing.rewardType === "order_per_kg"
+                ? t("admin.schemesHintBillPerKg")
+                : editing.rewardType === "order_percent"
+                ? t("admin.schemesHintBillPct")
                 : editing.rewardType === "order_flat"
-                  ? "Example: 10 bundles → ₹100 off. 50 bundles → ₹500 off. Capped at scoped items subtotal. Applied on each order bill."
+                  ? t("admin.schemesHintBillFlat")
                   : isPercentScheme(editing)
-                    ? "Example: Tier 1 = 1000 kg → 1%. Tier 2 = 5000 kg → 2%. If dealer lifts 5000 kg, wallet credit = 2% of scheme product sales. One credit after end date."
-                    : "Example: Tier 1 = 1000 kg @ ₹1/kg. Tier 2 = 5000 kg @ ₹1.5/kg. If dealer lifts 5000 kg, payout = 5000 × ₹1.5 (whole lift at higher rate). One wallet credit after end date."}
+                    ? t("admin.schemesHintWalletPct")
+                    : t("admin.schemesHintWalletRate")}
             </p>
+            {isOrderDiscountScheme(editing) ? (
+              <div className="mt-3 rounded-lg border border-[var(--line)] bg-white p-3">
+                <p className="mb-1 text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
+                  {t("admin.schemesDealerSees")}
+                </p>
+                <OrderDiscountExplain
+                  view={dealerOrderDiscountView(editing, locale)}
+                  compact
+                />
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                {t("admin.schemesWalletNote")}
+              </p>
+            )}
             <div className="mt-3 space-y-3">
               {(editing.levels?.length
                 ? editing.levels
                 : getSchemeLevels(editing)
-              ).map((level, i) => (
+              ).map((level, i) => {
+                const unitShort =
+                  schemeProgressUnit(editing) === "bundles"
+                    ? locale === "hi"
+                      ? "बंडल"
+                      : "bdl"
+                    : locale === "hi"
+                      ? "किग्रा"
+                      : "kg";
+                const rateLabel =
+                  editing.rewardType === "order_percent"
+                    ? t("admin.schemesPctOffBill")
+                    : editing.rewardType === "order_rate"
+                      ? t("admin.schemesRupeeOffRate")
+                    : editing.rewardType === "order_per_kg"
+                      ? t("admin.schemesPerKgOff")
+                    : editing.rewardType === "order_flat"
+                      ? t("admin.schemesFlatOffBill")
+                      : isPercentScheme(editing)
+                        ? t("admin.schemesPctWallet")
+                        : t("admin.schemesRateWallet", { unit: unitShort });
+                return (
                 <div
                   key={level.id}
                   className="grid gap-2 rounded-lg border border-[var(--line)] bg-white p-3 sm:grid-cols-[1fr_1fr_7rem_7rem_auto]"
                 >
+                  <p className="sm:col-span-5 text-sm font-semibold text-[var(--brand-deep)]">
+                    {adminSchemeLevelPreview(editing, level, locale)}
+                  </p>
                   <div>
-                    <label className="tt-label">Tier name (EN)</label>
+                    <label className="tt-label">{t("admin.schemesStepNameEn")}</label>
                     <input
                       className="tt-input"
                       value={level.name.en}
@@ -469,7 +543,7 @@ export default function AdminSchemesPage() {
                     />
                   </div>
                   <div>
-                    <label className="tt-label">Tier name (HI)</label>
+                    <label className="tt-label">{t("admin.schemesStepNameHi")}</label>
                     <input
                       className="tt-input"
                       value={level.name.hi}
@@ -489,9 +563,9 @@ export default function AdminSchemesPage() {
                   </div>
                   <div>
                     <label className="tt-label">
-                      {isOrderDiscountScheme(editing) ? "Min order qty" : "Min lift"}{" "}
-                      (
-                      {schemeProgressUnit(editing) === "bundles" ? "bdl" : "kg"})
+                      {isOrderDiscountScheme(editing)
+                        ? t("admin.schemesMinBillQty", { unit: unitShort })
+                        : t("admin.schemesMinLift", { unit: unitShort })}
                     </label>
                     <NumberField
                       min={0}
@@ -513,20 +587,7 @@ export default function AdminSchemesPage() {
                     />
                   </div>
                   <div>
-                    <label className="tt-label">
-                      {editing.rewardType === "order_percent" ||
-                      isPercentScheme(editing)
-                        ? editing.rewardType === "order_percent"
-                          ? "% off"
-                          : "% discount"
-                        : editing.rewardType === "order_flat"
-                          ? "₹ off"
-                          : `₹ / ${
-                              schemeProgressUnit(editing) === "bundles"
-                                ? "bdl"
-                                : "kg"
-                            }`}
-                    </label>
+                    <label className="tt-label">{rateLabel}</label>
                     <NumberField
                       min={0}
                       step="0.01"
@@ -564,68 +625,88 @@ export default function AdminSchemesPage() {
                         setEditing({ ...editing, levels });
                       }}
                     >
-                      Remove
+                      {t("admin.schemesRemoveStep")}
                     </button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
             <p className="mt-3 text-xs font-semibold text-[var(--brand-deep)]">
-              {editing.rewardType === "order_percent" ? (
-                <>
-                  Top tier:{" "}
-                  {(editing.levels || getSchemeLevels(editing)).slice(-1)[0]
-                    ?.ratePerUnit || 0}
-                  % off this order ·{" "}
-                  {(editing.levels || getSchemeLevels(editing)).length}{" "}
-                  tier(s)
-                </>
-              ) : editing.rewardType === "order_flat" ? (
-                <>
-                  Top tier:{" "}
-                  {formatInr(
-                    (editing.levels || getSchemeLevels(editing)).slice(-1)[0]
-                      ?.ratePerUnit || 0,
-                    locale
-                  )}{" "}
-                  off this order ·{" "}
-                  {(editing.levels || getSchemeLevels(editing)).length}{" "}
-                  tier(s)
-                </>
-              ) : isPercentScheme(editing) ? (
-                <>
-                  Top tier:{" "}
-                  {(editing.levels || getSchemeLevels(editing)).slice(-1)[0]
-                    ?.ratePerUnit || 0}
-                  % of scheme sales ·{" "}
-                  {(editing.levels || getSchemeLevels(editing)).length}{" "}
-                  tier(s)
-                </>
-              ) : (
-                <>
-                  Max at top tier:{" "}
-                  {formatInr(
-                    estimateSchemePayout(
-                      editing,
+              {editing.rewardType === "order_percent"
+                ? t("admin.schemesTopBillPct", {
+                    pct:
                       (editing.levels || getSchemeLevels(editing)).slice(-1)[0]
-                        ?.targetAmount || 0
-                    ),
-                    locale
-                  )}{" "}
-                  · {(editing.levels || getSchemeLevels(editing)).length}{" "}
-                  tier(s)
-                </>
-              )}
+                        ?.ratePerUnit || 0,
+                    n: (editing.levels || getSchemeLevels(editing)).length,
+                  })
+                : editing.rewardType === "order_rate"
+                  ? t("admin.schemesTopBillRate", {
+                      amount:
+                        (editing.levels || getSchemeLevels(editing)).slice(-1)[0]
+                          ?.ratePerUnit || 0,
+                      after: Math.max(
+                        0,
+                        100 -
+                          ((editing.levels || getSchemeLevels(editing)).slice(
+                            -1
+                          )[0]?.ratePerUnit || 0)
+                      ),
+                      n: (editing.levels || getSchemeLevels(editing)).length,
+                    })
+                : editing.rewardType === "order_per_kg"
+                  ? t("admin.schemesTopBillPerKg", {
+                      amount: formatInr(
+                        (editing.levels || getSchemeLevels(editing)).slice(-1)[0]
+                          ?.ratePerUnit || 0,
+                        locale
+                      ),
+                      n: (editing.levels || getSchemeLevels(editing)).length,
+                    })
+                : editing.rewardType === "order_flat"
+                  ? t("admin.schemesTopBillFlat", {
+                      amount: formatInr(
+                        (editing.levels || getSchemeLevels(editing)).slice(-1)[0]
+                          ?.ratePerUnit || 0,
+                        locale
+                      ),
+                      n: (editing.levels || getSchemeLevels(editing)).length,
+                    })
+                  : isPercentScheme(editing)
+                    ? t("admin.schemesTopWalletPct", {
+                        pct:
+                          (editing.levels || getSchemeLevels(editing)).slice(
+                            -1
+                          )[0]?.ratePerUnit || 0,
+                        n: (editing.levels || getSchemeLevels(editing)).length,
+                      })
+                    : t("admin.schemesTopWalletRate", {
+                        amount: formatInr(
+                          estimateSchemePayout(
+                            editing,
+                            (editing.levels || getSchemeLevels(editing)).slice(
+                              -1
+                            )[0]?.targetAmount || 0
+                          ),
+                          locale
+                        ),
+                        n: (editing.levels || getSchemeLevels(editing)).length,
+                      })}
             </p>
           </div>
 
           <div className="rounded-xl border border-[var(--line)] bg-[var(--surface)] p-4">
             <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-              Applies to (scope)
+              {t("admin.schemesScope")}
+            </p>
+            <p className="mt-1 text-xs text-[var(--ink-muted)]">
+              {isOrderDiscountScheme(editing)
+                ? t("admin.schemesScopeHintBill")
+                : t("admin.schemesScopeHintWallet")}
             </p>
             <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <div>
-                <label className="tt-label">Scope</label>
+                <label className="tt-label">{t("admin.schemesScopeField")}</label>
                 <select
                   className="tt-select"
                   value={editing.scopeType}
@@ -636,14 +717,18 @@ export default function AdminSchemesPage() {
                     })
                   }
                 >
-                  <option value="all">All products</option>
-                  <option value="category">One category</option>
-                  <option value="product">Selected items / products</option>
+                  <option value="all">{t("admin.schemesScopeAll")}</option>
+                  <option value="category">
+                    {t("admin.schemesScopeCategory")}
+                  </option>
+                  <option value="product">
+                    {t("admin.schemesScopeProducts")}
+                  </option>
                 </select>
               </div>
               {editing.scopeType === "category" ? (
                 <div>
-                  <label className="tt-label">Category</label>
+                  <label className="tt-label">{t("admin.schemesCategory")}</label>
                   <select
                     className="tt-select"
                     value={editing.scopeCategory ?? ""}
@@ -666,7 +751,7 @@ export default function AdminSchemesPage() {
               ) : null}
               {editing.scopeType === "product" ? (
                 <div className="sm:col-span-2">
-                  <label className="tt-label">Select products</label>
+                  <label className="tt-label">{t("admin.schemesSelectProducts")}</label>
                   <div className="mt-2 max-h-48 space-y-2 overflow-y-auto rounded-lg border border-[var(--line)] bg-white p-3">
                     {(db?.products ?? []).map((p) => {
                       const checked = editing.scopeProductIds.includes(p.id);
@@ -703,14 +788,14 @@ export default function AdminSchemesPage() {
                     })
                   }
                 />
-                Apply to all dealers automatically
+                {t("admin.schemesAllDealers")}
               </label>
             </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <label className="tt-label">Start date *</label>
+              <label className="tt-label">{t("admin.schemesStart")}</label>
               <input
                 type="date"
                 className="tt-input"
@@ -725,7 +810,7 @@ export default function AdminSchemesPage() {
               />
             </div>
             <div>
-              <label className="tt-label">End date *</label>
+              <label className="tt-label">{t("admin.schemesEnd")}</label>
               <input
                 type="date"
                 className="tt-input"
@@ -740,7 +825,7 @@ export default function AdminSchemesPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label className="tt-label">Terms & conditions (EN)</label>
+              <label className="tt-label">{t("admin.schemesTermsEn")}</label>
               <textarea
                 className="tt-textarea min-h-[120px]"
                 value={editing.termsAndConditions.en}
@@ -757,7 +842,7 @@ export default function AdminSchemesPage() {
               />
             </div>
             <div className="sm:col-span-2">
-              <label className="tt-label">Terms & conditions (HI)</label>
+              <label className="tt-label">{t("admin.schemesTermsHi")}</label>
               <textarea
                 className="tt-textarea min-h-[120px]"
                 value={editing.termsAndConditions.hi}

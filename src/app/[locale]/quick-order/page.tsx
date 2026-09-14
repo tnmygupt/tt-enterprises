@@ -5,17 +5,23 @@ import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/routing";
 import { NumberField } from "@/components/NumberField";
 import { ProductImage } from "@/components/ProductImage";
-import { useDb } from "@/lib/hooks";
+import { CatalogRetry } from "@/components/CatalogRetry";
+import { useDb, useSession } from "@/lib/hooks";
 import {
+  buildOrderLine,
+  catalogFromRate,
   calcLineTotal,
   formatInr,
   resolveRate,
+  resolveSqftPack,
   resolveWeightKg,
   roundMoney,
   roundOffRupees,
+  unitLabel,
   variationDisplayLabel,
 } from "@/lib/pricing";
 import { getSizeColorStock } from "@/lib/inventory";
+import { ORDER_AGAIN_HINT_KEY } from "@/lib/order-again";
 import {
   calcShipping,
   countOrderJhals,
@@ -24,6 +30,14 @@ import {
   shippingWeightExcludingJhal,
 } from "@/lib/store/db";
 import type { CartItem, Product, ProductVariation } from "@/lib/types";
+import { OrderDiscountExplain } from "@/components/OrderDiscountExplain";
+import {
+  lineDiscountedRate,
+  lineOrderDiscountTier,
+  orderDiscountMathLabel,
+  orderDiscountMathQty,
+  previewDealerOrderDiscount,
+} from "@/lib/schemes";
 
 interface QuickRow {
   id: string;
@@ -31,6 +45,16 @@ interface QuickRow {
   variationId: string;
   colorId: string;
   quantity: number;
+}
+
+function comboKey(variationId: string, colorId: string): string {
+  return `${variationId}::${colorId}`;
+}
+
+function parseCombo(key: string): { variationId: string; colorId: string } {
+  const i = key.indexOf("::");
+  if (i < 0) return { variationId: key, colorId: "" };
+  return { variationId: key.slice(0, i), colorId: key.slice(i + 2) };
 }
 
 function productThumb(product: Product): string {
@@ -43,20 +67,24 @@ function productThumb(product: Product): string {
 
 function rateUnitSuffix(product: Product, locale: "en" | "hi"): string {
   if (product.pricingMode === "bundle") return locale === "hi" ? "/किग्रा" : "/kg";
-  return locale === "hi" ? "/पीस" : "/pc";
+  return `/${unitLabel(product.unit, locale)}`;
 }
 
-/** Lowest–highest rate for list display (₹ / kg or / pc). */
+/** Lowest–highest rate for list display (₹ / kg, / pc, or / sq/ft). */
 function productRateLabel(product: Product, locale: "en" | "hi"): string {
+  const unit = rateUnitSuffix(product, locale);
   const rates = (
-    product.variations.length
-      ? product.variations.map((v) => resolveRate(product, v))
-      : [resolveRate(product, undefined)]
+    product.unit === "sqft"
+      ? (product.variations.length
+          ? product.variations.map((v) => resolveSqftPack(product, v).ratePerSqft)
+          : [catalogFromRate(product)])
+      : product.variations.length
+        ? product.variations.map((v) => resolveRate(product, v))
+        : [resolveRate(product, undefined)]
   ).filter((r) => r > 0);
   if (!rates.length) return "—";
   const min = Math.min(...rates);
   const max = Math.max(...rates);
-  const unit = rateUnitSuffix(product, locale);
   if (min === max) return `${formatInr(min, locale)}${unit}`;
   return `${formatInr(min, locale)}–${formatInr(max, locale)}${unit}`;
 }
@@ -140,6 +168,34 @@ function sortedColors(product: Product, variationId?: string) {
   });
 }
 
+/** Size for a newly tapped colour — keep the last size only if that colour has it. */
+function sizeForNewColor(
+  product: Product,
+  colorId: string,
+  preferredVariationId?: string
+): string {
+  if (
+    preferredVariationId &&
+    getSizeColorStock(product, preferredVariationId, colorId) > 0
+  ) {
+    return preferredVariationId;
+  }
+  const first = sortedVariations(product, colorId).find(
+    (v) => getSizeColorStock(product, v.id, colorId) > 0
+  );
+  return first?.id || product.variations[0]?.id || "";
+}
+
+function colorTotalStock(product: Product, colorId: string): number {
+  if (!product.variations.length) {
+    return Math.max(0, getSizeColorStock(product, undefined, colorId));
+  }
+  return product.variations.reduce(
+    (s, v) => s + Math.max(0, getSizeColorStock(product, v.id, colorId)),
+    0
+  );
+}
+
 function pickInStockDefaults(product: Product): {
   variationId: string;
   colorId: string;
@@ -206,6 +262,51 @@ function clampQty(
   return Math.min(maxQty, Math.max(minQty, n));
 }
 
+function mergeQuickRows(
+  product: Product,
+  current: QuickRow[],
+  toAdd: { variationId: string; colorId: string; qty: number }[]
+): QuickRow[] {
+  let next = [...current];
+  for (const item of toAdd) {
+    const existingIdx = next.findIndex(
+      (r) =>
+        r.productId === product.id &&
+        (r.variationId || "") === item.variationId &&
+        (r.colorId || "") === item.colorId
+    );
+    if (existingIdx >= 0) {
+      const merged = clampQty(
+        product,
+        item.variationId,
+        item.colorId,
+        next.filter((_, i) => i !== existingIdx),
+        next[existingIdx].id,
+        next[existingIdx].quantity + item.qty
+      );
+      next[existingIdx] = { ...next[existingIdx], quantity: merged };
+    } else {
+      const qty = clampQty(
+        product,
+        item.variationId,
+        item.colorId,
+        next,
+        "__new__",
+        item.qty
+      );
+      if (qty <= 0) continue;
+      next.push({
+        id: crypto.randomUUID(),
+        productId: product.id,
+        variationId: item.variationId,
+        colorId: item.colorId,
+        quantity: qty,
+      });
+    }
+  }
+  return next;
+}
+
 function rowsToCartItems(
   computed: Array<{
     product?: Product;
@@ -249,7 +350,8 @@ export default function QuickOrderPage() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
   const router = useRouter();
-  const { db } = useDb();
+  const { db, cloudReady } = useDb();
+  const { session } = useSession();
   const [rows, setRows] = useState<QuickRow[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [query, setQuery] = useState("");
@@ -258,9 +360,9 @@ export default function QuickOrderPage() {
   const [toast, setToast] = useState<{ id: number; msg: string } | null>(null);
   const [showOutOfStock, setShowOutOfStock] = useState(false);
   const [sheetProductId, setSheetProductId] = useState<string | null>(null);
-  const [sheetVariationId, setSheetVariationId] = useState("");
   const [sheetColorId, setSheetColorId] = useState("");
-  const [sheetQty, setSheetQty] = useState(1);
+  const [sheetFocusSize, setSheetFocusSize] = useState("");
+  const [sheetDraft, setSheetDraft] = useState<Record<string, number>>({});
   const summaryRef = useRef<HTMLElement | null>(null);
 
   const products = useMemo(() => {
@@ -295,6 +397,15 @@ export default function QuickOrderPage() {
       );
     }
     setHydrated(true);
+    try {
+      const hint = sessionStorage.getItem(ORDER_AGAIN_HINT_KEY);
+      if (hint) {
+        sessionStorage.removeItem(ORDER_AGAIN_HINT_KEY);
+        setToast({ id: Date.now(), msg: hint });
+      }
+    } catch {
+      /* private mode */
+    }
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [db, hydrated]);
 
@@ -335,70 +446,94 @@ export default function QuickOrderPage() {
     if (!sheetProduct) return [];
     const list = sortedVariations(sheetProduct, sheetColorId || undefined);
     if (showOutOfStock) return list;
-    return list.filter(
-      (v) =>
-        variationStockForColor(
-          sheetProduct,
-          v.id,
-          sheetColorId || undefined
-        ) > 0
+    return list.filter((v) =>
+      sheetColorId
+        ? getSizeColorStock(sheetProduct, v.id, sheetColorId) > 0
+        : variationStockForColor(sheetProduct, v.id) > 0
     );
   }, [sheetProduct, sheetColorId, showOutOfStock]);
 
   const sheetColors = useMemo(() => {
     if (!sheetProduct?.colors?.length) return [];
-    const list = sortedColors(sheetProduct, sheetVariationId || undefined);
+    const list = [...sheetProduct.colors].sort((a, b) => {
+      const sa = colorTotalStock(sheetProduct, a.id);
+      const sb = colorTotalStock(sheetProduct, b.id);
+      if (sa > 0 !== sb > 0) return sa > 0 ? -1 : 1;
+      return sb - sa;
+    });
     if (showOutOfStock) return list;
-    return list.filter(
-      (c) =>
-        getSizeColorStock(sheetProduct, sheetVariationId || undefined, c.id) >
-        0
-    );
-  }, [sheetProduct, sheetVariationId, showOutOfStock]);
+    return list.filter((c) => colorTotalStock(sheetProduct, c.id) > 0);
+  }, [sheetProduct, showOutOfStock]);
 
-  const sheetVariation = sheetProduct
-    ? sheetProduct.variations.find((v) => v.id === sheetVariationId) ??
+  const sheetSelectedSizeIds = Object.keys(sheetDraft)
+    .map(parseCombo)
+    .filter((c) => (c.colorId || "") === (sheetColorId || ""))
+    .map((c) => c.variationId);
+
+  const sheetLines = sheetProduct
+    ? Object.entries(sheetDraft).flatMap(([key, qty]) => {
+        const { variationId, colorId } = parseCombo(key);
+        const variation = sheetProduct.variations.find((v) => v.id === variationId);
+        if (!variation) return [];
+        const color =
+          sheetProduct.colors.find((c) => c.id === colorId) ??
+          (colorId ? undefined : sheetProduct.colors[0]);
+        const max = maxBundlesForRow(
+          sheetProduct,
+          variation,
+          colorId,
+          rows,
+          "__sheet__"
+        );
+        const minQty = Math.min(sheetProduct.minOrderQty ?? 1, max || 1);
+        const rate = resolveRate(sheetProduct, variation);
+        const weightKg =
+          qty > 0 ? resolveWeightKg(sheetProduct, variation, qty) : 0;
+        const total =
+          qty > 0
+            ? calcLineTotal({
+                pricingMode: sheetProduct.pricingMode,
+                rate,
+                quantity: qty,
+                weightKg,
+              })
+            : 0;
+        return [
+          {
+            key,
+            variation,
+            color,
+            colorId,
+            qty,
+            max,
+            minQty,
+            rate,
+            weightKg,
+            total,
+          },
+        ];
+      })
+    : [];
+
+  const sheetAddable = sheetLines.filter((l) => l.qty > 0 && l.max > 0);
+  const sheetWeight = sheetAddable.reduce((s, l) => s + l.weightKg, 0);
+  const sheetTotal = sheetAddable.reduce((s, l) => s + l.total, 0);
+  const sheetQtySum = sheetAddable.reduce((s, l) => s + l.qty, 0);
+  const sheetFocusVariation = sheetProduct
+    ? sheetProduct.variations.find((v) => v.id === sheetFocusSize) ??
       sheetProduct.variations[0]
     : undefined;
-
-  const sheetStock = sheetProduct
-    ? getSizeColorStock(
-        sheetProduct,
-        sheetVariationId || undefined,
-        sheetColorId || undefined
-      )
-    : 0;
-
-  const sheetMax = sheetProduct
-    ? maxBundlesForRow(
-        sheetProduct,
-        sheetVariation,
-        sheetColorId,
-        rows,
-        "__sheet__"
-      )
-    : 0;
-
-  const sheetMinQty = sheetProduct
-    ? Math.min(sheetProduct.minOrderQty ?? 1, sheetMax || 1)
-    : 1;
-
-  const sheetRate = sheetProduct ? resolveRate(sheetProduct, sheetVariation) : 0;
-  const sheetWeight =
-    sheetProduct && sheetQty > 0
-      ? resolveWeightKg(sheetProduct, sheetVariation, sheetQty)
-      : 0;
-  const sheetTotal =
-    sheetProduct && sheetQty > 0
-      ? calcLineTotal({
-          pricingMode: sheetProduct.pricingMode,
-          rate: sheetRate,
-          quantity: sheetQty,
-          weightKg: sheetWeight,
-        })
+  const sheetRate =
+    sheetProduct && sheetFocusVariation
+      ? resolveRate(sheetProduct, sheetFocusVariation)
       : 0;
 
-  const closeSheet = () => setSheetProductId(null);
+  const closeSheet = () => {
+    setSheetProductId(null);
+    setSheetColorId("");
+    setSheetFocusSize("");
+    setSheetDraft({});
+  };
 
   // Lock page scroll and allow Escape while the picker sheet is open.
   useEffect(() => {
@@ -415,128 +550,181 @@ export default function QuickOrderPage() {
     };
   }, [sheetProductId]);
 
-  /** Re-clamp sheet qty for a specific size/colour pair (never stale state). */
-  const syncSheetQty = (
-    product: Product,
-    variationId: string,
-    colorId: string
-  ) => {
-    const max = maxBundlesForRow(
-      product,
-      product.variations.find((v) => v.id === variationId),
-      colorId,
-      rows,
-      "__sheet__"
-    );
-    if (max <= 0) {
-      setSheetQty(0);
-      return;
-    }
-    const min = Math.min(product.minOrderQty ?? 1, max);
-    setSheetQty((prev) => Math.min(max, Math.max(min || 1, prev || min || 1)));
-  };
-
   const openSheet = (product: Product) => {
     const defaults = pickInStockDefaults(product);
+    const qty = clampQty(
+      product,
+      defaults.variationId,
+      defaults.colorId,
+      rows,
+      "__sheet__",
+      product.minOrderQty ?? 1
+    );
     setSheetProductId(product.id);
-    setSheetVariationId(defaults.variationId);
     setSheetColorId(defaults.colorId);
-    setSheetQty(1);
-    syncSheetQty(product, defaults.variationId, defaults.colorId);
+    setSheetFocusSize(defaults.variationId);
+    setSheetDraft(
+      defaults.variationId && qty > 0
+        ? { [comboKey(defaults.variationId, defaults.colorId)]: qty }
+        : {}
+    );
     setError("");
     setNote("");
   };
 
-  const selectSheetVariation = (variationId: string) => {
-    if (!sheetProduct) return;
-    let nextColor = sheetColorId;
-    const colors = sortedColors(sheetProduct, variationId).filter(
-      (c) =>
-        showOutOfStock ||
-        getSizeColorStock(sheetProduct, variationId, c.id) > 0
-    );
-    if (colors.length && !colors.some((c) => c.id === nextColor)) {
-      nextColor = colors[0].id;
-    }
-    setSheetVariationId(variationId);
-    setSheetColorId(nextColor);
-    syncSheetQty(sheetProduct, variationId, nextColor);
-  };
-
-  const selectSheetColor = (colorId: string) => {
-    if (!sheetProduct) return;
-    let nextVariation = sheetVariationId;
-    const vars = sortedVariations(sheetProduct, colorId).filter(
-      (v) =>
-        showOutOfStock || getSizeColorStock(sheetProduct, v.id, colorId) > 0
-    );
-    if (vars.length && !vars.some((v) => v.id === nextVariation)) {
-      nextVariation = vars[0].id;
-    }
-    setSheetColorId(colorId);
-    setSheetVariationId(nextVariation);
-    syncSheetQty(sheetProduct, nextVariation, colorId);
-  };
-
-  const addFromSheet = () => {
-    if (!sheetProduct) return;
-    const variationId =
-      sheetVariationId || sheetProduct.variations[0]?.id || "";
-    const colorId = sheetColorId || sheetProduct.colors[0]?.id || "";
+  const putCombo = (
+    draft: Record<string, number>,
+    variationId: string,
+    colorId: string,
+    requested: number
+  ): Record<string, number> => {
+    if (!sheetProduct) return draft;
     const qty = clampQty(
       sheetProduct,
       variationId,
       colorId,
       rows,
       "__sheet__",
-      sheetQty
+      requested
     );
+    const key = comboKey(variationId, colorId);
     if (qty <= 0) {
-      setError(
-        locale === "hi" ? "स्टॉक उपलब्ध नहीं" : "No stock for this option"
-      );
+      const next = { ...draft };
+      delete next[key];
+      return next;
+    }
+    return { ...draft, [key]: qty };
+  };
+
+  const toggleSheetSize = (variationId: string) => {
+    if (!sheetProduct) return;
+    const colorId = sheetColorId;
+    const key = comboKey(variationId, colorId);
+    const has = sheetDraft[key] != null;
+    if (has) {
+      setSheetDraft((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      const leftover = Object.keys(sheetDraft)
+        .filter((k) => k !== key)
+        .map(parseCombo)
+        .find((c) => (c.colorId || "") === (colorId || ""));
+      setSheetFocusSize(leftover?.variationId || variationId);
       return;
     }
-    const existingIdx = rows.findIndex(
-      (r) =>
-        r.productId === sheetProduct.id &&
-        (r.variationId || "") === variationId &&
-        (r.colorId || "") === colorId
+    const stock = colorId
+      ? getSizeColorStock(sheetProduct, variationId, colorId)
+      : variationStockForColor(sheetProduct, variationId);
+    if (stock <= 0) return;
+    setSheetFocusSize(variationId);
+    setSheetDraft((prev) =>
+      putCombo(prev, variationId, colorId, sheetProduct.minOrderQty ?? 1)
     );
-    if (existingIdx >= 0) {
-      const next = [...rows];
-      const merged = clampQty(
-        sheetProduct,
-        variationId,
-        colorId,
-        rows.filter((_, i) => i !== existingIdx),
-        next[existingIdx].id,
-        next[existingIdx].quantity + qty
-      );
-      next[existingIdx] = { ...next[existingIdx], quantity: merged };
-      setRows(next);
-    } else {
-      setRows([
-        ...rows,
-        {
-          id: crypto.randomUUID(),
-          productId: sheetProduct.id,
+  };
+
+  const pickSheetColor = (colorId: string) => {
+    setSheetColorId(colorId);
+    const existing = Object.keys(sheetDraft)
+      .map(parseCombo)
+      .find((c) => c.colorId === colorId);
+    if (existing) {
+      setSheetFocusSize(existing.variationId);
+      return;
+    }
+    if (!sheetProduct) return;
+    const first = sizeForNewColor(sheetProduct, colorId, "");
+    if (first) setSheetFocusSize(first);
+  };
+
+  const setDraftQty = (key: string, requested: number) => {
+    const { variationId, colorId } = parseCombo(key);
+    setSheetDraft((prev) => putCombo(prev, variationId, colorId, requested));
+  };
+
+  const addFromSheet = () => {
+    if (!sheetProduct) return;
+    const toAdd = Object.entries(sheetDraft)
+      .map(([key, requested]) => {
+        const { variationId, colorId } = parseCombo(key);
+        return {
           variationId,
           colorId,
-          quantity: qty,
-        },
-      ]);
+          qty: clampQty(
+            sheetProduct,
+            variationId,
+            colorId,
+            rows,
+            "__sheet__",
+            requested
+          ),
+        };
+      })
+      .filter((x) => x.qty > 0);
+    if (!toAdd.length) {
+      setError(t("shop.qoNoStock"));
+      return;
     }
-    const sizeLabel = sheetVariation
-      ? variationDisplayLabel(sheetVariation, locale)
-      : "";
+    setRows(mergeQuickRows(sheetProduct, rows, toAdd));
+    const sizeBits = toAdd
+      .map(({ variationId, colorId, qty }) => {
+        const v = sheetProduct.variations.find((x) => x.id === variationId);
+        const c = sheetProduct.colors.find((x) => x.id === colorId);
+        const label = v ? variationDisplayLabel(v, locale) : variationId;
+        const color = c ? ` ${c.name[locale]}` : "";
+        return `${label}${color} × ${qty}`;
+      })
+      .join(", ");
     setToast({
       id: Date.now(),
-      msg: `${locale === "hi" ? "जोड़ा" : "Added"} · ${sheetProduct.name[locale]}${sizeLabel ? ` ${sizeLabel}` : ""} × ${qty}`,
+      msg: `${t("shop.qoAdded")} · ${sheetProduct.name[locale]} ${sizeBits}`,
     });
     closeSheet();
     setError("");
     setNote("");
+  };
+
+  const selectAllSheetSizes = () => {
+    if (!sheetProduct) return;
+    const colorId = sheetColorId;
+    const minQty = sheetProduct.minOrderQty ?? 1;
+    setSheetDraft((prev) => {
+      let next = { ...prev };
+      for (const v of sheetVariations) {
+        const st = colorId
+          ? getSizeColorStock(sheetProduct, v.id, colorId)
+          : variationStockForColor(sheetProduct, v.id);
+        if (st <= 0) continue;
+        const key = comboKey(v.id, colorId);
+        if (next[key] == null) {
+          next = putCombo(next, v.id, colorId, minQty);
+        }
+      }
+      return next;
+    });
+  };
+
+  const selectAllSheetColors = () => {
+    if (!sheetProduct?.colors.length) return;
+    const sizes = sheetSelectedSizeIds.length
+      ? sheetSelectedSizeIds
+      : [sheetFocusSize].filter(Boolean);
+    const minQty = sheetProduct.minOrderQty ?? 1;
+    setSheetDraft((prev) => {
+      let next = { ...prev };
+      for (const variationId of sizes) {
+        for (const color of sheetColors) {
+          const st = getSizeColorStock(sheetProduct, variationId, color.id);
+          if (st <= 0) continue;
+          const key = comboKey(variationId, color.id);
+          if (next[key] == null) {
+            next = putCombo(next, variationId, color.id, minQty);
+          }
+        }
+      }
+      return next;
+    });
   };
 
   const computed = rows.map((row) => {
@@ -609,7 +797,36 @@ export default function QuickOrderPage() {
     : roundMoney(computed.reduce((s, c) => s + (c.weightKg || 0), 0));
   const jhalQty = db ? countOrderJhals(shipLines, db.products) : 0;
   const shipping = db ? calcShipping(db, subtotal, totalWeight, jhalQty) : 0;
-  const grand = roundOffRupees(subtotal + shipping);
+  const user = db?.users.find((u) => u.id === session?.id);
+  const orderLines = computed
+    .filter((c) => c.product && c.variation && c.qty > 0)
+    .map((c) =>
+      buildOrderLine({
+        product: c.product!,
+        variation: c.variation,
+        colorId: c.color?.id,
+        colorName: c.color?.name,
+        quantity: c.qty,
+      })
+    );
+  const schemePreview =
+    db && orderLines.length
+      ? previewDealerOrderDiscount(
+          db.schemes,
+          user?.assignedSchemeIds,
+          orderLines,
+          db.products,
+          locale
+        )
+      : { best: null, view: null };
+  const schemeBest = schemePreview.best;
+  const schemeDiscount = schemeBest?.amount ?? 0;
+  const schemeQty =
+    schemeBest && db
+      ? orderDiscountMathQty(schemeBest.scheme, orderLines, db.products)
+      : 0;
+  const schemeMath = orderDiscountMathLabel(schemeBest, schemeQty, locale);
+  const grand = roundOffRupees(subtotal + shipping - schemeDiscount);
   const lineCount = computed.filter((c) => c.qty > 0).length;
   const goodsWeight = roundMoney(
     computed.reduce((s, c) => s + (c.weightKg || 0), 0)
@@ -690,7 +907,9 @@ export default function QuickOrderPage() {
     setError("");
   };
 
-  if (!db) return <p className="tt-section tt-wrap">{t("common.loading")}</p>;
+  if (!db || (!cloudReady && products.length === 0)) {
+    return <p className="tt-section tt-wrap">{t("common.loading")}</p>;
+  }
 
   return (
     <section className="tt-section tt-qo">
@@ -699,20 +918,14 @@ export default function QuickOrderPage() {
           <div className="tt-qo-head">
             <h1>{t("nav.quickOrder")}</h1>
             <p>
-              {locale === "hi"
-                ? "खोजें → उत्पाद टैप करें → साइज़/रंग → जोड़ें"
-                : "Search → tap product → size/color → add"}
+              {t("shop.qoHint")}
             </p>
           </div>
 
           <div className="tt-qo-search-row">
             <input
               className="tt-input w-full"
-              placeholder={
-                locale === "hi"
-                  ? "नाम, कोड या साइज़ खोजें…"
-                  : "Search name, code or size…"
-              }
+              placeholder={t("shop.qoSearch")}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               enterKeyHint="search"
@@ -724,7 +937,7 @@ export default function QuickOrderPage() {
                 checked={showOutOfStock}
                 onChange={(e) => setShowOutOfStock(e.target.checked)}
               />
-              {locale === "hi" ? "स्टॉक 0 भी दिखाएँ" : "Show out of stock"}
+              {t("shop.qoShowOos")}
             </label>
           </div>
 
@@ -735,9 +948,13 @@ export default function QuickOrderPage() {
 
           <div className="tt-qo-products">
             {filtered.length === 0 ? (
+              products.length === 0 ? (
+                <CatalogRetry className="tt-qo-empty" />
+              ) : (
               <p className="tt-qo-empty">
-                {locale === "hi" ? "कोई उत्पाद नहीं" : "No products found"}
+                {t("shop.qoNoProducts")}
               </p>
+              )
             ) : (
               filtered.map(({ product: p, stock }) => {
                 const thumb = productThumb(p);
@@ -806,9 +1023,44 @@ export default function QuickOrderPage() {
                           ? variationDisplayLabel(c.variation, locale)
                           : ""}
                         {c.color ? ` · ${c.color.name[locale]}` : ""}
-                        {c.rate > 0 && c.product
-                          ? ` · ${formatInr(c.rate, locale)}${rateUnitSuffix(c.product, locale)}`
-                          : ""}
+                        {(() => {
+                          if (!(c.rate > 0) || !c.product) return "";
+                          const lineTier = lineOrderDiscountTier(schemeBest, {
+                            productId: c.product.id,
+                            variationId: c.variation?.id,
+                          });
+                          const rates = lineTier
+                            ? lineDiscountedRate(
+                                schemeBest!.scheme,
+                                lineTier,
+                                {
+                                  rate: c.rate,
+                                  pricingMode: c.product.pricingMode,
+                                },
+                                c.product
+                              )
+                            : null;
+                          if (
+                            rates &&
+                            rates.discountedRate < rates.listRate
+                          ) {
+                            return (
+                              <>
+                                {" · "}
+                                <span className="line-through text-[var(--ink-muted)]">
+                                  {formatInr(rates.listRate, locale)}
+                                  {rateUnitSuffix(c.product, locale)}
+                                </span>
+                                {" → "}
+                                <span className="text-[var(--ok)]">
+                                  {formatInr(rates.discountedRate, locale)}
+                                  {rateUnitSuffix(c.product, locale)}
+                                </span>
+                              </>
+                            );
+                          }
+                          return ` · ${formatInr(c.rate, locale)}${rateUnitSuffix(c.product, locale)}`;
+                        })()}
                       </small>
                     </div>
                     <button
@@ -880,6 +1132,21 @@ export default function QuickOrderPage() {
               ))}
             </ul>
           )}
+          {computed.length > 0 && schemePreview.view ? (
+            <div className="mt-3 rounded-xl border border-[var(--line)] bg-[var(--surface)] p-3">
+              {schemeDiscount > 0 ? (
+                <p className="mb-2 text-sm font-semibold text-[var(--ok)]">
+                  {t("schemes.orderDiscountEstimate")}
+                  {schemeMath ? ` · ${schemeMath}` : ""}{" "}
+                  −{formatInr(schemeDiscount, locale)}
+                  <span className="mt-0.5 block text-[11px] font-normal text-[var(--ink-muted)]">
+                    {t("schemes.orderDiscountAfterWeight")}
+                  </span>
+                </p>
+              ) : null}
+              <OrderDiscountExplain view={schemePreview.view} compact />
+            </div>
+          ) : null}
         </aside>
       </div>
 
@@ -913,31 +1180,45 @@ export default function QuickOrderPage() {
 
             {sheetVariations.length || sheetProduct.variations.length ? (
               <div className="tt-qo-sheet-block">
-                <p className="tt-label">{t("common.variation")}</p>
+                <div className="tt-qo-sheet-label-row">
+                  <p className="tt-label">{t("common.variation")}</p>
+                  {sheetVariations.length > 1 ? (
+                    <button
+                      type="button"
+                      className="tt-qo-sheet-all"
+                      onClick={selectAllSheetSizes}
+                    >
+                      {t("shop.qoSelectAllSizes")}
+                    </button>
+                  ) : null}
+                </div>
+                <p className="mb-2 text-xs text-[var(--ink-muted)]">
+                  {t("shop.qoSelectSizes")}
+                </p>
                 <div className="tt-qo-chips">
                   {(sheetVariations.length
                     ? sheetVariations
                     : sheetProduct.variations
                   ).map((v) => {
-                    const st = variationStockForColor(
-                      sheetProduct,
-                      v.id,
-                      sheetColorId || undefined
-                    );
-                    const active = sheetVariationId === v.id;
+                    const colorStock = sheetColorId
+                      ? getSizeColorStock(sheetProduct, v.id, sheetColorId)
+                      : variationStockForColor(sheetProduct, v.id);
+                    const active = sheetSelectedSizeIds.includes(v.id);
                     const vRate = resolveRate(sheetProduct, v);
                     return (
                       <button
                         key={v.id}
                         type="button"
-                        className={`tt-qo-chip${active ? " active" : ""}${st <= 0 ? " out" : ""}`}
+                        className={`tt-qo-chip${active ? " active" : ""}${colorStock <= 0 ? " out" : ""}`}
                         aria-pressed={active}
-                        onClick={() => selectSheetVariation(v.id)}
+                        disabled={colorStock <= 0 && !active}
+                        onClick={() => toggleSheetSize(v.id)}
                       >
                         {variationDisplayLabel(v, locale)}
                         {vRate > 0
                           ? ` · ${formatInr(vRate, locale)}${rateUnitSuffix(sheetProduct, locale)}`
                           : ""}
+                        {colorStock > 0 ? ` · ${colorStock}` : ""}
                       </button>
                     );
                   })}
@@ -947,25 +1228,39 @@ export default function QuickOrderPage() {
 
             {sheetProduct.colors?.length ? (
               <div className="tt-qo-sheet-block">
-                <p className="tt-label">{t("common.color")}</p>
+                <div className="tt-qo-sheet-label-row">
+                  <p className="tt-label">{t("common.color")}</p>
+                  {sheetColors.length > 1 ? (
+                    <button
+                      type="button"
+                      className="tt-qo-sheet-all"
+                      onClick={selectAllSheetColors}
+                    >
+                      {t("shop.qoSelectAllColors")}
+                    </button>
+                  ) : null}
+                </div>
+                <p className="mb-2 text-xs text-[var(--ink-muted)]">
+                  {t("shop.qoSelectColors")}
+                </p>
                 <div className="tt-qo-chips">
                   {(sheetColors.length
                     ? sheetColors
                     : sheetProduct.colors
                   ).map((c) => {
-                    const st = getSizeColorStock(
-                      sheetProduct,
-                      sheetVariationId || undefined,
-                      c.id
-                    );
+                    const st = sheetFocusSize
+                      ? getSizeColorStock(sheetProduct, sheetFocusSize, c.id)
+                      : colorTotalStock(sheetProduct, c.id);
+                    const anyStock = colorTotalStock(sheetProduct, c.id);
                     const active = sheetColorId === c.id;
                     return (
                       <button
                         key={c.id}
                         type="button"
-                        className={`tt-qo-chip${active ? " active" : ""}${st <= 0 ? " out" : ""}`}
+                        className={`tt-qo-chip${active ? " active" : ""}${anyStock <= 0 ? " out" : ""}`}
                         aria-pressed={active}
-                        onClick={() => selectSheetColor(c.id)}
+                        disabled={anyStock <= 0 && !active}
+                        onClick={() => pickSheetColor(c.id)}
                       >
                         <span
                           className="tt-qo-swatch"
@@ -989,74 +1284,81 @@ export default function QuickOrderPage() {
               </div>
             ) : null}
 
-            <div className="tt-qo-sheet-qty">
-              <label className="tt-label">{t("common.bundles")}</label>
-              <div className="tt-qo-stepper">
-                <button
-                  type="button"
-                  aria-label="Decrease"
-                  disabled={sheetMax <= 0 || sheetQty <= 0}
-                  onClick={() =>
-                    setSheetQty(Math.max(0, (sheetQty || 0) - 1))
-                  }
-                >
-                  −
-                </button>
-                <NumberField
-                  integer
-                  className="tt-qo-qty"
-                  value={sheetMax <= 0 ? 0 : sheetQty}
-                  emptyAs={null}
-                  disabled={sheetMax <= 0}
-                  onValueChange={(v) => {
-                    if (v === "") return;
-                    setSheetQty(v);
-                  }}
-                  onBlur={() => {
-                    if (sheetMax <= 0) {
-                      setSheetQty(0);
-                      return;
-                    }
-                    const n = Number(sheetQty) || 0;
-                    setSheetQty(
-                      Math.min(sheetMax, Math.max(sheetMinQty, n || sheetMinQty))
-                    );
-                  }}
-                />
-                <button
-                  type="button"
-                  aria-label="Increase"
-                  disabled={sheetMax <= 0 || sheetQty >= sheetMax}
-                  onClick={() =>
-                    setSheetQty(Math.min(sheetMax, (sheetQty || 0) + 1))
-                  }
-                >
-                  +
-                </button>
+            {sheetLines.length ? (
+              <div className="tt-qo-sheet-draft">
+                {sheetLines.map((line) => {
+                  const key = line.key;
+                  return (
+                    <div key={key} className="tt-qo-sheet-draft-row">
+                      <p className="tt-qo-sheet-draft-size">
+                        {variationDisplayLabel(line.variation, locale)}
+                        {line.color ? ` · ${line.color.name[locale]}` : ""}
+                        <span>
+                          {line.max <= 0
+                            ? t("shop.qoOutOfStock")
+                            : t("shop.qoMax", { n: line.max })}
+                        </span>
+                      </p>
+                      <div className="tt-qo-stepper">
+                        <button
+                          type="button"
+                          aria-label="Decrease"
+                          disabled={line.max <= 0 || line.qty <= 0}
+                          onClick={() =>
+                            setDraftQty(key, Math.max(0, (line.qty || 0) - 1))
+                          }
+                        >
+                          −
+                        </button>
+                        <NumberField
+                          integer
+                          className="tt-qo-qty"
+                          value={line.max <= 0 ? 0 : line.qty}
+                          emptyAs={null}
+                          disabled={line.max <= 0}
+                          onValueChange={(v) => {
+                            if (v === "") return;
+                            setDraftQty(key, v);
+                          }}
+                          onBlur={() => {
+                            if (line.max <= 0) {
+                              setDraftQty(key, 0);
+                              return;
+                            }
+                            const n = Number(sheetDraft[key]) || 0;
+                            setDraftQty(
+                              key,
+                              Math.min(
+                                line.max,
+                                Math.max(line.minQty, n || line.minQty)
+                              )
+                            );
+                          }}
+                        />
+                        <button
+                          type="button"
+                          aria-label="Increase"
+                          disabled={line.max <= 0 || line.qty >= line.max}
+                          onClick={() =>
+                            setDraftQty(
+                              key,
+                              Math.min(line.max, (line.qty || 0) + 1)
+                            )
+                          }
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <p className={`tt-qo-stock${sheetMax <= 0 ? " out" : ""}`}>
-                {sheetMax <= 0
-                  ? locale === "hi"
-                    ? "स्टॉक खत्म"
-                    : "Out of stock"
-                  : locale === "hi"
-                    ? `मैक्स ${sheetMax}`
-                    : `Max ${sheetMax}`}
-                {sheetStock > 0 && sheetMax < sheetStock
-                  ? ` · ${sheetStock}`
-                  : ""}
-                {(sheetProduct.minOrderQty ?? 1) > 1
-                  ? locale === "hi"
-                    ? ` · कम से कम ${sheetProduct.minOrderQty}`
-                    : ` · min ${sheetProduct.minOrderQty}`
-                  : ""}
-              </p>
-            </div>
+            ) : null}
 
-            {sheetMax > 0 && sheetQty > 0 ? (
+            {sheetAddable.length ? (
               <div className="tt-qo-sheet-total">
                 <span>
-                  {sheetQty} {locale === "hi" ? "बंडल" : "bundles"}
+                  {sheetQtySum} {t("shop.bundles")}
                   {sheetWeight > 0
                     ? ` · ${roundMoney(sheetWeight)} kg`
                     : ""}
@@ -1068,10 +1370,12 @@ export default function QuickOrderPage() {
             <button
               type="button"
               className="tt-btn tt-btn-dark w-full"
-              disabled={sheetMax <= 0}
+              disabled={!sheetAddable.length}
               onClick={addFromSheet}
             >
-              {locale === "hi" ? "ऑर्डर में जोड़ें" : "Add to order"}
+              {sheetAddable.length > 1
+                ? `${t("shop.qoAddToOrder")} (${sheetAddable.length})`
+                : t("shop.qoAddToOrder")}
             </button>
           </div>
         </div>
@@ -1098,7 +1402,11 @@ export default function QuickOrderPage() {
             >
               <p className="line">
                 {lineCount
-                  ? `${lineCount} ${locale === "hi" ? "आइटम" : lineCount === 1 ? "item" : "items"} · ${goodsWeight} kg · +${formatInr(shipping, locale)} ${locale === "hi" ? "भाड़ा" : "ship"}`
+                  ? `${lineCount} ${locale === "hi" ? "आइटम" : lineCount === 1 ? "item" : "items"} · ${goodsWeight} kg · +${formatInr(shipping, locale)} ${locale === "hi" ? "भाड़ा" : "ship"}${
+                      schemeDiscount > 0
+                        ? ` · −${formatInr(schemeDiscount, locale)} ${locale === "hi" ? "छूट (अनुमान)" : "off (est.)"}`
+                        : ""
+                    }`
                   : locale === "hi"
                     ? "कोई आइटम नहीं"
                     : "No items yet"}

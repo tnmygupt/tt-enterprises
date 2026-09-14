@@ -1,9 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { profitAndLoss } from "@/lib/accounting";
 import { ExportButtons } from "@/components/ExportButtons";
 import { useDb, useSession } from "@/lib/hooks";
@@ -15,9 +17,9 @@ export default function AccountsPlPage() {
   const locale = useLocale() as "en" | "hi";
   const { session } = useSession();
   const { db } = useDb();
-  const year = new Date().getFullYear();
-  const [from, setFrom] = useState(`${year}-01-01`);
-  const [to, setTo] = useState(new Date().toISOString().slice(0, 10));
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
 
   const report = useMemo(() => {
     if (!db) return null;
@@ -80,33 +82,14 @@ export default function AccountsPlPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {t("accounts.pl")}
-      </h1>
+      <AccountsPageHeader title={t("accounts.pl")} hint={t("accounts.reportPlHint")} />
       {report && report.expenses.some((e) => e.name.includes("Cost of Goods Sold")) && (
         <p className="mt-2 text-sm text-gray-600">
           Gross profit = Sales − Cost of goods sold
         </p>
       )}
       <div className="mt-4 flex flex-wrap items-end gap-3">
-        <div>
-          <label className="tt-label">From</label>
-          <input
-            type="date"
-            className="tt-input"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="tt-label">To</label>
-          <input
-            type="date"
-            className="tt-input"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-          />
-        </div>
+        <DateRangeBar value={range} onChange={setRange} />
         <ExportButtons options={exportOptions} disabled={!report} />
       </div>
 

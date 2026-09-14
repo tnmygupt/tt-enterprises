@@ -1,9 +1,9 @@
 "use client";
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/routing";
 import {
-  SEARCH_KIND_LABEL,
   searchAccountsEverywhere,
 } from "@/lib/accounts-search";
 import { useDb, useSession } from "@/lib/hooks";
@@ -22,6 +22,7 @@ export function AccountsSearch({
   initialQuery = "",
 }: Props) {
   const router = useRouter();
+  const t = useTranslations("accounts");
   const { db } = useDb();
   const { session } = useSession();
   const isOwner = session ? canViewFinancials(session.role) : false;
@@ -89,7 +90,9 @@ export function AccountsSearch({
       <input
         ref={inputRef}
         className={`tt-input w-full ${compact ? "text-sm" : ""}`}
-        placeholder={compact ? "Search… (Ctrl+K)" : "Search party, bill, product…"}
+        placeholder={
+          compact ? t("searchPlaceholderCompact") : t("searchPlaceholder")
+        }
         value={q}
         onChange={(e) => {
           setQ(e.target.value);
@@ -98,7 +101,7 @@ export function AccountsSearch({
         }}
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
-        aria-label="Search accounts"
+        aria-label={t("searchAria")}
       />
       {open && q.trim() && (
         <div
@@ -107,7 +110,9 @@ export function AccountsSearch({
           }`}
         >
           {!hits.length ? (
-            <p className="p-3 text-sm text-[var(--ink-muted)]">No matches</p>
+            <p className="p-3 text-sm text-[var(--ink-muted)]">
+              {t("searchNoMatches")}
+            </p>
           ) : (
             <ul>
               {hits.map((h, i) => (
@@ -124,7 +129,18 @@ export function AccountsSearch({
                   >
                     <span className="w-full truncate font-medium text-[var(--ink)]">
                       <span className="mr-2 text-[10px] font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-                        {SEARCH_KIND_LABEL[h.kind]}
+                        {t(
+                          (
+                            {
+                              party: "kindParty",
+                              voucher: "kindVoucher",
+                              product: "kindProduct",
+                              account: "kindAccount",
+                              order: "kindOrder",
+                              grn: "kindGrn",
+                            } as const
+                          )[h.kind]
+                        )}
                       </span>
                       {h.title}
                     </span>
@@ -143,7 +159,7 @@ export function AccountsSearch({
               go(`/admin/accounts/search?q=${encodeURIComponent(q.trim())}`)
             }
           >
-            Open full search →
+            {t("searchOpenFull")} →
           </button>
         </div>
       )}

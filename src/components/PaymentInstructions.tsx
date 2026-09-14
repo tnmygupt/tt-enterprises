@@ -20,6 +20,8 @@ type Props = {
   locale: "en" | "hi";
   /** Full balance still owed on the order (for part-payment context). */
   remainingBalance?: number;
+  /** Unique UPI note for this attempt (e.g. TT-104-P2). */
+  payRef?: string;
 };
 
 export function PaymentInstructions({
@@ -28,6 +30,7 @@ export function PaymentInstructions({
   orderNumber,
   locale,
   remainingBalance,
+  payRef,
 }: Props) {
   const accounts = useMemo(() => listPayableAccounts(settings), [settings]);
   const [pickedId, setPickedId] = useState<string>("");
@@ -47,7 +50,10 @@ export function PaymentInstructions({
   if (!accounts.length) {
     const helpPhone = settings.phone || settings.phone2 || "";
     return (
-      <div className="rounded-2xl border border-dashed border-[var(--line)] bg-[var(--surface-2)] p-4 text-sm text-[var(--ink-muted)]">
+      <div
+        id="pay-now"
+        className="rounded-2xl border border-dashed border-[var(--line)] bg-[var(--surface-2)] p-4 text-sm text-[var(--ink-muted)]"
+      >
         <p className="font-semibold text-[var(--ink)]">
           {locale === "hi"
             ? "भुगतान विवरण के लिए संपर्क करें"
@@ -71,7 +77,7 @@ export function PaymentInstructions({
   }
 
   return (
-    <div className="tt-panel space-y-4 border-2 border-[var(--brand)]/35 p-4">
+    <div id="pay-now" className="tt-panel space-y-4 border-2 border-[var(--brand)]/35 p-4">
       <div>
         <h3 className="text-base font-bold text-[var(--brand-deep)]">
           {locale === "hi" ? "भुगतान करें" : "Pay now"}
@@ -79,17 +85,42 @@ export function PaymentInstructions({
         <p className="mt-1 text-2xl font-bold text-[var(--brand-deep)] tabular-nums">
           {formatInr(payNow, locale)}
         </p>
-        {isPartial ? (
-          <p className="mt-1 text-xs font-semibold text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? `पार्ट पेमेंट · बाकी कुल ${formatInr(balance, locale)}`
-              : `Part payment · balance due ${formatInr(balance, locale)}`}
-          </p>
-        ) : balance > payNow ? (
-          <p className="mt-1 text-xs text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? `बाकी ${formatInr(balance, locale)}`
-              : `Balance due ${formatInr(balance, locale)}`}
+        <dl className="mt-2 space-y-0.5 text-xs">
+          <div className="flex justify-between gap-3">
+            <dt className="text-[var(--ink-muted)]">
+              {locale === "hi" ? "कुल बाकी" : "Due"}
+            </dt>
+            <dd className="tabular-nums font-semibold">
+              {formatInr(balance, locale)}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-3">
+            <dt className="text-[var(--ink-muted)]">
+              {locale === "hi" ? "इस बार" : "This part"}
+            </dt>
+            <dd className="tabular-nums font-semibold">
+              {formatInr(payNow, locale)}
+            </dd>
+          </div>
+          {isPartial ? (
+            <div className="flex justify-between gap-3">
+              <dt className="text-[var(--ink-muted)]">
+                {locale === "hi" ? "फिर बाकी" : "Still left"}
+              </dt>
+              <dd className="tabular-nums font-semibold text-[var(--danger)]">
+                {formatInr(Math.max(0, balance - payNow), locale)}
+              </dd>
+            </div>
+          ) : null}
+        </dl>
+        {payRef ? (
+          <p className="mt-2 rounded-lg bg-[var(--surface-2)] px-3 py-2 text-sm">
+            <span className="text-[var(--ink-muted)]">
+              {locale === "hi" ? "UPI नोट में लिखें: " : "Write this in UPI note: "}
+            </span>
+            <span className="font-mono font-bold text-[var(--brand-deep)]">
+              {payRef}
+            </span>
           </p>
         ) : null}
         {settings.paymentNote ? (
@@ -132,6 +163,7 @@ export function PaymentInstructions({
           account={active}
           amount={payNow}
           orderNumber={orderNumber}
+          payRef={payRef}
           settings={settings}
           locale={locale}
           cap={cap}
@@ -145,6 +177,7 @@ function AccountPanel({
   account,
   amount,
   orderNumber,
+  payRef,
   settings,
   locale,
   cap,
@@ -152,6 +185,7 @@ function AccountPanel({
   account: BankAccountDetails;
   amount: number;
   orderNumber: string;
+  payRef?: string;
   settings: AppSettings;
   locale: "en" | "hi";
   cap: number;
@@ -164,7 +198,7 @@ function AccountPanel({
           upiId: account.upiId || "",
           payeeName: account.upiPayeeName || settings.companyName,
           amount,
-          note: orderNumber,
+          note: (payRef || orderNumber).slice(0, 50),
         })
       : null;
   const showBank = hasBankDetails(account);

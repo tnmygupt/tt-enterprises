@@ -9,7 +9,7 @@ export default function OrdersPage() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
   const { session } = useSession();
-  const { db } = useDb();
+  const { db, cloudReady } = useDb();
 
   if (!session) {
     return (
@@ -24,10 +24,11 @@ export default function OrdersPage() {
     );
   }
 
-  const orders =
-    db?.orders.filter((o) =>
-      session.role === "customer" ? o.userId === session.id : true
-    ) ?? [];
+  const orders = [...(db?.orders ?? [])]
+    .filter((o) => (session.role === "customer" ? o.userId === session.id : true))
+    .sort((a, b) =>
+      String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
+    );
 
   return (
     <section className="tt-section">
@@ -67,12 +68,14 @@ export default function OrdersPage() {
               </div>
             </article>
           ))}
-          {!orders.length ? (
+          {!cloudReady ? (
+            <p className="tt-panel p-6 text-center text-[var(--ink-muted)]">
+              {t("common.loading")}
+            </p>
+          ) : !orders.length ? (
             <div className="tt-panel p-6 text-center">
               <p className="text-[var(--ink-muted)]">
-                {locale === "hi"
-                  ? "अभी कोई ऑर्डर नहीं।"
-                  : "No orders yet."}
+                {t("shop.noOrdersYet")}
               </p>
               <div className="mt-4 flex flex-wrap justify-center gap-2">
                 <Link href="/quick-order" className="tt-btn tt-btn-dark">

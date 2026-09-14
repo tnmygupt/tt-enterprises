@@ -1,14 +1,23 @@
 /**
- * Hostinger injects SUPABASE_URL + SUPABASE_API_KEY.
- * Prefer SUPABASE_SERVICE_ROLE_KEY on the server so RLS can deny the anon key.
- * Browser sync goes through /api/db only (never direct table writes).
+ * Shared books live on Hostinger MySQL. Browser sync goes through /api/db.
+ * NEXT_PUBLIC_CLOUD_DB=1 tells the client bundle cloud is on (MYSQL_* is server-only).
  */
+export function isMysqlConfigured(): boolean {
+  return Boolean(
+    (process.env.MYSQL_HOST || "").trim() &&
+      (process.env.MYSQL_USER || "").trim() &&
+      (process.env.MYSQL_PASSWORD || "").trim() &&
+      (process.env.MYSQL_DATABASE || "").trim()
+  );
+}
+
+export function isCloudDbConfigured(): boolean {
+  if (isMysqlConfigured()) return true;
+  return (process.env.NEXT_PUBLIC_CLOUD_DB || "").trim() === "1";
+}
+
 export function getSupabaseUrl(): string {
-  return (
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    process.env.SUPABASE_URL ||
-    ""
-  ).trim();
+  return "";
 }
 
 /** Anon / publishable key — used only if no service role (legacy). */
@@ -55,30 +64,14 @@ export function getPublicDbApiKey(): string {
   return (process.env.NEXT_PUBLIC_DB_API_KEY || "").trim();
 }
 
-/** True when URL + key are present (server or public). */
+/** True when Hostinger MySQL is set (server) or NEXT_PUBLIC_CLOUD_DB=1 (browser). */
 export function isSupabaseConfigured(): boolean {
-  const url = getSupabaseUrl();
-  const key = getSupabaseKey();
-  return Boolean(
-    url &&
-      key &&
-      !url.includes("YOUR_") &&
-      !key.includes("YOUR_") &&
-      url.startsWith("http")
-  );
+  return isCloudDbConfigured();
 }
 
 /** Browser-safe: Next only inlines NEXT_PUBLIC_* into the client bundle. */
 export function isSupabaseBrowserConfigured(): boolean {
-  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
-  const key = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "").trim();
-  return Boolean(
-    url &&
-      key &&
-      !url.includes("YOUR_") &&
-      !key.includes("YOUR_") &&
-      url.startsWith("http")
-  );
+  return (process.env.NEXT_PUBLIC_CLOUD_DB || "").trim() === "1";
 }
 
 export const APP_DB_TABLE = "app_database";

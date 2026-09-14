@@ -129,7 +129,7 @@ const adminEn: HelpGuide = {
   steps: [
     {
       title: "1. Log in as staff",
-      body: "Use your staff mobile + password on the home Login tab. Open Admin from the menu. Your role (sales / accounts / dispatch / owner) controls which screens you see.",
+      body: "Use your staff mobile + password on the home Login tab. Open Admin from the menu. Your role (sales / accounts / dispatch / plant manager / owner) controls which screens you see.",
     },
     {
       title: "2. Approve new dealers",
@@ -163,12 +163,21 @@ const adminEn: HelpGuide = {
     },
     {
       title: "9. Owner-only screens",
-      body: "Owner tracking, P/L, balance sheet and purchase rates are owner-only. Staff who open those URLs see Access denied — that is intentional.",
+      body: "Owner tracking, monthly audit print (stock shortages and GPS flags first), P/L, balance sheet and purchase rates are owner-only. Staff who open those URLs see Access denied — that is intentional.",
     },
     {
       title: "10. Accounts books (overview)",
       body: "Admin → Accounts opens the books: sales, goods received, money in/out, statements, expenses, reports and Controls. Use Search (Ctrl+K) to find any party, bill or product. See the Books guide below for the full chain.",
       tip: "Open Admin → Help → Books tab for step-by-step books workflow.",
+    },
+    {
+      title: "11. WhatsApp desk",
+      body: "Desk → WhatsApp: silent send to a mobile number, payment-due reminders, and the daily owner summary. Order and payment alerts still go out automatically when notify is on.",
+      tip: "Turn notify on or off in that page. Templates live in the same screen.",
+    },
+    {
+      title: "12. HR and month count",
+      body: "People → HR: set pay unit (monthly, daily wage, or hourly), OT rate and multiplier (1 / 1.5 / 2), shifts, GPS sites, leave, advances, payslips. Clock in is a big button on staff phones (GPS + optional selfie). Half day = in with no out, or in+out under half the shift. Month-end: Audit → Stock count — (1) pick month and Start count to freeze book qty, (2) type counted SKU qty and save draft, (3) enter cash in hand and bank statement, (4) Submit to lock lines, (5) owner ticks shortages then Approve & post or Reject recount. Owner print: Audit → Monthly close — exceptions first, then books and signatures. WhatsApp pings missing clock-ins.",
     },
   ],
 };
@@ -184,7 +193,7 @@ const adminHi: HelpGuide = {
   steps: [
     {
       title: "1. स्टाफ लॉगिन",
-      body: "होम Login टैब पर स्टाफ मोबाइल + पासवर्ड। मेनू से Admin खोलें। रोल (sales / accounts / dispatch / owner) से स्क्रीन दिखती हैं।",
+      body: "होम Login टैब पर स्टाफ मोबाइल + पासवर्ड। मेनू से Admin खोलें। रोल (sales / accounts / dispatch / plant manager / owner) से स्क्रीन दिखती हैं।",
     },
     {
       title: "2. नए डीलर अप्रूव",
@@ -224,6 +233,15 @@ const adminHi: HelpGuide = {
       title: "10. अकाउंट्स बुक्स",
       body: "Admin → Accounts में किताबें खुलती हैं। Search (Ctrl+K) से पार्टी/बिल/प्रोडक्ट ढूँढें। पूरी श्रृंखला के लिए Help → Books टैब देखें।",
     },
+    {
+      title: "11. व्हाट्सऐप डेस्क",
+      body: "Desk → WhatsApp: मोबाइल पर साइलेंट सेंड, देय रिमाइंडर, और रोज़ाना सार। ऑर्डर/पेमेंट अलर्ट notify चालू होने पर अपने आप जाते हैं।",
+      tip: "उसी पेज पर notify चालू/बंद करें। टेम्प्लेट भी वहीं हैं।",
+    },
+    {
+      title: "12. एचआर और महीने की गिनती",
+      body: "People → HR: वेतन इकाई (मासिक / रोज़ / घंटे), OT दर और गुणक (1 / 1.5 / 2), शिफ्ट, GPS साइट, छुट्टी, अग्रिम, पेस्लिप। क्लॉक इन स्टाफ फ़ोन पर बड़ा बटन है। आधा दिन = इन पर आउट नहीं, या इन+आउट शिफ्ट के आधे से कम। महीने के अंत: Audit → Stock count — (1) महीना चुनकर गिनती शुरू (बुक मात्रा फ़्रीज़), (2) गिनी मात्रा लिखें और ड्राफ्ट सेव, (3) हाथ की नकद और बैंक स्टेटमेंट, (4) जमा कर लाइनें लॉक, (5) ओनर कमी चुनकर स्टॉक में पोस्ट या फिर गिनने को कहे। ओनर प्रिंट: Audit → Monthly close — पहले अपवाद, फिर किताबें और साइन।",
+    },
   ],
 };
 
@@ -238,8 +256,8 @@ const accountsEn: HelpGuide = {
   steps: [
     {
       title: "1. Open Accounts Home",
-      body: "Admin → Accounts. Big tiles for New sale, Goods received, Money received/paid, Statement, Match statement, Log expense. Cash/bank and queues show at a glance.",
-      tip: "Use Search in the Accounts sidebar (or Ctrl+K) anytime.",
+      body: "Admin → Accounts. Big tiles for New sale, Goods received, Money received/paid, Statement, Match statement, Log expense. Cash/bank and queues show at a glance. If books are empty, follow the start card: first sale → verify payment → optional openings.",
+      tip: "Use Search in the Accounts sidebar (or Ctrl+K). Help → Books tab for this guide.",
     },
     {
       title: "2. New sale",
@@ -248,6 +266,11 @@ const accountsEn: HelpGuide = {
     {
       title: "3. Money received",
       body: "Money received → pick customer, amount, cash or bank. Allocate against open bills so outstanding and aging stay correct.",
+    },
+    {
+      title: "3b. Payments desk & BRS (like Tally)",
+      body: "Dealers pay by UPI / NEFT (no gateway fee) and upload proof. Payments desk: verify proofs (this posts the receipt). Bank recon (Alt+B): type the day's closing from the bank SMS/app, tick lines that hit the statement, add charges/interest until difference is ₹0.",
+      tip: "Gateway keys: F5 Payment, F6 Receipt, F8 Sale, Alt+C Cash/Bank, Alt+B BRS, Ctrl+K Search, ? for the list.",
     },
     {
       title: "4. Goods received (godown)",
@@ -267,7 +290,7 @@ const accountsEn: HelpGuide = {
     },
     {
       title: "8. Reports",
-      body: "Sales/purchase/profit analysis, stock movements, stock alerts, valuation, cash flow, P&L, balance sheet, trial balance. Owner-only where purchase costs or profit appear.",
+      body: "Sales/purchase/profit analysis, stock movements, stock alerts, valuation, cash flow, P&L, balance sheet, trial balance. Owner-only where purchase costs or profit appear. Stock alerts use cover days (lead time + safety) from recent outward qty, plus open estimates, minus incoming POs — not only “fill back to min”.",
     },
     {
       title: "9. Controls",
@@ -288,7 +311,7 @@ const accountsHi: HelpGuide = {
   steps: [
     {
       title: "1. Accounts Home",
-      body: "Admin → Accounts। नई बिक्री, माल प्राप्त, पैसा आना/जाना, स्टेटमेंट, मैच, खर्च — बड़े बटन। साइडबार में Search (Ctrl+K) इस्तेमाल करें।",
+      body: "Admin → Accounts। नई बिक्री, माल प्राप्त, पैसा आना/जाना, स्टेटमेंट, मैच, खर्च — बड़े बटन। किताबें खाली हों तो स्टार्ट कार्ड: पहली बिक्री → पेमेंट वेरिफाई → ओपनिंग। साइडबार में Search (Ctrl+K)। Help → किताबें टैब।",
     },
     {
       title: "2. नई बिक्री",
@@ -297,6 +320,11 @@ const accountsHi: HelpGuide = {
     {
       title: "3. पैसा प्राप्त",
       body: "ग्राहक, राशि, कैश/बैंक। खुले बिल पर allocate करें ताकि बकाया सही रहे।",
+    },
+    {
+      title: "3ब. पेमेंट डेस्क और BRS (Tally जैसा)",
+      body: "डीलर UPI/NEFT से भुगतान (गेटवे फीस नहीं) और प्रूफ अपलोड करता है। पेमेंट डेस्क पर वेरिफाई करें (रसीद बनती है)। बैंक रेकॉन (Alt+B): SMS/ऐप से क्लोजिंग लिखें, स्टेटमेंट की लाइनें टिक करें, चार्ज/ब्याज जोड़ें जब तक अंतर ₹0 हो।",
+      tip: "F5 पेमेंट, F6 रसीद, F8 सेल, Alt+C कैश/बैंक, Alt+B BRS, Ctrl+K खोज, ? पूरी सूची।",
     },
     {
       title: "4. माल प्राप्त",
@@ -316,7 +344,7 @@ const accountsHi: HelpGuide = {
     },
     {
       title: "8. रिपोर्ट्स",
-      body: "सेल्स/परचेज़/प्रॉफिट एनालिसिस, स्टॉक मूवमेंट, अलर्ट, वैल्यूएशन, कैश फ्लो, P/L, बैलेंस शीट।",
+      body: "सेल्स/परचेज़/प्रॉफिट एनालिसिस, स्टॉक मूवमेंट, अलर्ट, वैल्यूएशन, कैश फ्लो, P/L, बैलेंस शीट। स्टॉक अलर्ट कवर दिनों (लीड + सेफ्टी) × हाल की बिक्री, खुले अनुमान, और आने वाले PO से सुझाव देते हैं — केवल मिन तक भरना नहीं।",
     },
     {
       title: "9. Controls",

@@ -1,13 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  cloudGetAppDb,
-  cloudPutAppDb,
-  createServerSupabase,
-} from "@/lib/server/app-db";
-import {
-  appendAccessPlace,
-  buildAccessPlace,
-} from "@/lib/server/access-log";
+import { cloudGetAppDb, cloudPutAppDb } from "@/lib/server/app-db";
+import { appendAccessPlace, buildAccessPlace } from "@/lib/server/access-log";
 import { clientIpFromRequest } from "@/lib/server/geo-ip";
 import { rateLimit } from "@/lib/server/rate-limit";
 import { readSessionCookie } from "@/lib/server/session";
@@ -46,12 +39,10 @@ async function flushPending(): Promise<void> {
   const batch = pending;
   pending = [];
   try {
-    const supabase = createServerSupabase();
-    if (!supabase) return;
-    const { db, updatedAt, error } = await cloudGetAppDb(supabase);
+    const { db, updatedAt, error } = await cloudGetAppDb();
     if (error || !db) return;
     for (const place of batch) appendAccessPlace(db, place);
-    await cloudPutAppDb(supabase, sanitizeDbForCloud(db), updatedAt ?? null);
+    await cloudPutAppDb(sanitizeDbForCloud(db), updatedAt ?? null);
   } catch {
     /* analytics is best-effort */
   } finally {
@@ -113,7 +104,10 @@ export async function POST(req: NextRequest) {
   if (!limited.ok) {
     return NextResponse.json(
       { error: "Too many hits" },
-      { status: 429, headers: { "Retry-After": String(limited.retryAfterSec) } }
+      {
+        status: 429,
+        headers: { "Retry-After": String(limited.retryAfterSec) },
+      },
     );
   }
 

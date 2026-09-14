@@ -11,7 +11,6 @@ import {
   cloudGetAppDb,
   cloudGetAppDbUpdatedAt,
   cloudPutAppDb,
-  createServerSupabase,
 } from "@/lib/server/app-db";
 import {
   createSessionToken,
@@ -21,6 +20,20 @@ import {
 } from "@/lib/server/session";
 import { stripPrePurgeOps } from "@/lib/ops-purge";
 import { getDbApiKey, isSupabaseConfigured } from "@/lib/supabase/config";
+import { getRealtimePublicConfig } from "@/lib/supabase/live";
+import { notifyStaffNewEstimateServer } from "@/lib/server/whatsapp-notify";
+
+function jsonNoStore(data: unknown, status = 200): NextResponse {
+  return NextResponse.json(data, {
+    status,
+    headers: {
+      "Cache-Control": "private, no-store, no-cache, must-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
+      Vary: "Cookie, x-tt-db-key",
+    },
+  });
+}
 
 function authorizeDbKey(req: Request): boolean {
   const required = getDbApiKey();
@@ -37,73 +50,60 @@ function authorizeDbKey(req: Request): boolean {
 
 /** Pull DB — public catalog / dealer scope / staff capability scope. */
 export async function GET(req: NextRequest) {
-  if (!authorizeDbKey(req)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  // GET does not require x-tt-db-key. That header is baked into the public
+  // JS bundle anyway; when NEXT_PUBLIC_DB_API_KEY is missing from a Hostinger
+  // build the whole shop 401'd (empty catalog, empty admin orders).
+  // Session cookie still decides public vs dealer vs staff. PUT still requires the key.
   if (!isSupabaseConfigured()) {
-    return NextResponse.json(
-      { error: "Supabase not configured" },
-      { status: 503 }
-    );
-  }
-
-  const supabase = createServerSupabase();
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Supabase not configured" },
-      { status: 503 }
-    );
+    return jsonNoStore({ error: "Cloud database not configured" }, 503);
   }
 
   // Cheap change probe — clients skip full pull when updatedAt matches.
   if (req.nextUrl.searchParams.get("probe") === "1") {
-    const probe = await cloudGetAppDbUpdatedAt(supabase);
+    const probe = await cloudGetAppDbUpdatedAt();
     if (probe.error) {
-      return NextResponse.json({ error: probe.error }, { status: 500 });
+      return jsonNoStore({ error: probe.error }, 500);
     }
-    return NextResponse.json({
+    const session = readSessionCookie(req);
+    return jsonNoStore({
       updatedAt: probe.updatedAt ?? null,
       probe: true,
+      live:
+        session && isStaffRole(session.role) ? getRealtimePublicConfig() : null,
     });
   }
 
-  const { db, updatedAt, error } = await cloudGetAppDb(supabase);
+  const { db, updatedAt, error } = await cloudGetAppDb();
   if (error) {
-    return NextResponse.json({ error }, { status: 500 });
+    return jsonNoStore({ error }, 500);
   }
   if (!db?.users && !db?.products) {
-    return new NextResponse(null, { status: 204 });
+    return new NextResponse(null, {
+      status: 204,
+      headers: {
+        "Cache-Control": "private, no-store",
+        Vary: "Cookie, x-tt-db-key",
+      },
+    });
   }
   if (!db) {
-    return new NextResponse(null, { status: 204 });
+    return new NextResponse(null, {
+      status: 204,
+      headers: {
+        "Cache-Control": "private, no-store",
+        Vary: "Cookie, x-tt-db-key",
+      },
+    });
   }
 
   // Never serve pre-purge order history (stale sync may still sit in storage)
   const clean = stripPrePurgeOps(db);
-  const storageDirty =
-    (db.orders?.length ?? 0) !== (clean.orders?.length ?? 0) ||
-    (db.walletTransactions?.length ?? 0) !==
-      (clean.walletTransactions?.length ?? 0) ||
-    (db.stockMovements?.length ?? 0) !== (clean.stockMovements?.length ?? 0);
 
   const session = readSessionCookie(req);
-  let serveUpdatedAt = updatedAt;
-
-  // Owner GET persists strip once so every tab does not race to push cleanup
-  if (storageDirty && session) {
-    try {
-      const { role } = resolveCloudActor(db, session);
-      if (role === "super_admin") {
-        const put = await cloudPutAppDb(supabase, clean, updatedAt ?? null);
-        if (put.ok && put.updatedAt) serveUpdatedAt = put.updatedAt;
-      }
-    } catch {
-      /* ignore — still serve cleaned projection */
-    }
-  }
+  const serveUpdatedAt = updatedAt;
 
   if (!session) {
-    return NextResponse.json({
+    return jsonNoStore({
       updatedAt: serveUpdatedAt,
       db: publicCatalogProjection(clean),
       scope: "public",
@@ -140,26 +140,26 @@ export async function GET(req: NextRequest) {
 
     if (isStaffRole(role)) {
       return attachCookie(
-        NextResponse.json({
+        jsonNoStore({
           updatedAt: serveUpdatedAt,
           db: staffScopedProjection(clean, actor),
           scope: role === "super_admin" ? "owner" : "staff",
           role,
-        })
+        }),
       );
     }
     return attachCookie(
-      NextResponse.json({
+      jsonNoStore({
         updatedAt: serveUpdatedAt,
         db: dealerScopedProjection(clean, { ...session, role }),
         scope: "dealer",
         role,
-      })
+      }),
     );
   } catch (err) {
-    return NextResponse.json(
+    return jsonNoStore(
       { error: err instanceof Error ? err.message : "Session invalid" },
-      { status: 401 }
+      401,
     );
   }
 }
@@ -169,33 +169,30 @@ const MAX_PUT_BYTES = 25 * 1024 * 1024;
 
 /** Push — owner full doc; staff capability merge; customers own-slice. */
 export async function PUT(req: NextRequest) {
-  if (!authorizeDbKey(req)) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // Shared key is optional when a login cookie is present. Hostinger builds
+  // often omit NEXT_PUBLIC_DB_API_KEY (live detect: hasPublicKey false),
+  // which 401'd every staff save. Session still authorizes the merge below.
+  const keyOk = authorizeDbKey(req);
+  const earlySession = readSessionCookie(req);
+  if (!keyOk && !earlySession) {
+    return NextResponse.json(
+      { error: "Login required to sync — please log in again" },
+      { status: 401 },
+    );
   }
 
   const declaredLength = Number(req.headers.get("content-length") || 0);
   if (declaredLength > MAX_PUT_BYTES) {
-    return NextResponse.json(
-      { error: "Payload too large" },
-      { status: 413 }
-    );
+    return NextResponse.json({ error: "Payload too large" }, { status: 413 });
   }
   if (!isSupabaseConfigured()) {
     return NextResponse.json(
-      { error: "Supabase not configured" },
-      { status: 503 }
+      { error: "Cloud database not configured" },
+      { status: 503 },
     );
   }
 
-  const supabase = createServerSupabase();
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Supabase not configured" },
-      { status: 503 }
-    );
-  }
-
-  const existing = await cloudGetAppDb(supabase);
+  const existing = await cloudGetAppDb();
   if (existing.error) {
     return NextResponse.json({ error: existing.error }, { status: 500 });
   }
@@ -205,7 +202,7 @@ export async function PUT(req: NextRequest) {
   if (!session && cloudHasUsers) {
     return NextResponse.json(
       { error: "Login required to sync changes" },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
@@ -218,7 +215,7 @@ export async function PUT(req: NextRequest) {
     } catch (err) {
       return NextResponse.json(
         { error: err instanceof Error ? err.message : "Session invalid" },
-        { status: 401 }
+        { status: 401 },
       );
     }
   }
@@ -246,19 +243,18 @@ export async function PUT(req: NextRequest) {
     mergeResult = mergeAuthorizedPush(
       body.db as AppDatabase,
       existing.db,
-      boundSession
+      boundSession,
     );
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Not allowed" },
-      { status: 403 }
+      { status: 403 },
     );
   }
 
   const result = await cloudPutAppDb(
-    supabase,
     mergeResult.db,
-    body.baseUpdatedAt ?? null
+    body.baseUpdatedAt ?? null,
   );
 
   if (result.conflict) {
@@ -268,14 +264,40 @@ export async function PUT(req: NextRequest) {
         conflict: true,
         updatedAt: result.updatedAt,
       },
-      { status: 409 }
+      { status: 409 },
     );
   }
   if (!result.ok) {
     return NextResponse.json(
       { error: result.error || "Save failed" },
-      { status: 500 }
+      { status: 500 },
     );
+  }
+
+  if (boundSession?.role === "customer" && existing.db) {
+    const prevIds = new Set((existing.db.orders ?? []).map((o) => o.id));
+    const fresh = (mergeResult.db.orders ?? []).filter(
+      (o) =>
+        o.userId === boundSession.id &&
+        o.status === "estimate" &&
+        !prevIds.has(o.id),
+    );
+    if (fresh.length) {
+      const db = mergeResult.db;
+      void Promise.all(
+        fresh.map((order) =>
+          notifyStaffNewEstimateServer({
+            users: db.users ?? [],
+            order,
+            companyName: db.settings?.companyName,
+            locale: boundSession.locale === "hi" ? "hi" : "en",
+            countryCode: db.settings?.whatsappCountryCode,
+            enabled: db.settings?.whatsappNotifyEnabled,
+            settings: db.settings,
+          }),
+        ),
+      ).catch(() => undefined);
+    }
   }
 
   return NextResponse.json({

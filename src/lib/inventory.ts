@@ -7,7 +7,13 @@ import type {
   Voucher,
   VoucherLine,
 } from "./types";
-import { resolveUnitWeightKg, roundMoney } from "./pricing";
+import {
+  isSqftUnit,
+  resolveSqftPack,
+  resolveUnitWeightKg,
+  roundMoney,
+  sqftPacketAmount,
+} from "./pricing";
 
 /** Minimal DB slice for stock ops (avoids circular import with store/db). */
 type StockDb = {
@@ -24,6 +30,10 @@ export function secondaryPerBundle(
     : undefined;
   if (product.unit === "kg") {
     return resolveUnitWeightKg(product, variation) || 0;
+  }
+  if (product.unit === "sqft") {
+    const pcs = Number(variation?.pcsPerPacket ?? product.pcsPerPacket) || 0;
+    return pcs > 0 ? pcs : 0;
   }
   return 1;
 }
@@ -85,6 +95,45 @@ export function ensureStockMatrix(product: Product): void {
       0
     );
   }
+}
+
+/** First size×color that actually has sellable stock (matches checkout). */
+export function firstInStockSelection(product: Product): {
+  variationId: string;
+  colorId: string;
+} {
+  ensureStockMatrix(product);
+  const variations = product.variations ?? [];
+  const colors = product.colors ?? [];
+  for (const v of variations) {
+    if (colors.length) {
+      for (const c of colors) {
+        if (getSizeColorStock(product, v.id, c.id) > 0) {
+          return { variationId: v.id, colorId: c.id };
+        }
+      }
+    } else if (getSizeColorStock(product, v.id) > 0) {
+      return { variationId: v.id, colorId: "" };
+    }
+  }
+  return {
+    variationId: variations[0]?.id ?? "",
+    colorId: colors[0]?.id ?? "",
+  };
+}
+
+/** First color with stock for this size; otherwise the first color. */
+export function firstInStockColorId(
+  product: Product,
+  variationId?: string
+): string {
+  ensureStockMatrix(product);
+  const colors = product.colors ?? [];
+  if (!variationId || !colors.length) return colors[0]?.id ?? "";
+  const hit = colors.find(
+    (c) => getSizeColorStock(product, variationId, c.id) > 0
+  );
+  return hit?.id ?? colors[0]?.id ?? "";
 }
 
 /** Bundles available for a specific size × color (or size only if no colors). */
@@ -996,8 +1045,32 @@ export function linesFromOrderProducts(
   }));
 }
 
-/** Amount from rate × kg/pcs (secondary), fallback to bundles. */
-export function voucherLineAmount(line: Pick<VoucherLine, "qty" | "secondaryQty" | "rate">): number {
+/** Amount from rate × kg/pcs (secondary), fallback to bundles. Sqft = packets × ₹/sqft math. */
+export function voucherLineAmount(
+  line: Pick<
+    VoucherLine,
+    "qty" | "secondaryQty" | "rate" | "unit" | "variationId"
+  >,
+  product?: Product | null
+): number {
+  const unit = line.unit || product?.unit;
+  if (isSqftUnit(unit) && product) {
+    const spec = resolveSqftPack(
+      product,
+      line.variationId
+        ? product.variations.find((v) => v.id === line.variationId)
+        : undefined
+    );
+    if (spec.lengthFt > 0 && spec.widthFt > 0 && spec.pcsPerPacket > 0) {
+      return sqftPacketAmount({
+        packets: line.qty,
+        ratePerSqft: line.rate,
+        lengthFt: spec.lengthFt,
+        widthFt: spec.widthFt,
+        pcsPerPacket: spec.pcsPerPacket,
+      });
+    }
+  }
   const measure =
     line.secondaryQty != null && line.secondaryQty > 0
       ? line.secondaryQty

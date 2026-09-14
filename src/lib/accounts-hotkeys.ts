@@ -7,7 +7,12 @@ export const ACCOUNTS_HOTKEYS: {
 }[] = [
   { keys: "Ctrl+K", href: "/admin/accounts/search", label: "Search" },
   { keys: "Ctrl+H", href: "/admin/accounts", label: "Accounts home" },
-  { keys: "F5", href: "/admin/accounts/vouchers?new=payment", label: "Payment" },
+  {
+    keys: "F5",
+    href: "/admin/accounts/vouchers?new=payment",
+    label: "Payment",
+    ownerOnly: true,
+  },
   { keys: "F6", href: "/admin/accounts/vouchers?new=receipt", label: "Receipt" },
   { keys: "F7", href: "/admin/accounts/journal", label: "Journal" },
   { keys: "F8", href: "/admin/orders/new", label: "New sale" },
@@ -15,6 +20,7 @@ export const ACCOUNTS_HOTKEYS: {
   { keys: "Alt+F1", href: "/admin/accounts/daybook", label: "Day book" },
   { keys: "Alt+F2", href: "/admin/accounts/inventory", label: "Stock" },
   { keys: "Alt+C", href: "/admin/accounts/cash-bank", label: "Cash & bank" },
+  { keys: "Alt+B", href: "/admin/accounts/brs", label: "Bank recon (BRS)" },
   { keys: "Alt+L", href: "/admin/accounts/ledger", label: "Ledger" },
   { keys: "Alt+V", href: "/admin/accounts/vouchers", label: "Vouchers" },
   { keys: "Alt+R", href: "/admin/accounts/receivables", label: "Receivables" },
@@ -24,6 +30,18 @@ export const ACCOUNTS_HOTKEYS: {
     href: "/admin/accounts/purchases",
     label: "Purchase bills",
     ownerOnly: true,
+  },
+  {
+    keys: "Alt+N",
+    href: "/admin/accounts/needs-pricing",
+    label: "Needs pricing",
+    ownerOnly: true,
+  },
+  { keys: "Alt+E", href: "/admin/accounts/expenses", label: "Log expense" },
+  {
+    keys: "Alt+S",
+    href: "/admin/accounts/party-statement",
+    label: "Party statement",
   },
 ];
 
@@ -68,6 +86,8 @@ export function matchAccountsHotkey(
       return ACCOUNTS_HOTKEYS.find((h) => h.keys === "Alt+F2") ?? null;
     if (lower === "c")
       return ACCOUNTS_HOTKEYS.find((h) => h.keys === "Alt+C") ?? null;
+    if (lower === "b")
+      return ACCOUNTS_HOTKEYS.find((h) => h.keys === "Alt+B") ?? null;
     if (lower === "l")
       return ACCOUNTS_HOTKEYS.find((h) => h.keys === "Alt+L") ?? null;
     if (lower === "v")
@@ -78,6 +98,12 @@ export function matchAccountsHotkey(
       return ACCOUNTS_HOTKEYS.find((h) => h.keys === "Alt+P") ?? null;
     if (lower === "u")
       return ACCOUNTS_HOTKEYS.find((h) => h.keys === "Alt+U") ?? null;
+    if (lower === "n")
+      return ACCOUNTS_HOTKEYS.find((h) => h.keys === "Alt+N") ?? null;
+    if (lower === "e")
+      return ACCOUNTS_HOTKEYS.find((h) => h.keys === "Alt+E") ?? null;
+    if (lower === "s")
+      return ACCOUNTS_HOTKEYS.find((h) => h.keys === "Alt+S") ?? null;
   }
 
   return null;

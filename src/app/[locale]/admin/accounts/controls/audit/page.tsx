@@ -1,21 +1,24 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { ExportButtons } from "@/components/ExportButtons";
 import { listAuditRows } from "@/lib/accounting";
-import { toDateInputValue } from "@/lib/date-range";
 import { useDb, useSession } from "@/lib/hooks";
 import { checkCapability } from "@/lib/store/db";
 
 export default function AuditTrailPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db } = useDb();
-  const today = toDateInputValue();
-  const [from, setFrom] = useState(today.slice(0, 8) + "01");
-  const [to, setTo] = useState(today);
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
   const [q, setQ] = useState("");
 
   const rows = useMemo(() => {
@@ -48,7 +51,7 @@ export default function AuditTrailPage() {
     [from, rows, to]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -58,33 +61,18 @@ export default function AuditTrailPage() {
 
   return (
     <AccountsShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            Audit trail
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Who posted or voided what — from voucher and GRN history.
-          </p>
-        </div>
-        <Link href="/admin/accounts/controls" className="tt-btn tt-btn-outline">
-          Controls
-        </Link>
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.auditTrail")}
+        hint={t("accounts.auditHint")}
+        actions={
+          <Link href="/admin/accounts/controls" className="tt-btn tt-btn-outline">
+            {t("accounts.navControls")}
+          </Link>
+        }
+      />
 
       <div className="mt-4 flex flex-wrap gap-3">
-        <input
-          type="date"
-          className="tt-input"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <input
-          type="date"
-          className="tt-input"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
+        <DateRangeBar value={range} onChange={setRange} />
         <input
           className="tt-input min-w-[160px]"
           placeholder="Search…"

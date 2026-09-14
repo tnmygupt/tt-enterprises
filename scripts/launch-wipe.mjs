@@ -1,7 +1,11 @@
 /**
- * Launch wipe on live cloud: keep only phone 6386685663, clear everything else.
+ * Launch wipe on live cloud: keep catalog items/stock. Clears orders,
+ * wallets, vouchers, parties, books history.
+ * Default: keep owner login(s) only (drops dealers).
+ * --keep-all-users: keep every login (roles unchanged), zero wallets.
  * Prefer direct Supabase service-role write (bypasses merge that used to revive parties).
  * Run: node scripts/launch-wipe.mjs
+ *      node scripts/launch-wipe.mjs --keep-all-users
  */
 import crypto from "crypto";
 import fs from "fs";
@@ -11,6 +15,9 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const KEEP_PHONE = "6386685663";
+const KEEP_ALL_USERS =
+  process.argv.includes("--keep-all-users") ||
+  process.env.KEEP_ALL_USERS === "1";
 const BASE = process.env.SMOKE_BASE || "https://www.tanmayphotos.space";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const envProd = fs.readFileSync(path.join(root, ".env.production"), "utf8");
@@ -27,7 +34,7 @@ const DB_KEY = vars.DB_API_KEY;
 const SESSION_SECRET = vars.SESSION_SECRET;
 const SUPABASE_URL = vars.SUPABASE_URL || vars.NEXT_PUBLIC_SUPABASE_URL;
 const SERVICE_KEY = vars.SUPABASE_SERVICE_ROLE_KEY;
-const APP_DB_TABLE = vars.TT_APP_DB_TABLE || "tt_app_db";
+const APP_DB_TABLE = vars.TT_APP_DB_TABLE || "app_database";
 const APP_DB_ROW_ID = vars.TT_APP_DB_ROW_ID || "main";
 
 if (!DB_KEY || !SESSION_SECRET) {
@@ -96,37 +103,68 @@ function curlJson(args) {
   return { code, json, stderr: r.stderr };
 }
 
+function resetWallet(u) {
+  return {
+    ...u,
+    walletBalance: 0,
+    liftingProgressKg: 0,
+    schemeProgress: {},
+  };
+}
+
 function launchWipe(db) {
   const want = normalizePhone(KEEP_PHONE);
-  const kept = (db.users || []).filter((u) => phonesMatch(u.phone, want));
-  if (!kept.length) {
-    throw new Error(`No user with phone ${want} in cloud DB`);
+  const confirmed = (db.users || []).filter((u) => phonesMatch(u.phone, want));
+  if (!confirmed.length) {
+    throw new Error("No matching owner phone in cloud DB");
   }
-  const preferred =
-    kept.find((u) => u.role === "super_admin") ||
-    kept.find((u) => u.role !== "customer") ||
-    kept[0];
-  const keepUser = {
-    ...preferred,
-    role: "super_admin",
-    active: true,
-    approved: true,
-    walletBalance: 0,
+  const keepIds = new Set();
+  const keepUsers = [];
+  const addKeep = (u, asOwner) => {
+    if (keepIds.has(u.id)) return;
+    keepIds.add(u.id);
+    keepUsers.push(
+      asOwner
+        ? {
+            ...resetWallet(u),
+            role: "super_admin",
+            active: true,
+            approved: true,
+          }
+        : resetWallet(u)
+    );
   };
-  const purgeAt = new Date().toISOString();
-  const removed = (db.users || []).filter((u) => u.id !== keepUser.id);
-  const deletedUserAt = { ...(db.deletedUserAt || {}) };
-  for (const u of removed) deletedUserAt[u.id] = purgeAt;
-  delete deletedUserAt[keepUser.id];
 
+  if (KEEP_ALL_USERS) {
+    for (const u of db.users || []) addKeep(u, false);
+  } else {
+    const preferred =
+      confirmed.find((u) => u.role === "super_admin") ||
+      confirmed.find((u) => u.role !== "customer") ||
+      confirmed[0];
+    addKeep(preferred, true);
+    for (const u of db.users || []) {
+      if (u.role === "super_admin") addKeep(u, true);
+    }
+  }
+
+  const purgeAt = new Date().toISOString();
+  const removed = (db.users || []).filter((u) => !keepIds.has(u.id));
+  const deletedUserAt = { ...(db.deletedUserAt || {}) };
+  if (!KEEP_ALL_USERS) {
+    for (const u of removed) deletedUserAt[u.id] = purgeAt;
+  }
+  for (const id of keepIds) delete deletedUserAt[id];
+
+  const products = structuredClone(db.products || []);
   const next = {
     ...db,
-    users: [keepUser],
+    users: keepUsers,
     deletedUserIds: Object.keys(deletedUserAt),
     deletedUserAt,
-    products: [],
+    products,
     orders: [],
-    schemes: [],
+    schemes: db.schemes || [],
     walletTransactions: [],
     walletDeposits: [],
     vouchers: [],
@@ -140,11 +178,22 @@ function launchWipe(db) {
     supplierContracts: [],
     tallyPosts: [],
     statementMatches: [],
+    bankRecons: [],
+    accessPlaces: [],
+    peopleActivity: [],
+    waInbox: { messages: [], reads: [] },
     parties: [],
     categories: db.categories || [],
     shippingRules: db.shippingRules || [],
     settings: db.settings
-      ? { ...db.settings, opsPurgeAt: purgeAt }
+      ? {
+          ...db.settings,
+          opsPurgeAt: purgeAt,
+          whatsappDigest: {},
+          tallyLastSyncAt: undefined,
+          tallySyncStatus: "idle",
+          tallySyncMessage: undefined,
+        }
       : db.settings,
     accounts: db.accounts || [],
   };
@@ -152,15 +201,18 @@ function launchWipe(db) {
   return {
     next,
     summary: {
+      keptUsers: keepUsers.length,
+      keptUserIds: keepUsers.map((u) => u.id),
       keptUser: {
-        id: keepUser.id,
-        phone: normalizePhone(keepUser.phone),
-        name: keepUser.name,
-        role: keepUser.role,
+        id: keepUsers[0].id,
+        phone: normalizePhone(keepUsers[0].phone),
+        name: keepUsers[0].name,
+        role: keepUsers[0].role,
       },
+      keepAllUsers: KEEP_ALL_USERS,
       removedUsers: removed.length,
       removedOrders: (db.orders || []).length,
-      removedProducts: (db.products || []).length,
+      keptProducts: products.length,
       purgeAt,
     },
   };
@@ -192,44 +244,66 @@ function supabaseRest(method, pathSuffix, body) {
   return curlJson(args);
 }
 
-async function main() {
-  let cookie = forgeCookie({
+function readCloudDb() {
+  if (SERVICE_KEY && SUPABASE_URL) {
+    const got = supabaseRest(
+      "GET",
+      `${APP_DB_TABLE}?id=eq.${encodeURIComponent(APP_DB_ROW_ID)}&select=db,updated_at`
+    );
+    if (got && got.code[0] === "2") {
+      const row = Array.isArray(got.json) ? got.json[0] : got.json;
+      if (row?.db) return { db: row.db, updatedAt: row.updated_at, via: "supabase" };
+    }
+    console.error("Supabase GET failed", got?.code);
+  }
+  const cookie = forgeCookie({
     id: "user_1ab6e723-017d-49bf-9ec3-73706e56b5c3",
     phone: KEEP_PHONE,
     name: "Admin",
   });
-
-  console.log("1) GET cloud DB…");
-  let get = curlJson([
+  const get = curlJson([
     "-H",
     `x-tt-db-key: ${DB_KEY}`,
     "-H",
     `Cookie: ${cookie}`,
     `${BASE}/api/db`,
   ]);
-  if (get.code !== "200") {
+  if (get.code !== "200" || !get.json?.db) {
     console.error("GET failed", get.code, get.json);
     process.exit(1);
   }
+  return { db: get.json.db, updatedAt: get.json.updatedAt, via: "api" };
+}
+
+async function main() {
+  console.log("1) GET cloud DB…");
+  const cloud = readCloudDb();
 
   console.log("   before", {
-    users: (get.json.db.users || []).length,
-    orders: (get.json.db.orders || []).length,
-    products: (get.json.db.products || []).length,
-    parties: (get.json.db.parties || []).length,
+    via: cloud.via,
+    users: (cloud.db.users || []).length,
+    orders: (cloud.db.orders || []).length,
+    products: (cloud.db.products || []).length,
+    parties: (cloud.db.parties || []).length,
   });
 
-  const owner = (get.json.db.users || []).find((u) =>
+  const owner = (cloud.db.users || []).find((u) =>
     phonesMatch(u.phone, KEEP_PHONE)
   );
   if (!owner) {
     console.error("Owner phone not found in cloud");
     process.exit(1);
   }
-  cookie = forgeCookie(owner);
 
-  const { next, summary } = launchWipe(get.json.db);
-  console.log("2) Wipe plan", summary);
+  const { next, summary } = launchWipe(cloud.db);
+  console.log("2) Wipe plan", {
+    keepAllUsers: KEEP_ALL_USERS,
+    keptUsers: summary.keptUsers,
+    removedUsers: summary.removedUsers,
+    removedOrders: summary.removedOrders,
+    keptProducts: summary.keptProducts,
+    purgeAt: summary.purgeAt,
+  });
 
   let wroteVia = "api";
   if (SERVICE_KEY && SUPABASE_URL) {
@@ -237,15 +311,16 @@ async function main() {
     const put = supabaseRest(
       "PATCH",
       `${APP_DB_TABLE}?id=eq.${encodeURIComponent(APP_DB_ROW_ID)}`,
-      { db: next }
+      { db: next, updated_at: new Date().toISOString() }
     );
     if (!put || put.code[0] !== "2") {
-      console.error("Direct write failed", put?.code, put?.json);
+      console.error("Direct write failed", put?.code);
       process.exit(1);
     }
     wroteVia = "supabase";
   } else {
     console.log("3) PUT via /api/db…");
+    const cookie = forgeCookie(owner);
     const put = curlJson([
       "-X",
       "PUT",
@@ -256,43 +331,31 @@ async function main() {
       "-H",
       `Cookie: ${cookie}`,
       "-d",
-      JSON.stringify({ db: next, baseUpdatedAt: get.json.updatedAt }),
+      JSON.stringify({ db: next, baseUpdatedAt: cloud.updatedAt }),
       `${BASE}/api/db`,
     ]);
     if (put.code !== "200") {
-      console.error("PUT failed", put.code, put.json);
+      console.error("PUT failed", put.code);
       process.exit(1);
     }
   }
 
   console.log("4) Verify GET…");
-  cookie = forgeCookie(summary.keptUser);
-  get = curlJson([
-    "-H",
-    `x-tt-db-key: ${DB_KEY}`,
-    "-H",
-    `Cookie: ${cookie}`,
-    `${BASE}/api/db`,
-  ]);
-  if (get.code !== "200") {
-    console.error("Verify GET failed", get.code, get.json);
-    process.exit(1);
-  }
-  const db = get.json.db;
-  const users = (db.users || []).map((u) => ({
-    id: u.id,
-    phone: u.phone,
-    name: u.name,
-    role: u.role,
-  }));
+  const verified = readCloudDb();
+  const db = verified.db;
+  const owners = (db.users || []).filter((u) => u.role === "super_admin");
+  const afterProducts = (db.products || []).length;
   console.log(
     JSON.stringify(
       {
         ok: true,
         wroteVia,
-        users,
+        keepAllUsers: KEEP_ALL_USERS,
+        keptOwners: owners.length,
+        users: (db.users || []).length,
+        dealers: (db.users || []).filter((u) => u.role === "customer").length,
         orders: (db.orders || []).length,
-        products: (db.products || []).length,
+        products: afterProducts,
         schemes: (db.schemes || []).length,
         vouchers: (db.vouchers || []).length,
         parties: (db.parties || []).length,
@@ -302,12 +365,34 @@ async function main() {
       2
     )
   );
-  if (users.length !== 1 || normalizePhone(users[0].phone) !== KEEP_PHONE) {
-    console.error("Verify failed — unexpected users");
+  if (
+    owners.length < 1 ||
+    !owners.some((u) => phonesMatch(u.phone, KEEP_PHONE))
+  ) {
+    console.error("Verify failed — owner login missing");
     process.exit(1);
   }
-  if ((db.parties || []).length > 0 || (db.products || []).length > 0) {
-    console.error("Verify failed — parties/products still present");
+  if (
+    !KEEP_ALL_USERS &&
+    (db.users || []).some((u) => u.role === "customer")
+  ) {
+    console.error("Verify failed — dealer logins still present");
+    process.exit(1);
+  }
+  if (KEEP_ALL_USERS && (db.users || []).length !== summary.keptUsers) {
+    console.error("Verify failed — user count changed");
+    process.exit(1);
+  }
+  if (
+    (db.parties || []).length > 0 ||
+    (db.orders || []).length > 0 ||
+    (db.vouchers || []).length > 0
+  ) {
+    console.error("Verify failed — ops rows still present");
+    process.exit(1);
+  }
+  if (afterProducts !== summary.keptProducts) {
+    console.error("Verify failed — catalog stock/items not kept");
     process.exit(1);
   }
   console.log("Launch wipe complete. Hard-refresh all browsers.");

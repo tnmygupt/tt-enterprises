@@ -4,6 +4,8 @@ import { FormEvent, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { ExportButtons } from "@/components/ExportButtons";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { NumberField } from "@/components/NumberField";
 import {
@@ -140,7 +142,7 @@ export default function ContractsPage() {
 
   if (
     !session ||
-    !checkCapability(session, db?.users, "manage_contracts")
+    !checkCapability(session, db, "manage_contracts")
   ) {
     return (
       <AccountsShell>
@@ -222,14 +224,14 @@ export default function ContractsPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {t("contracts.title")}
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)]">
-        {locale === "hi"
-          ? "एक कॉन्ट्रैक्ट नंबर पर कई आइटम / कैटेगरी — qty या ₹ लॉक"
-          : "Many items / categories under one contract number — qty or ₹ lock"}
-      </p>
+      <AccountsPageHeader
+        title={t("contracts.title")}
+        hint={
+          locale === "hi"
+            ? "एक कॉन्ट्रैक्ट नंबर पर कई आइटम / कैटेगरी — qty या ₹ लॉक"
+            : "Many items / categories under one contract number — qty or ₹ lock"
+        }
+      />
 
       {showRate ? (
         <form
@@ -591,9 +593,7 @@ export default function ContractsPage() {
           );
         })}
         {!contracts.length ? (
-          <p className="p-4 text-sm text-[var(--ink-muted)]">
-            {t("common.empty")}
-          </p>
+          <AccountsEmpty message={t("common.empty")} />
         ) : null}
       </div>
     </AccountsShell>

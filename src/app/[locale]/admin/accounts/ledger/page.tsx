@@ -6,7 +6,11 @@ import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
+import { SearchSelect } from "@/components/SearchSelect";
 import {
   ACCT,
   OWNER_SENSITIVE_ACCOUNTS,
@@ -18,7 +22,6 @@ import { ExportButtons } from "@/components/ExportButtons";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr, roundMoney } from "@/lib/pricing";
 import { canViewFinancials, checkCapability } from "@/lib/store/db";
-import type { Party } from "@/lib/types";
 
 function LedgerInner() {
   const t = useTranslations();
@@ -32,15 +35,22 @@ function LedgerInner() {
    * here — the page already requires it, so that check never blocks anyone.
    */
   const canSeeSuppliers =
-    isOwner || (!!session && checkCapability(session, db?.users, "view_financials"));
+    isOwner || (!!session && checkCapability(session, db, "view_financials"));
   const [mode, setMode] = useState<"account" | "party">("party");
   const [accountId, setAccountId] = useState("acct_cash");
   const [partyId, setPartyId] = useState("");
   const [partyType, setPartyType] = useState<"all" | "customer" | "supplier">(
     "all"
   );
-  const [q, setQ] = useState("");
-  const [asOf, setAsOf] = useState(new Date().toISOString().slice(0, 10));
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
+
+  const dayBeforeFrom = useMemo(() => {
+    const d = new Date(from + "T00:00:00");
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10);
+  }, [from]);
 
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
@@ -63,12 +73,18 @@ function LedgerInner() {
       .filter((p) => p.active)
       .filter((p) => canSeeSuppliers || p.type !== "supplier")
       .filter((p) => (partyType === "all" ? true : p.type === partyType))
-      .filter((p) => {
-        const hay = `${p.name} ${p.phone} ${p.gstin ?? ""}`.toLowerCase();
-        return hay.includes(q.trim().toLowerCase());
-      })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [db, partyType, q, canSeeSuppliers]);
+  }, [db, partyType, canSeeSuppliers]);
+
+  const partyOptions = useMemo(
+    () =>
+      parties.map((p) => ({
+        value: p.id,
+        label: `${p.name} (${p.type === "customer" ? "Debtor" : "Creditor"})`,
+        searchText: `${p.name} ${p.phone} ${p.gstin ?? ""}`,
+      })),
+    [parties]
+  );
 
   const party = db?.parties.find((p) => p.id === partyId);
   const account = db?.accounts.find((a) => a.id === accountId);
@@ -83,10 +99,11 @@ function LedgerInner() {
         (e) =>
           !e.voided &&
           e.accountId === accountId &&
-          e.date.slice(0, 10) <= asOf
+          e.date.slice(0, 10) >= from &&
+          e.date.slice(0, 10) <= to
       )
       .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
-  }, [db, accountId, asOf, account, mode]);
+  }, [db, accountId, from, to, account, mode]);
 
   const partyEntries = useMemo(() => {
     if (!db || !party || mode !== "party") return [];
@@ -96,15 +113,20 @@ function LedgerInner() {
           !e.voided &&
           e.partyId === partyId &&
           e.accountId === controlId &&
-          e.date.slice(0, 10) <= asOf
+          e.date.slice(0, 10) >= from &&
+          e.date.slice(0, 10) <= to
       )
       .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
-  }, [db, party, partyId, controlId, asOf, mode]);
+  }, [db, party, partyId, controlId, from, to, mode]);
 
   const runningAccount = useMemo(() => {
     if (!account) return [] as { e: (typeof accountEntries)[number]; bal: number }[];
     const out: { e: (typeof accountEntries)[number]; bal: number }[] = [];
-    let bal = account.openingBalance;
+    let bal = accountBalance(
+      account,
+      db?.ledgerEntries ?? [],
+      dayBeforeFrom
+    );
     for (const e of accountEntries) {
       const delta = e.debit - e.credit;
       bal = roundMoney(
@@ -113,23 +135,25 @@ function LedgerInner() {
       out.push({ e, bal });
     }
     return out;
-  }, [accountEntries, account]);
+  }, [accountEntries, account, db, dayBeforeFrom]);
 
   const runningParty = useMemo(() => {
     const out: { e: (typeof partyEntries)[number]; bal: number }[] = [];
-    let bal = 0;
+    let bal = party
+      ? partyBalance(party, db?.ledgerEntries ?? [], dayBeforeFrom)
+      : 0;
     for (const e of partyEntries) {
       bal = roundMoney(bal + e.debit - e.credit);
       out.push({ e, bal });
     }
     return out;
-  }, [partyEntries]);
+  }, [partyEntries, party, db, dayBeforeFrom]);
 
   const closingAccount = account
-    ? accountBalance(account, db?.ledgerEntries ?? [], asOf)
+    ? accountBalance(account, db?.ledgerEntries ?? [], to)
     : 0;
   const closingParty = party
-    ? partyBalance(party, db?.ledgerEntries ?? [], asOf)
+    ? partyBalance(party, db?.ledgerEntries ?? [], to)
     : 0;
 
   const lockedAccount =
@@ -141,7 +165,7 @@ function LedgerInner() {
   const hideSupplierAmounts =
     mode === "party" && party?.type === "supplier" && !canSeeSuppliers;
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -177,8 +201,8 @@ function LedgerInner() {
           : "Ledger";
     return {
       title: t("accounts.ledger"),
-      subtitle: `${title} · As of ${asOf}`,
-      filename: `ledger-${mode}-${asOf}.pdf`,
+      subtitle: `${title} · ${from} → ${to}`,
+      filename: `ledger-${mode}-${from}-${to}.pdf`,
       columns: [
         "Date",
         "Voucher",
@@ -193,14 +217,10 @@ function LedgerInner() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {t("accounts.ledger")}
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)]">
-        {locale === "hi"
-          ? "खाता या देनदार / लेनदार पार्टी खोजें"
-          : "Search account or debtor / creditor party"}
-      </p>
+      <AccountsPageHeader
+        title={t("accounts.ledger")}
+        hint={t("accounts.ledgerHint")}
+      />
 
       <div className="mt-4 flex flex-wrap gap-2">
         <button
@@ -223,16 +243,7 @@ function LedgerInner() {
         {mode === "party" ? (
           <>
             <div>
-              <label className="tt-label">{t("accounts.searchParty")}</label>
-              <input
-                className="tt-input min-w-[200px]"
-                placeholder={locale === "hi" ? "नाम / फ़ोन" : "Name / phone"}
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="tt-label">Type</label>
+              <label className="tt-label">{t("accounts.typeLabel")}</label>
               <select
                 className="tt-select"
                 value={partyType}
@@ -247,27 +258,20 @@ function LedgerInner() {
                 ) : null}
               </select>
             </div>
-            <div>
+            <div className="min-w-[240px]">
               <label className="tt-label">{t("common.party")}</label>
-              <select
-                className="tt-select min-w-[240px]"
+              <SearchSelect
+                options={partyOptions}
                 value={partyId}
-                onChange={(e) => setPartyId(e.target.value)}
-              >
-                <option value="">
-                  {locale === "hi" ? "पार्टी चुनें…" : "Select party…"}
-                </option>
-                {parties.map((p: Party) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.type === "customer" ? "Debtor" : "Creditor"})
-                  </option>
-                ))}
-              </select>
+                onChange={setPartyId}
+                placeholder={t("accounts.searchParty")}
+                emptyLabel={t("accounts.selectParty")}
+              />
             </div>
           </>
         ) : (
           <div>
-            <label className="tt-label">Account</label>
+            <label className="tt-label">{t("accounts.accountLabel")}</label>
             <select
               className="tt-select min-w-[240px]"
               value={accountId}
@@ -287,15 +291,7 @@ function LedgerInner() {
             </select>
           </div>
         )}
-        <div>
-          <label className="tt-label">As of</label>
-          <input
-            type="date"
-            className="tt-input"
-            value={asOf}
-            onChange={(e) => setAsOf(e.target.value)}
-          />
-        </div>
+        <DateRangeBar value={range} onChange={setRange} />
         {!lockedAccount && !hideSupplierAmounts && (mode === "account" || party) ? (
           <ExportButtons options={exportOptions} />
         ) : null}
@@ -314,11 +310,7 @@ function LedgerInner() {
           {t("owner.ownerOnly")}
         </p>
       ) : mode === "party" && !party ? (
-        <p className="mt-6 text-sm text-[var(--ink-muted)]">
-          {locale === "hi"
-            ? "देनदार या लेनदार चुनें।"
-            : "Pick a debtor or creditor to view their ledger."}
-        </p>
+        <AccountsEmpty message={t("accounts.emptyLedgerPick")} />
       ) : hideSupplierAmounts ? (
         <p className="mt-4 text-sm text-[var(--danger)]">
           {t("owner.ownerOnly")}
@@ -348,16 +340,44 @@ function LedgerInner() {
             )}
           </p>
 
-          <div className="tt-panel mt-4 overflow-x-auto">
+          <div className="tt-acct-cards mt-4 sm:hidden">
+            {(mode === "party" ? runningParty : runningAccount).map(
+              ({ e, bal }) => (
+                <div key={e.id} className="tt-panel tt-acct-card">
+                  <p className="text-xs text-[var(--ink-muted)]">{e.date}</p>
+                  <p className="font-mono text-sm font-semibold">
+                    <VoucherNumberLink
+                      id={e.voucherId}
+                      number={e.voucherNumber}
+                    />
+                  </p>
+                  <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                    {e.narration || e.voucherType}
+                  </p>
+                  <p className="mt-1 text-sm tabular-nums">
+                    {e.debit
+                      ? `Dr ${formatInr(e.debit, locale)}`
+                      : e.credit
+                        ? `Cr ${formatInr(e.credit, locale)}`
+                        : "—"}
+                    <span className="ml-2 text-[var(--ink-muted)]">
+                      {formatInr(bal, locale)}
+                    </span>
+                  </p>
+                </div>
+              )
+            )}
+          </div>
+          <div className="tt-panel tt-acct-table-wrap mt-4 hidden sm:block">
             <table className="tt-table min-w-[800px]">
               <thead>
                 <tr>
-                  <th>Date</th>
-                  <th>Voucher</th>
-                  <th>Narration</th>
-                  <th>Debit</th>
-                  <th>Credit</th>
-                  <th>Balance</th>
+                  <th>{t("accounts.colDate")}</th>
+                  <th>{t("accounts.colVoucher")}</th>
+                  <th>{t("accounts.colNarration")}</th>
+                  <th>{t("accounts.colDebit")}</th>
+                  <th>{t("accounts.colCredit")}</th>
+                  <th>{t("accounts.colBalance")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -369,20 +389,18 @@ function LedgerInner() {
                       <td className="text-sm text-[var(--ink-muted)]">
                         {e.narration || e.voucherType}
                       </td>
-                      <td>{e.debit ? formatInr(e.debit, locale) : "—"}</td>
-                      <td>{e.credit ? formatInr(e.credit, locale) : "—"}</td>
-                      <td>{formatInr(bal, locale)}</td>
+                      <td className="tabular-nums">{e.debit ? formatInr(e.debit, locale) : "—"}</td>
+                      <td className="tabular-nums">{e.credit ? formatInr(e.credit, locale) : "—"}</td>
+                      <td className="tabular-nums">{formatInr(bal, locale)}</td>
                     </tr>
                   )
                 )}
               </tbody>
             </table>
-            {(mode === "party" ? runningParty : runningAccount).length === 0 ? (
-              <p className="p-4 text-sm text-[var(--ink-muted)]">
-                {t("common.empty")}
-              </p>
-            ) : null}
           </div>
+          {(mode === "party" ? runningParty : runningAccount).length === 0 ? (
+            <AccountsEmpty message={t("accounts.emptyLedger")} />
+          ) : null}
         </>
       )}
     </AccountsShell>

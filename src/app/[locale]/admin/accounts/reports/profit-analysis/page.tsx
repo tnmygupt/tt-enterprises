@@ -1,12 +1,14 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { ExportButtons } from "@/components/ExportButtons";
 import { BarChart } from "@/components/charts/BarChart";
 import { profitAnalysis } from "@/lib/accounting";
-import { toDateInputValue } from "@/lib/date-range";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import { canViewFinancials } from "@/lib/store/db";
@@ -14,11 +16,12 @@ import { canViewFinancials } from "@/lib/store/db";
 type Dim = "item" | "dealer" | "order";
 
 export default function ProfitAnalysisPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db } = useDb();
-  const today = toDateInputValue();
-  const [from, setFrom] = useState(today.slice(0, 8) + "01");
-  const [to, setTo] = useState(today);
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
   const [dim, setDim] = useState<Dim>("item");
 
   const data = useMemo(() => {
@@ -33,12 +36,15 @@ export default function ProfitAnalysisPage() {
     );
   }, [db, from, to]);
 
-  const tableRows =
-    dim === "item"
-      ? data?.byItem ?? []
-      : dim === "dealer"
-        ? data?.byDealer ?? []
-        : data?.byOrder ?? [];
+  const tableRows = useMemo(
+    () =>
+      dim === "item"
+        ? data?.byItem ?? []
+        : dim === "dealer"
+          ? data?.byDealer ?? []
+          : data?.byOrder ?? [],
+    [data, dim]
+  );
 
   const exportOptions = useMemo(
     () => ({
@@ -59,19 +65,17 @@ export default function ProfitAnalysisPage() {
   if (!session || !canViewFinancials(session.role)) {
     return (
       <AccountsShell>
-        <AdminAccessDenied title="Owner only — profit analysis" />
+        <AdminAccessDenied title={t("accounts.ownerOnlyProfitAnalysis")} />
       </AccountsShell>
     );
   }
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        Profit analysis
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)]">
-        Gross profit from FIFO cost — by item, dealer or order.
-      </p>
+      <AccountsPageHeader
+        title={t("accounts.profitAnalysis")}
+        hint={t("accounts.profitAnalysisHint")}
+      />
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
         <div className="tt-panel p-4">
@@ -95,18 +99,7 @@ export default function ProfitAnalysisPage() {
       </div>
 
       <div className="mt-4 flex flex-wrap gap-3">
-        <input
-          type="date"
-          className="tt-input"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
-        />
-        <input
-          type="date"
-          className="tt-input"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
+        <DateRangeBar value={range} onChange={setRange} />
         <select
           className="tt-select"
           value={dim}

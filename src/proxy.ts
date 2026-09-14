@@ -58,5 +58,9 @@ export default function proxy(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/(en|hi)/:path*", "/((?!api|_next|_vercel|.*\\..*).*)"],
+  matcher: [
+    "/",
+    "/(en|hi)/:path*",
+    "/((?!api|_next|_vercel|o(?:/|$)|g(?:/|$)|.*\\..*).*)",
+  ],
 };

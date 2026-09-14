@@ -7,14 +7,15 @@ import { ProductImage } from "@/components/ProductImage";
 import { categoryLabel } from "@/lib/categories";
 import { useDb, useSession } from "@/lib/hooks";
 import { loc } from "@/lib/localized";
-import { formatInr } from "@/lib/pricing";
+import { catalogFromRate, formatInr, unitLabel } from "@/lib/pricing";
 import { productStockSummary } from "@/lib/inventory";
+import { CatalogRetry } from "@/components/CatalogRetry";
 import type { ProductCategory } from "@/lib/types";
 
 export default function CatalogPage() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
-  const { db } = useDb();
+  const { db, cloudReady } = useDb();
   const { session, ready } = useSession();
   const showRates = ready && !!session;
   const [category, setCategory] = useState<ProductCategory | "all">("all");
@@ -44,9 +45,7 @@ export default function CatalogPage() {
           <div>
             <h1 className="text-2xl font-semibold">{t("nav.catalog")}</h1>
             <p className="mt-1 text-sm text-[var(--ink-muted)]">
-              {locale === "hi"
-                ? "लोगो के साथ उत्पाद खोजें"
-                : "Search products with logos"}
+              {t("shop.catalogSubtitle")}
             </p>
           </div>
           <input
@@ -78,10 +77,7 @@ export default function CatalogPage() {
 
         <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {products.map((p) => {
-            const rates = (p.variations ?? [])
-              .map((v) => v?.rate)
-              .filter((r): r is number => typeof r === "number" && r > 0);
-            const fromRate = rates.length ? Math.min(...rates) : p.baseRate || 0;
+            const fromRate = catalogFromRate(p);
             const stock = productStockSummary(p);
             const sizeCount = (p.variations ?? []).length;
             const title = loc(p.name, locale, p.code || "Product");
@@ -115,40 +111,43 @@ export default function CatalogPage() {
                   </h2>
                   <p className="mt-1 text-sm font-semibold text-[var(--brand-deep)]">
                     {showRates
-                      ? rates.length > 1
-                        ? `${locale === "hi" ? "से" : "From"} ${formatInr(fromRate, locale)}`
+                      ? sizeCount > 1
+                        ? `${t("shop.fromRate")} ${formatInr(fromRate, locale)}`
                         : formatInr(fromRate, locale)
-                      : locale === "hi"
-                        ? "रेट के लिए लॉगिन करें"
-                        : "Login to see rates"}
+                      : t("shop.loginForRates")}
                     {showRates ? (
                       <span className="font-normal text-[var(--ink-muted)]">
                         {" "}
                         /{" "}
                         {p.pricingMode === "bundle"
-                          ? locale === "hi"
-                            ? "किग्रा"
-                            : "kg"
-                          : p.unit}
+                          ? t("common.kg")
+                          : unitLabel(p.unit, locale)}
                       </span>
                     ) : null}
                   </p>
                   <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
                     {sizeCount
-                      ? `${sizeCount} ${locale === "hi" ? "साइज़" : "sizes"}`
+                      ? `${sizeCount} ${t("shop.sizes")}`
                       : "—"}
                     {" · "}
                     {stock.bundles}{" "}
-                    {locale === "hi" ? "बंडल" : "bundles"}
+                    {t("shop.bundles")}
+                    {stock.fromMatrix || stock.fromVariations
+                      ? locale === "hi"
+                        ? " कुल"
+                        : " total"
+                      : ""}
                   </p>
                 </div>
               </Link>
             );
           })}
         </div>
-        {!products.length ? (
-          <p className="mt-6 text-[var(--ink-muted)]">{t("common.empty")}</p>
-        ) : null}
+        {products.length ? null : !cloudReady ? (
+          <p className="mt-6 text-[var(--ink-muted)]">{t("common.loading")}</p>
+        ) : (
+          <CatalogRetry className="mt-6" />
+        )}
       </div>
     </section>
   );

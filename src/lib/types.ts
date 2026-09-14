@@ -1,6 +1,6 @@
 export type Locale = "en" | "hi";
 
-export type UnitOfSale = "kg" | "pcs" | "jhal" | "pkt";
+export type UnitOfSale = "kg" | "pcs" | "jhal" | "pkt" | "sqft";
 
 export type UserRole =
   | "customer"
@@ -8,11 +8,13 @@ export type UserRole =
   | "sales"
   | "accounts"
   | "dispatch"
+  | "plant_manager"
   | "viewer";
 
 export type Capability =
   | "manage_products"
   | "manage_users"
+  | "approve_dealers"
   | "manage_orders"
   | "manage_schemes"
   | "manage_wallet"
@@ -20,10 +22,12 @@ export type Capability =
   | "upload_bill"
   | "verify_payment"
   | "upload_lr"
-  | "manage_tally"
   | "manage_accounts"
   | "manage_contracts"
+  | "manage_reorder"
   | "view_reports"
+  /** Attendance, leave, payroll, GPS sites (not owner rupee books) */
+  | "manage_hr"
   /** Owner-only: P/L, Balance Sheet, purchase rates, owner panel */
   | "view_financials";
 
@@ -40,12 +44,20 @@ export const ROLE_CAPABILITIES: Record<UserRole, Capability[]> = {
     "manage_schemes",
     "manage_accounts",
     "manage_contracts",
+    "approve_dealers",
+    "view_reports",
+  ],
+  plant_manager: [
+    "manage_products",
+    "manage_reorder",
+    "approve_dealers",
     "view_reports",
   ],
   dispatch: ["manage_orders", "upload_lr", "manage_shipping", "view_reports"],
   super_admin: [
     "manage_products",
     "manage_users",
+    "approve_dealers",
     "manage_orders",
     "manage_schemes",
     "manage_wallet",
@@ -53,13 +65,25 @@ export const ROLE_CAPABILITIES: Record<UserRole, Capability[]> = {
     "upload_bill",
     "verify_payment",
     "upload_lr",
-    "manage_tally",
     "manage_accounts",
     "manage_contracts",
+    "manage_reorder",
     "view_reports",
     "view_financials",
+    "manage_hr",
   ],
 };
+
+/** Built-in staff roles whose default screens an owner can edit. */
+export type StaffJobBaseRole =
+  | "sales"
+  | "accounts"
+  | "dispatch"
+  | "plant_manager"
+  | "viewer";
+
+/** Owner overlay of built-in role defaults (never applied to super_admin). */
+export type RolePresets = Partial<Record<StaffJobBaseRole, Capability[]>>;
 
 export type ProductCategory = string;
 
@@ -74,13 +98,34 @@ export interface LocalizedString {
   hi: string;
 }
 
+/** Named job template. Staff with jobId resolve caps from this at read time. */
+export interface StaffJob {
+  id: string;
+  name: LocalizedString;
+  baseRole: StaffJobBaseRole;
+  extraCapabilities?: Capability[];
+  deniedCapabilities?: Capability[];
+}
+
 export interface ProductVariation {
   id: string;
   label: LocalizedString;
   /** Physical size e.g. 12x18 ft / 3m width */
   size: LocalizedString;
   sku: string;
+  /**
+   * Selling rate used on orders: ₹/kg, ₹/pc, or ₹/packet.
+   * For unit `sqft` this is the computed ₹/packet.
+   */
   rate: number;
+  /** Length in feet when unit is sqft */
+  lengthFt?: number;
+  /** Width in feet when unit is sqft */
+  widthFt?: number;
+  /** Pieces in one packet when unit is sqft */
+  pcsPerPacket?: number;
+  /** Entered ₹ per sqft when unit is sqft */
+  ratePerSqft?: number;
   weightKg?: number;
   /** Stock in bundles / packs */
   stock: number;
@@ -123,6 +168,14 @@ export interface Product {
   descriptionHtml?: LocalizedString;
   unit: UnitOfSale;
   baseRate: number;
+  /** Default L (ft) for new sqft sizes */
+  lengthFt?: number;
+  /** Default W (ft) for new sqft sizes */
+  widthFt?: number;
+  /** Default pieces per packet for new sqft sizes */
+  pcsPerPacket?: number;
+  /** Default ₹/sqft for new sqft sizes */
+  ratePerSqft?: number;
   /** Admin-defined unit weight (kg) used in quick order / bundle calc */
   baseWeightKg?: number;
   pricingMode: "bundle" | "pcs";
@@ -135,12 +188,17 @@ export interface Product {
   /** Reorder alert when on-hand bundles fall at or below this (product rollup) */
   minStockLevel?: number;
   /**
-   * Optional fill-to target (bundles). Suggested order qty =
-   * max(0, (reorderQty ?? min) − onHand).
+   * Optional fill-to floor (bundles). Suggested qty is
+   * cover/min + committed − onHand − incoming, then rounded to minOrderQty.
    */
   reorderQty?: number;
   /** Preferred supplier party id for draft / auto POs */
   preferredSupplierId?: string;
+  /**
+   * Supplier lead time for this item (days). Overrides company
+   * `autoReorderLeadTimeDays` when set.
+   */
+  leadTimeDays?: number;
   /**
    * Reorder mins per size × color. Same keys as stockMatrix (`variationId__colorId`).
    */
@@ -178,6 +236,11 @@ export interface UserProfile {
    * Never populated for self-registered dealers.
    */
   passwordVisible?: string;
+  /**
+   * Set when the user asks the office to reset a forgotten password.
+   * Cleared when they change it themselves or an admin sets a new one.
+   */
+  passwordResetRequestedAt?: string;
   name: string;
   /** Primary login id (10-digit mobile preferred) */
   phone: string;
@@ -191,13 +254,20 @@ export interface UserProfile {
   /**
    * Extra capabilities beyond the role preset.
    * Ignored for super_admin (always full owner preset).
+   * Ignored when jobId is set (the job matrix wins).
    */
   extraCapabilities?: Capability[];
   /**
    * Capabilities removed from the role preset.
    * Ignored for super_admin.
+   * Ignored when jobId is set.
    */
   deniedCapabilities?: Capability[];
+  /**
+   * Named job from AppDatabase.staffJobs. When set, caps come from that
+   * job (base role + matrix) instead of personal extra/denied.
+   */
+  jobId?: string;
   locale: Locale;
   walletBalance: number;
   assignedSchemeIds: string[];
@@ -229,6 +299,33 @@ export interface UserProfile {
     expirationTime?: number | null;
     keys: { p256dh: string; auth: string };
   }[];
+}
+
+/** Owner-visible trail of dealer approve / revoke / file edits. */
+export type PeopleActivityAction =
+  | "approve"
+  | "reject"
+  | "revoke"
+  | "restore"
+  | "edit";
+
+export interface PeopleActivityChange {
+  field: string;
+  from: string;
+  to: string;
+}
+
+export interface PeopleActivity {
+  id: string;
+  at: string;
+  actorId: string;
+  actorName: string;
+  action: PeopleActivityAction;
+  userId: string;
+  userName: string;
+  userPhone: string;
+  reason?: string;
+  changes?: PeopleActivityChange[];
 }
 
 export type OrderStatus =
@@ -269,8 +366,10 @@ export interface PaymentProofItem {
   url: string;
   type: "image" | "pdf";
   fileName?: string;
-  /** Free-form note (UPI ref, bank ref, "1st installment", etc.). */
+  /** Free-form note (UPI ref / UTR, bank ref, "1st installment", etc.). */
   note?: string;
+  /** UPI note for this attempt, e.g. TT-104-P2 — matches the QR `tn`. */
+  payRef?: string;
   /** Amount this specific transaction covers, in ₹ — used to tally part-payments. */
   amount?: number;
   uploadedAt: string;
@@ -357,11 +456,20 @@ export interface Order {
   shippingAmount: number;
   walletUsed: number;
   estimatedTotal: number;
-  /** Per-order scheme discount (₹) applied to goods subtotal */
+  /**
+   * Total ₹ off goods (scheme auto + staff override), capped at goods subtotal.
+   * PDF / order page / auto sale voucher all use this one figure.
+   */
   schemeDiscount?: number;
-  /** Scheme name shown on bill / UI */
+  /** Scheme name and/or staff override shown on bill / UI */
   schemeDiscountLabel?: string;
+  /** Short packing-slip math, e.g. "120.50 kg × ₹2/kg" */
+  schemeDiscountMath?: string;
   schemeDiscountId?: string;
+  /** Staff extra off this bill (on top of scheme). Omitted = none. */
+  manualDiscountKind?: "percent" | "flat";
+  /** Percent (e.g. 5) or rupees, matching manualDiscountKind. */
+  manualDiscountValue?: number;
   /** Sum of line estimate weights */
   estimatedWeightKg?: number;
   /** Sum of line actual weights (when set) */
@@ -388,6 +496,10 @@ export interface Order {
   stockReserved?: boolean;
   /** Auto-created on estimate; staff fills weighments then finalizes */
   packingSlip?: PackingSlip;
+  /** How the estimate was placed. Default / omitted = dealer website checkout. */
+  source?: "web" | "staff";
+  /** Staff user id when `source` is `staff`. */
+  punchedBy?: string;
   timeline: { status: OrderStatus | string; at: string; note?: string }[];
   createdAt: string;
   updatedAt: string;
@@ -398,7 +510,9 @@ export type SchemeRewardType =
   | "per_kg_rate"
   | "percent"
   | "order_percent"
-  | "order_flat";
+  | "order_rate"
+  | "order_flat"
+  | "order_per_kg";
 export type SchemeScopeType = "all" | "category" | "product";
 /** What counts toward scheme progress / tier unlock */
 export type SchemeProgressUnit = "kg" | "bundles";
@@ -413,24 +527,26 @@ export type SchemeProgressUnit = "kg" | "bundles";
  * - per_kg_rate: ratePerUnit = ₹ per kg/bundle × full lift
  * - percent: ratePerUnit = % of scheme sales value once tier unlocked by lift
  *
- * Per-order discount schemes (order_percent / order_flat):
- * targetAmount = min qty on THIS order (kg or bundles via progressUnit).
- * ratePerUnit = % off scoped subtotal (order_percent) or flat ₹ off (order_flat).
- * Applied on the order bill — not wallet settlement.
+ * Per-order discount schemes (order_percent / order_rate / order_flat / order_per_kg):
+ * targetAmount = min qty per catalogue item on THIS order (all sizes of that product).
+ * Different products are not added together. Applied on the order bill — not wallet.
+ * Final ₹/kg types use actual packing-slip kg of items that unlocked.
  */
 export interface SchemeLevel {
   id: string;
   name: LocalizedString;
   /**
    * Min cumulative lift (lifting schemes) OR min this-order qty
-   * (order_percent / order_flat), in kg or bundles.
+   * (order_percent / order_rate / order_flat / order_per_kg), in kg or bundles.
    */
   targetAmount: number;
   /**
    * per_kg_rate → ₹ per kg/bundle on full lift
    * percent → percent of scoped sales value (e.g. 2 = 2%)
-   * order_percent → % off this order’s scoped subtotal
+   * order_percent → % off this order’s scoped subtotal (₹/kg × kg for tarpaulin)
+   * order_rate → ₹ off the unit rate (100 − 1 = 99), then × this-order qty
    * order_flat → flat ₹ off this order (capped at scoped subtotal)
+   * order_per_kg → same math as order_rate (₹ off per kg / bundle)
    */
   ratePerUnit: number;
   /** @deprecated legacy fixed credit — ignored for tier payout */
@@ -450,7 +566,7 @@ export interface Scheme {
   targetWeightKg: number;
   /**
    * Prefer per_kg_rate / percent (lifting → wallet) or
-   * order_percent / order_flat (per-order bill discount).
+   * order_percent / order_rate / order_flat / order_per_kg (per-order bill discount).
    * fixed_credit kept for older data migration only.
    */
   rewardType: SchemeRewardType;
@@ -578,6 +694,8 @@ export interface JhalShippingRule {
   ratePerJhal: number;
 }
 
+export type WhatsAppTemplateKey = "order" | "packing" | "lr" | "staffOrder";
+
 export interface AppSettings {
   companyName: string;
   phone: string;
@@ -617,6 +735,33 @@ export interface AppSettings {
   whatsappNotifyEnabled?: boolean;
   /** Country dial code without + (default 91 India) */
   whatsappCountryCode?: string;
+  /**
+   * Optional custom WhatsApp bodies. Empty = built-in default.
+   * Tokens: {company} {name} {order} {status} {items} {qty} {kg}
+   * {bill} {payment} {pay} {discount} {link} {pdf} {lr} {note} …
+   */
+  whatsappTemplates?: Partial<
+    Record<WhatsAppTemplateKey, { en?: string; hi?: string }>
+  >;
+  /**
+   * Last weekly WhatsApp digest dates (YYYY-MM-DD, UTC).
+   * Cron skips a section if last send was within 6 days.
+   */
+  whatsappDigest?: {
+    overdueOn?: string;
+    creditOn?: string;
+    schemeOn?: string;
+    /** Last owner daily summary (YYYY-MM-DD). Cron skips if already sent today. */
+    dailyOn?: string;
+    /** Last on-demand payment-due blast (YYYY-MM-DD). */
+    dueOn?: string;
+    /** Last stale-estimate dealer reminder (YYYY-MM-DD). 6-day cooldown. */
+    staleOn?: string;
+    /** Last missed-clock-in staff ping (YYYY-MM-DD). */
+    hrMissPunchOn?: string;
+    /** Last owner digest of GPS punches outside the fence. */
+    hrFenceOn?: string;
+  };
   tallyLastSyncAt?: string;
   tallySyncStatus?: "idle" | "ok" | "error";
   tallySyncMessage?: string;
@@ -649,6 +794,28 @@ export interface AppSettings {
   autoReorderCron?: string;
   /** Ignore suggested lines below this bundle qty when auto-PO runs */
   autoReorderMinQty?: number;
+  /**
+   * When true (default), trigger min = max(staff min, velocity × cover days × season).
+   * No OUT in the lookback window falls back to staff min only.
+   */
+  autoReorderUseVelocity?: boolean;
+  /** Days of OUT movements used for average daily velocity (default 30) */
+  autoReorderLookbackDays?: number;
+  /** Default supplier lead time in days (default 10). Product may override. */
+  autoReorderLeadTimeDays?: number;
+  /** Extra cover days on top of lead time (default 7) */
+  autoReorderSafetyDays?: number;
+  /** Calendar months (1–12) that apply the seasonal velocity lift */
+  autoReorderSeasonMonths?: number[];
+  /** Velocity multiplier in season months for tarpaulin/tirpal (default 1.4) */
+  autoReorderSeasonMultiplier?: number;
+  /**
+   * Ordered product ids for the home “New products” row.
+   * Empty / unset → newest + featured fallback.
+   */
+  homeNewProductIds?: string[];
+  /** Ordered product ids shown as promo / offer cards on home. */
+  homePromoProductIds?: string[];
 }
 
 export interface CartItem {
@@ -706,6 +873,18 @@ export interface Party {
   creditLimit?: number;
   active: boolean;
   createdAt: string;
+  /**
+   * Dealer GET only — computed outstanding for this linked party.
+   * Never persist (stripped on cloud sanitize).
+   */
+  statementOutstanding?: number;
+  /** Dealer GET only — last receipts (no full voucher dump). */
+  statementReceipts?: {
+    date: string;
+    amount: number;
+    number: string;
+    linkedOrderId?: string;
+  }[];
 }
 
 export type VoucherType =
@@ -1016,7 +1195,33 @@ export interface StatementMatch {
   createdBy: string;
 }
 
-/** Queue row for office TallyPrime bridge (simple Sales / Receipt, non-GST). */
+/** Daily bank reconciliation (Tally BRS) for one cash/bank ledger. */
+export type BankReconStatus = "open" | "reconciled";
+
+export interface BankReconExtra {
+  id: string;
+  date: string;
+  note: string;
+  /** Amount on the bank statement that is not in our books yet */
+  debit: number;
+  credit: number;
+}
+
+export interface BankRecon {
+  id: string;
+  accountId: string;
+  /** Statement date YYYY-MM-DD */
+  asOf: string;
+  statementBalance: number;
+  /** Ledger entry ids ticked as appeared in the bank statement */
+  clearedEntryIds: string[];
+  extras: BankReconExtra[];
+  status: BankReconStatus;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+/** Legacy TallyPrime queue rows still present on some cloud blobs. Unused. */
 export type TallyPostKind = "sale" | "receipt";
 export type TallyPostStatus = "pending" | "posted" | "failed";
 
@@ -1069,3 +1274,183 @@ export interface AccessPlace {
 
 /** Alias used in traffic aggregates (same shape as AccessPlace with source page). */
 export type SiteHit = AccessPlace;
+
+export type HrPayBasis = "monthly" | "daily" | "hourly";
+
+export type HrPunchKind = "in" | "out";
+export type HrLeaveKind = "casual" | "sick" | "unpaid";
+export type HrLeaveStatus = "pending" | "approved" | "rejected";
+export type StockCountStatus = "draft" | "submitted" | "owner_reviewed";
+export type CountLineDecision = "pending" | "approved" | "rejected";
+
+export interface HrShift {
+  id: string;
+  name: string;
+  start: string;
+  end: string;
+  graceMinutes: number;
+}
+
+export interface HrSite {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  radiusM: number;
+}
+
+export interface HrTerms {
+  id: string;
+  userId: string;
+  /** Existing rows with no basis stay monthly. */
+  payBasis?: HrPayBasis;
+  monthlySalary: number;
+  dailyWage?: number;
+  hourlyRate?: number;
+  joinDate: string;
+  /** 0 Sunday … 6 Saturday */
+  weekOff: number;
+  shiftId?: string;
+  otRatePerHour: number;
+  /** Extra-time factor: 1, 1.5 or 2. Default 1. */
+  otMultiplier?: number;
+  /** Hours that count as a half day. Default is half the shift. */
+  halfDayHours?: number;
+  casualDaysPerYear: number;
+  sickDaysPerYear: number;
+  casualUsed?: number;
+  sickUsed?: number;
+  requireSelfie?: boolean;
+  siteIds?: string[];
+  updatedAt: string;
+}
+
+export interface HrPunch {
+  id: string;
+  userId: string;
+  kind: HrPunchKind;
+  at: string;
+  lat?: number;
+  lng?: number;
+  accuracyM?: number;
+  insideFence: boolean;
+  siteId?: string;
+  photoUrl?: string;
+  userAgent?: string;
+  weakGps?: boolean;
+  createdAt: string;
+}
+
+export interface HrLeave {
+  id: string;
+  userId: string;
+  kind: HrLeaveKind;
+  from: string;
+  to: string;
+  days: number;
+  status: HrLeaveStatus;
+  reason?: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  rejectReason?: string;
+  createdAt: string;
+}
+
+export type HrAdvanceStatus = "pending" | "issued" | "rejected";
+
+export interface HrAdvance {
+  id: string;
+  userId: string;
+  date: string;
+  amount: number;
+  note?: string;
+  /** Missing on older rows = already issued. */
+  status?: HrAdvanceStatus;
+  payslipId?: string;
+  createdBy: string;
+  createdAt: string;
+  decidedBy?: string;
+  decidedAt?: string;
+}
+
+export interface HrPayslip {
+  id: string;
+  userId: string;
+  month: string;
+  workingDays: number;
+  paidDays: number;
+  presentDays: number;
+  halfDays: number;
+  leavePaid: number;
+  leaveUnpaid: number;
+  absentDays: number;
+  lateDays: number;
+  otMinutes: number;
+  workedMinutes?: number;
+  paidLeaveHours?: number;
+  payBasis?: HrPayBasis;
+  formula?: string;
+  gross: number;
+  otPay: number;
+  advances: number;
+  net: number;
+  expenseVoucherId?: string;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface StockCountLine {
+  id: string;
+  productId: string;
+  variationId?: string;
+  colorId?: string;
+  sku?: string;
+  label?: string;
+  category?: string;
+  bookQty: number;
+  countedQty?: number;
+  counted?: boolean;
+  note?: string;
+  unitRate?: number;
+  ownerDecision?: CountLineDecision;
+  rejectReason?: string;
+  postedMovementId?: string;
+}
+
+export interface StockCount {
+  id: string;
+  month: string;
+  status: StockCountStatus;
+  startedBy: string;
+  startedAt: string;
+  submittedAt?: string;
+  submittedBy?: string;
+  lines: StockCountLine[];
+  updatedAt: string;
+}
+
+export interface CashCount {
+  id: string;
+  month: string;
+  status: StockCountStatus;
+  startedBy: string;
+  startedAt: string;
+  submittedAt?: string;
+  submittedBy?: string;
+  bookCash: number;
+  bookBank: number;
+  countedCash?: number;
+  statementBank?: number;
+  note?: string;
+  ownerDecision?: CountLineDecision;
+  rejectReason?: string;
+  updatedAt: string;
+}
+
+export interface MonthlyAudit {
+  id: string;
+  month: string;
+  closedAt: string;
+  closedBy: string;
+  note?: string;
+}

@@ -3,9 +3,10 @@
 import { FormEvent, useMemo, useState } from "react";
 import { TransportInput } from "@/components/TransportInput";
 import { useLocale, useTranslations } from "next-intl";
-import { Link, useRouter } from "@/i18n/routing";
+import { useRouter } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
-import { AdminShell } from "@/components/AdminShell";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
+import { AccountsShell } from "@/components/AccountsShell";
 import { NumberField } from "@/components/NumberField";
 import { SearchSelect } from "@/components/SearchSelect";
 import {
@@ -29,7 +30,16 @@ import {
   checkCapability,
   shippingWeightExcludingJhal,
 } from "@/lib/store/db";
-import { pickBestOrderDiscount } from "@/lib/schemes";
+import { StaffBillDiscountFields } from "@/components/StaffBillDiscountFields";
+import {
+  applyBillDiscounts,
+  billDiscountReceiptLabel,
+  lineDiscountedRate,
+  lineOrderDiscountTier,
+  orderDiscountReceiptLabel,
+  pickBestOrderDiscount,
+  type ManualDiscountKind,
+} from "@/lib/schemes";
 import type {
   CartItem,
   OrderLine,
@@ -93,16 +103,19 @@ export default function AdminPunchOrderPage() {
   const [transportOverride, setTransportOverride] = useState("");
   const [notes, setNotes] = useState("");
   const [walletToUse, setWalletToUse] = useState(0);
+  const [discKind, setDiscKind] = useState<ManualDiscountKind | "">("");
+  const [discValue, setDiscValue] = useState("");
   const [billNow, setBillNow] = useState(false);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const canManage = session && checkCapability(session, db?.users, "manage_orders");
+  const canManage = session && checkCapability(session, db, "manage_orders");
 
   const dealers = useMemo<UserProfile[]>(() => {
     if (!db) return [];
     return db.users
-      .filter((u) => u.role === "customer" && u.active && u.approved)
+      .filter((u) => u.role === "customer" && u.active !== false && u.approved === true)
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [db]);
 
@@ -220,7 +233,13 @@ export default function AdminPunchOrderPage() {
             db.products
           )
         : null;
-    const schemeDiscount = schemeBest?.amount ?? 0;
+    const applied = applyBillDiscounts({
+      goodsSubtotal: subtotal,
+      schemeAmount: schemeBest?.amount ?? 0,
+      manualKind: discKind,
+      manualValue: Number(discValue) || 0,
+    });
+    const schemeDiscount = applied.total;
     const maxWallet = Math.min(
       dealer?.walletBalance ?? 0,
       Math.max(0, subtotal + shipping - schemeDiscount)
@@ -231,16 +250,26 @@ export default function AdminPunchOrderPage() {
       totalWeight,
       shipping,
       schemeDiscount,
-      schemeLabel:
-        schemeBest?.scheme.name?.en || schemeBest?.scheme.name?.hi || "",
+      schemeAuto: applied.schemeAmount,
+      schemeLabel: schemeBest
+        ? orderDiscountReceiptLabel(schemeBest, locale)
+        : "",
+      discountLabel: billDiscountReceiptLabel(
+        schemeBest,
+        applied,
+        discKind,
+        Number(discValue) || 0,
+        locale
+      ),
       wallet,
       // Matches adminPunchOrderAndSync, which stores a whole-rupee payable.
       grand: roundOffRupees(
         Math.max(0, subtotal + shipping - schemeDiscount - wallet)
       ),
       maxWallet,
+      schemeBest,
     };
-  }, [computed, db, dealer, walletToUse]);
+  }, [computed, db, dealer, walletToUse, discKind, discValue, locale]);
 
   /** When billing now: actual kg → bill + shipping (not estimate kg). */
   const billFromKg = useMemo(() => {
@@ -301,7 +330,13 @@ export default function AdminPunchOrderPage() {
             db.products
           )
         : null;
-    const schemeDiscount = schemeBest?.amount ?? 0;
+    const applied = applyBillDiscounts({
+      goodsSubtotal: subtotal,
+      schemeAmount: schemeBest?.amount ?? 0,
+      manualKind: discKind,
+      manualValue: Number(discValue) || 0,
+    });
+    const schemeDiscount = applied.total;
     const grossBill = roundOffRupees(
       Math.max(0, subtotal + shippingAmount - schemeDiscount)
     );
@@ -311,13 +346,25 @@ export default function AdminPunchOrderPage() {
       subtotal,
       shippingAmount,
       schemeDiscount,
+      schemeAuto: applied.schemeAmount,
+      schemeLabel: schemeBest
+        ? orderDiscountReceiptLabel(schemeBest, locale)
+        : "",
+      discountLabel: billDiscountReceiptLabel(
+        schemeBest,
+        applied,
+        discKind,
+        Number(discValue) || 0,
+        locale
+      ),
       walletUsed,
       grossBill,
       billAmount: roundOffRupees(grossBill - walletUsed),
       totalKg: Math.round(weights.reduce((s, n) => s + n, 0) * 100) / 100,
       weights,
+      schemeBest,
     };
-  }, [billNow, computed, db, dealer, totals.wallet]);
+  }, [billNow, computed, db, dealer, totals.wallet, discKind, discValue, locale]);
 
   const setRow = (id: string, patch: Partial<PunchRow>) => {
     setRows((cur) =>
@@ -335,6 +382,23 @@ export default function AdminPunchOrderPage() {
     e.preventDefault();
     if (!session || !dealer) {
       setError(locale === "hi" ? "पहले डीलर चुनें" : "Pick a dealer first");
+      return;
+    }
+    if ((dealer.phone || "").replace(/\D/g, "").length < 8) {
+      setError(
+        locale === "hi"
+          ? "डीलर के खाते में फ़ोन नंबर होना चाहिए — वेबसाइट ऑर्डर के लिए"
+          : "Dealer needs a phone number on their account to post a website order"
+      );
+      return;
+    }
+    if (!(addressOverride.trim() || dealer.address || "").trim()) {
+      setError(
+        locale === "hi"
+          ? "डिलीवरी पता भरें"
+          : "Add a delivery address before posting"
+      );
+      setStep(3);
       return;
     }
     const valid = computed.filter(
@@ -383,6 +447,10 @@ export default function AdminPunchOrderPage() {
         transport: transportOverride.trim() || dealer.transport,
         walletToUse: totals.wallet,
         fullTruckRequested: false,
+        manualDiscountKind:
+          discKind === "percent" || discKind === "flat" ? discKind : undefined,
+        manualDiscountValue:
+          discKind && Number(discValue) > 0 ? Number(discValue) : undefined,
       };
 
       const order = billNow
@@ -405,29 +473,47 @@ export default function AdminPunchOrderPage() {
 
   if (!session || !canManage) {
     return (
-      <AdminShell>
+      <AccountsShell>
         <AdminAccessDenied />
-      </AdminShell>
+      </AccountsShell>
     );
   }
 
   return (
-    <AdminShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">
-            {locale === "hi" ? "नया ऑर्डर पंच करें" : "Punch new order"}
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "फ़ोन / वॉक-इन ऑर्डर डीलर की तरफ़ से बनाएँ। चाहें तो अभी बिल भी लगा दें।"
-              : "Create phone / walk-in orders on behalf of a dealer. Optionally bill it in one step."}
-          </p>
-        </div>
-        <Link href="/admin/orders" className="tt-btn tt-btn-outline">
-          {locale === "hi" ? "वापस" : "Back"}
-        </Link>
-      </div>
+    <AccountsShell>
+      <AccountsPageHeader
+        title={t("admin.punchTitle")}
+        hint={t("admin.punchHint")}
+        backHref="/admin/orders"
+        backLabel={locale === "hi" ? "ऑर्डर" : "Orders"}
+      />
+
+      <ol className="mt-4 flex flex-wrap gap-2 text-sm print:hidden">
+        {([1, 2, 3] as const).map((n) => (
+          <li key={n}>
+            <button
+              type="button"
+              className={`rounded-full px-3 py-1 ${
+                step === n
+                  ? "bg-[var(--brand)] font-semibold text-white"
+                  : "border border-[var(--line)] text-[var(--ink-muted)]"
+              }`}
+              onClick={() => {
+                if (n === 1) setStep(1);
+                else if (n === 2 && dealerId) setStep(2);
+                else if (n === 3 && dealerId) setStep(3);
+              }}
+            >
+              {n}.{" "}
+              {n === 1
+                ? t("admin.punchStepDealer")
+                : n === 2
+                  ? t("admin.punchStepLines")
+                  : t("admin.punchStepReview")}
+            </button>
+          </li>
+        ))}
+      </ol>
 
       {error ? (
         <p className="mt-3 rounded-lg border border-[var(--danger)]/30 bg-[var(--danger)]/5 p-3 text-sm text-[var(--danger)]">
@@ -437,7 +523,7 @@ export default function AdminPunchOrderPage() {
 
       <form onSubmit={onSubmit} className="mt-6 space-y-6">
         {/* Dealer picker */}
-        <section className="tt-panel p-5">
+        <section className={`tt-panel p-5 ${step === 1 ? "" : "hidden"}`}>
           <h2 className="font-semibold">
             {locale === "hi" ? "1. डीलर चुनें" : "1. Pick dealer"}
           </h2>
@@ -487,10 +573,20 @@ export default function AdminPunchOrderPage() {
               </div>
             </div>
           ) : null}
+          <div className="mt-4 flex justify-end">
+            <button
+              type="button"
+              className="tt-btn tt-btn-dark"
+              disabled={!dealerId}
+              onClick={() => setStep(2)}
+            >
+              {t("admin.punchNext")}
+            </button>
+          </div>
         </section>
 
         {/* Product rows */}
-        <section className="tt-panel p-5">
+        <section className={`tt-panel p-5 ${step === 2 || (step === 3 && billNow) ? "" : "hidden"}`}>
           <div className="flex items-center justify-between">
             <h2 className="font-semibold">
               {locale === "hi" ? "2. प्रोडक्ट डालें" : "2. Add products"}
@@ -594,9 +690,52 @@ export default function AdminPunchOrderPage() {
                       <span>
                         {c.color ? `${c.color.name[locale]} · ` : ""}
                         {locale === "hi" ? "रेट" : "Rate"}:{" "}
-                        <strong className="text-[var(--ink)] tabular-nums">
-                          {formatInr(c.rate, locale)}
-                        </strong>{" "}
+                        {(() => {
+                          const best =
+                            (billNow ? billFromKg?.schemeBest : null) ||
+                            totals.schemeBest;
+                          const rates =
+                            best && c.product
+                              ? (() => {
+                                  const lineTier = lineOrderDiscountTier(best, {
+                                    productId: c.product.id,
+                                    variationId: c.variation?.id,
+                                  });
+                                  return lineTier
+                                    ? lineDiscountedRate(
+                                        best.scheme,
+                                        lineTier,
+                                        {
+                                          rate: c.rate,
+                                          pricingMode: c.product.pricingMode,
+                                        },
+                                        c.product
+                                      )
+                                    : null;
+                                })()
+                              : null;
+                          if (
+                            rates &&
+                            rates.discountedRate < rates.listRate
+                          ) {
+                            return (
+                              <>
+                                <span className="text-[var(--ink-muted)] line-through tabular-nums">
+                                  {formatInr(rates.listRate, locale)}
+                                </span>
+                                {" → "}
+                                <strong className="text-[var(--ok)] tabular-nums">
+                                  {formatInr(rates.discountedRate, locale)}
+                                </strong>
+                              </>
+                            );
+                          }
+                          return (
+                            <strong className="text-[var(--ink)] tabular-nums">
+                              {formatInr(c.rate, locale)}
+                            </strong>
+                          );
+                        })()}{" "}
                         · {c.weightKg.toFixed(2)} {t("common.kg")}
                       </span>
                       <span>
@@ -631,10 +770,26 @@ export default function AdminPunchOrderPage() {
               );
             })}
           </div>
+          <div className="mt-4 flex flex-wrap justify-between gap-2">
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              onClick={() => setStep(1)}
+            >
+              {t("common.back")}
+            </button>
+            <button
+              type="button"
+              className="tt-btn tt-btn-dark"
+              onClick={() => setStep(3)}
+            >
+              {t("admin.punchNext")}
+            </button>
+          </div>
         </section>
 
         {/* Delivery + notes */}
-        <section className="tt-panel p-5">
+        <section className={`tt-panel p-5 ${step === 3 ? "" : "hidden"}`}>
           <h2 className="font-semibold">
             {locale === "hi" ? "3. डिलीवरी विवरण" : "3. Delivery details"}
           </h2>
@@ -675,7 +830,7 @@ export default function AdminPunchOrderPage() {
         </section>
 
         {/* Totals + wallet + bill */}
-        <section className="tt-panel p-5">
+        <section className={`tt-panel p-5 ${step === 3 ? "" : "hidden"}`}>
           <h2 className="font-semibold">
             {locale === "hi" ? "4. जोड़ + बिलिंग" : "4. Totals & billing"}
           </h2>
@@ -725,13 +880,45 @@ export default function AdminPunchOrderPage() {
                   )}
                 </dd>
               </div>
+              <div className="sm:col-span-2">
+                <StaffBillDiscountFields
+                  goodsSubtotal={
+                    billNow && billFromKg
+                      ? billFromKg.subtotal
+                      : totals.subtotal
+                  }
+                  schemeAmount={
+                    billNow && billFromKg
+                      ? billFromKg.schemeAuto
+                      : totals.schemeAuto
+                  }
+                  schemeLabel={
+                    billNow && billFromKg
+                      ? billFromKg.schemeLabel
+                      : totals.schemeLabel
+                  }
+                  kind={discKind}
+                  value={discValue}
+                  onKindChange={setDiscKind}
+                  onValueChange={setDiscValue}
+                  locale={locale}
+                />
+              </div>
               {(billNow && billFromKg
                 ? billFromKg.schemeDiscount
                 : totals.schemeDiscount) > 0 ? (
                 <div className="flex justify-between text-[var(--ok)]">
                   <dt>
                     {t("common.schemeDiscount")}
-                    {totals.schemeLabel ? ` · ${totals.schemeLabel}` : ""}
+                    {(billNow && billFromKg
+                      ? billFromKg.discountLabel
+                      : totals.discountLabel)
+                      ? ` · ${
+                          billNow && billFromKg
+                            ? billFromKg.discountLabel
+                            : totals.discountLabel
+                        }`
+                      : ""}
                   </dt>
                   <dd className="tabular-nums">
                     −
@@ -808,26 +995,29 @@ export default function AdminPunchOrderPage() {
           </div>
         </section>
 
-        <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className={`flex flex-wrap items-center justify-between gap-2 ${step === 3 ? "" : "hidden"}`}>
+          <button
+            type="button"
+            className="tt-btn tt-btn-outline"
+            onClick={() => setStep(2)}
+          >
+            {t("common.back")}
+          </button>
           <button
             type="submit"
             className="tt-btn tt-btn-dark"
             disabled={busy || !dealer}
           >
             {busy
-              ? locale === "hi"
-                ? "बन रहा है…"
-                : "Working…"
+              ? t("admin.punchWorking")
               : billNow
                 ? locale === "hi"
                   ? "ऑर्डर + बिल पंच करें"
                   : "Punch order & bill"
-                : locale === "hi"
-                  ? "अनुमान बनाएँ"
-                  : "Create estimate"}
+                : t("admin.punchPostEstimate")}
           </button>
         </div>
       </form>
-    </AdminShell>
+    </AccountsShell>
   );
 }

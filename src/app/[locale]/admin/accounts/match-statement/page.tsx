@@ -2,12 +2,16 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { ExportButtons } from "@/components/ExportButtons";
 import { NumberField } from "@/components/NumberField";
+import { SearchSelect } from "@/components/SearchSelect";
 import {
   ACCT,
   computeOurClosing,
@@ -26,19 +30,20 @@ import {
 import type { StatementMatchExtra } from "@/lib/types";
 
 function MatchStatementInner() {
+  const t = useTranslations();
   const search = useSearchParams();
   const { session } = useSession();
   const { db, refresh } = useDb();
   const isOwner = session ? canViewFinancials(session.role) : false;
   const today = toDateInputValue();
+  const [range, setRange] = useAdminDateRange("mtd");
+  const from = range.from;
+  const to = range.to;
 
   const [partyId, setPartyId] = useState("");
   const [partyType, setPartyType] = useState<"all" | "customer" | "supplier">(
     "customer"
   );
-  const [q, setQ] = useState("");
-  const [from, setFrom] = useState(today.slice(0, 8) + "01");
-  const [to, setTo] = useState(today);
   const [theirClosing, setTheirClosing] = useState("");
   const [matchedIds, setMatchedIds] = useState<Set<string>>(new Set());
   const [extras, setExtras] = useState<StatementMatchExtra[]>([]);
@@ -70,13 +75,19 @@ function MatchStatementInner() {
     return db.parties
       .filter((p) => p.active)
       .filter((p) => (partyType === "all" ? true : p.type === partyType))
-      .filter((p) => {
-        if (p.type === "supplier" && !isOwner) return false;
-        const hay = `${p.name} ${p.phone} ${p.gstin ?? ""}`.toLowerCase();
-        return hay.includes(q.trim().toLowerCase());
-      })
+      .filter((p) => !(p.type === "supplier" && !isOwner))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [db, partyType, q, isOwner]);
+  }, [db, partyType, isOwner]);
+
+  const partyOptions = useMemo(
+    () =>
+      parties.map((p) => ({
+        value: p.id,
+        label: `${p.name} (${p.type === "customer" ? "Customer" : "Supplier"})`,
+        searchText: `${p.name} ${p.phone} ${p.gstin ?? ""}`,
+      })),
+    [parties]
+  );
 
   const party = db?.parties.find((p) => p.id === partyId);
   const controlId =
@@ -136,8 +147,7 @@ function MatchStatementInner() {
     const row = savedSessions.find((m) => m.id === id);
     if (!row) return;
     setSessionId(row.id);
-    setFrom(row.from);
-    setTo(row.to);
+    setRange({ preset: "custom", from: row.from, to: row.to });
     setTheirClosing(String(row.theirClosingBalance));
     setMatchedIds(new Set(row.matchedEntryIds));
     setExtras(structuredClone(row.theirExtraRows));
@@ -258,7 +268,7 @@ function MatchStatementInner() {
     theirClosingNum,
   ]);
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -269,28 +279,19 @@ function MatchStatementInner() {
   if (party?.type === "supplier" && !isOwner) {
     return (
       <AccountsShell>
-        <AdminAccessDenied title="Owner only — supplier amounts" />
+        <AdminAccessDenied title={t("accounts.ownerOnlySupplierAmounts")} />
       </AccountsShell>
     );
   }
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        Match statement
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)]">
-        Tick lines that appear on both books. Add anything they show that we
-        don&apos;t. Difference should go to zero.
-      </p>
+      <AccountsPageHeader
+        title={t("accounts.matchStatement")}
+        hint={t("accounts.matchStatementHint")}
+      />
 
-      <div className="mt-4 flex flex-wrap gap-3">
-        <input
-          className="tt-input min-w-[160px]"
-          placeholder="Search party…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
+      <div className="mt-4 flex flex-wrap items-end gap-3">
         <select
           className="tt-select"
           value={partyType}
@@ -302,33 +303,18 @@ function MatchStatementInner() {
           <option value="customer">Customers</option>
           {isOwner ? <option value="supplier">Suppliers</option> : null}
         </select>
-        <select
-          className="tt-select min-w-[220px]"
+        <SearchSelect
+          className="min-w-[220px]"
+          options={partyOptions}
           value={partyId}
-          onChange={(e) => {
-            setPartyId(e.target.value);
+          onChange={(v) => {
+            setPartyId(v);
             resetWorking();
           }}
-        >
-          <option value="">Select party…</option>
-          {parties.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.type === "customer" ? "Customer" : "Supplier"})
-            </option>
-          ))}
-        </select>
-        <input
-          type="date"
-          className="tt-input"
-          value={from}
-          onChange={(e) => setFrom(e.target.value)}
+          placeholder="Search party…"
+          emptyLabel="Select party…"
         />
-        <input
-          type="date"
-          className="tt-input"
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-        />
+        <DateRangeBar value={range} onChange={setRange} />
         <label className="flex items-center gap-2 text-sm">
           <span className="text-[var(--ink-muted)]">Their closing</span>
           <NumberField

@@ -6,122 +6,56 @@ import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AdminShell } from "@/components/AdminShell";
 import { NumberField } from "@/components/NumberField";
+import { PeopleJobsTab } from "@/components/admin/PeopleJobsTab";
+import { StaffPermissionsPanel } from "@/components/admin/StaffPermissionsPanel";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import {
-  approveDealer,
   assignSchemeToUser,
+  assignStaffJob,
   checkCapability,
   createDealerUserAsync,
   createStaffUserAsync,
   creditWallet,
-  deleteUserAccount,
+  deleteUserAccountAndSync,
   getUserHistorySummary,
-  rejectDealer,
   restoreUserAccess,
   revokeUserAccess,
-  setUserPassword,
+  setUserPasswordAsync,
   upsertUser,
 } from "@/lib/store/db";
 import {
-  ALL_CAPABILITIES,
-  OWNER_ONLY_CAPABILITIES,
-  capabilityLabel,
+  capabilityContextFrom,
   capabilityOverridesFromChecked,
   effectiveCapabilities,
   rolePresetCapabilities,
+  staffJobLabel,
+  staffRoleLabel,
 } from "@/lib/capabilities";
 import { notifyUserPush } from "@/lib/push-client";
+import {
+  notifyDealerApproved,
+  notifyDealerRejected,
+} from "@/lib/whatsapp";
 import type { Capability, UserProfile, UserRole } from "@/lib/types";
+import { tombsFromDb, userBeatsTomb } from "@/lib/user-tombs";
 
-type PeopleTab = "dealers" | "staff" | "tools";
+type PeopleTab = "dealers" | "staff" | "jobs" | "tools" | "log";
+type DealerFilter = "all" | "pending" | "approved" | "revoked";
 
 const STAFF_ROLES: UserRole[] = [
   "sales",
   "accounts",
   "dispatch",
+  "plant_manager",
   "viewer",
   "super_admin",
 ];
 
-function StaffPermissionsPanel({
-  role,
-  checked,
-  onChange,
-  locale,
-  disabled,
-  title,
-}: {
-  role: UserRole;
-  checked: Capability[];
-  onChange: (next: Capability[]) => void;
-  locale: "en" | "hi";
-  disabled?: boolean;
-  title?: string;
-}) {
-  const set = new Set(checked);
-  const isOwnerRole = role === "super_admin";
-  return (
-    <div className="rounded-lg border border-[var(--line)] bg-[var(--surface)] p-3">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold text-[var(--ink)]">
-          {title ||
-            (locale === "hi" ? "अनुमतियाँ" : "Permissions")}
-        </p>
-        {!isOwnerRole && !disabled ? (
-          <button
-            type="button"
-            className="text-xs font-semibold text-[var(--brand)] underline underline-offset-2"
-            onClick={() => onChange(rolePresetCapabilities(role))}
-          >
-            {locale === "hi"
-              ? "रोल डिफ़ॉल्ट पर रीसेट"
-              : "Reset to role defaults"}
-          </button>
-        ) : null}
-      </div>
-      {isOwnerRole ? (
-        <p className="text-xs text-[var(--ink-muted)]">
-          {locale === "hi"
-            ? "सुपर एडमिन के पास सभी अनुमतियाँ होती हैं।"
-            : "Super admin always has the full owner permission set."}
-        </p>
-      ) : (
-        <div className="grid gap-1.5 sm:grid-cols-2">
-          {ALL_CAPABILITIES.map((cap) => {
-            const ownerOnly = OWNER_ONLY_CAPABILITIES.includes(cap);
-            return (
-              <label
-                key={cap}
-                className="flex items-start gap-2 text-sm text-[var(--ink)]"
-              >
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={set.has(cap)}
-                  disabled={disabled}
-                  onChange={(e) => {
-                    const next = new Set(set);
-                    if (e.target.checked) next.add(cap);
-                    else next.delete(cap);
-                    onChange(ALL_CAPABILITIES.filter((c) => next.has(c)));
-                  }}
-                />
-                <span>
-                  {capabilityLabel(cap, locale)}
-                  {ownerOnly ? (
-                    <span className="ml-1 text-[10px] text-[var(--ink-muted)]">
-                      ({locale === "hi" ? "ओनर" : "owner"})
-                    </span>
-                  ) : null}
-                </span>
-              </label>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
+function dealerFileStatus(u: UserProfile): Exclude<DealerFilter, "all"> {
+  if (!u.active) return "revoked";
+  if (u.approved) return "approved";
+  return "pending";
 }
 
 export default function AdminUsersPage() {
@@ -132,6 +66,10 @@ export default function AdminUsersPage() {
   const [tab, setTab] = useState<PeopleTab>("dealers");
   const [createBusy, setCreateBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [pulling, setPulling] = useState(false);
+  const [cloudPending, setCloudPending] = useState<UserProfile[]>([]);
+  const [reviewBusyId, setReviewBusyId] = useState<string | null>(null);
+  const [resetBusyId, setResetBusyId] = useState<string | null>(null);
 
   useEffect(() => {
     const onSyncErr = (ev: Event) => {
@@ -142,10 +80,97 @@ export default function AdminUsersPage() {
     return () => window.removeEventListener("tt-sync-error", onSyncErr);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadPending = async (showSpinner: boolean) => {
+      if (showSpinner) setPulling(true);
+      try {
+        const res = await fetch("/api/account/pending-dealers", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const data = (await res.json()) as {
+          error?: string;
+          users?: Array<{
+            id: string;
+            name: string;
+            phone: string;
+            company?: string;
+            address?: string;
+            pincode?: string;
+            locale?: "en" | "hi";
+            createdAt: string;
+          }>;
+          dealers?: Array<{
+            id: string;
+            name: string;
+            phone: string;
+            company?: string;
+            address?: string;
+            pincode?: string;
+            locale?: "en" | "hi";
+            createdAt: string;
+            approved: boolean;
+            active: boolean;
+            walletBalance?: number;
+            liftingProgressKg?: number;
+          }>;
+        };
+        if (cancelled) return;
+        if (!res.ok) {
+          if (showSpinner && data.error) setMsg(data.error);
+          return;
+        }
+        setCloudPending(
+          (data.users ?? []).map((u) => ({
+            id: u.id,
+            passwordHash: "",
+            name: u.name,
+            phone: u.phone,
+            company: u.company,
+            address: u.address,
+            pincode: u.pincode,
+            locale: u.locale === "hi" ? "hi" : "en",
+            walletBalance: 0,
+            assignedSchemeIds: [],
+            liftingProgressKg: 0,
+            schemeProgress: {},
+            active: true,
+            approved: false,
+            createdAt: u.createdAt,
+            role: "customer" as const,
+          }))
+        );
+        const { mergeCloudCustomerDirectory } = await import("@/lib/store/db");
+        if (mergeCloudCustomerDirectory(data.dealers ?? [])) refresh();
+      } catch {
+        /* poll still runs */
+      } finally {
+        if (!cancelled && showSpinner) setPulling(false);
+      }
+    };
+    void loadPending(true);
+    const timer = window.setInterval(() => void loadPending(false), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    if (
+      !checkCapability(session, db, "manage_users") &&
+      tab !== "dealers"
+    ) {
+      setTab("dealers");
+    }
+  }, [session, db, tab]);
+
   const [form, setForm] = useState({
     name: "",
     phone: "",
-    password: "staff123",
+    password: "",
     role: "sales" as UserRole,
     caps: rolePresetCapabilities("sales") as Capability[],
   });
@@ -169,6 +194,21 @@ export default function AdminUsersPage() {
   /** Which users have their password currently revealed in the table. */
   const [revealed, setRevealed] = useState<Set<string>>(new Set());
   const [viewUserId, setViewUserId] = useState<string | null>(null);
+  const [dealerSearch, setDealerSearch] = useState("");
+  const [dealerFilter, setDealerFilter] = useState<DealerFilter>("all");
+  const [selectedDealers, setSelectedDealers] = useState<Set<string>>(
+    new Set()
+  );
+  const [dealerEdit, setDealerEdit] = useState({
+    name: "",
+    phone: "",
+    company: "",
+    address: "",
+    pincode: "",
+    gstOrAadhar: "",
+    transport: "",
+    creditLimit: "" as number | "",
+  });
   const toggleReveal = (id: string) => {
     setRevealed((cur) => {
       const next = new Set(cur);
@@ -179,9 +219,40 @@ export default function AdminUsersPage() {
   };
 
   const viewingUser = useMemo(
-    () => (db?.users ?? []).find((u) => u.id === viewUserId) ?? null,
-    [db, viewUserId]
+    () =>
+      (db?.users ?? []).find((u) => u.id === viewUserId) ??
+      cloudPending.find((u) => u.id === viewUserId) ??
+      null,
+    [db, viewUserId, cloudPending]
   );
+
+  const viewingParty = useMemo(() => {
+    if (!viewingUser || viewingUser.role !== "customer") return null;
+    return (
+      (db?.parties ?? []).find(
+        (p) => p.linkedUserId === viewingUser.id && p.type === "customer"
+      ) ?? null
+    );
+  }, [db, viewingUser]);
+
+  useEffect(() => {
+    if (!viewingUser || viewingUser.role !== "customer") return;
+    setDealerEdit({
+      name: viewingUser.name || "",
+      phone: viewingUser.phone || "",
+      company: viewingUser.company || "",
+      address: viewingUser.address || "",
+      pincode: viewingUser.pincode || "",
+      gstOrAadhar: viewingUser.gstOrAadhar || "",
+      transport: viewingUser.transport || "",
+      creditLimit:
+        viewingParty?.creditLimit && viewingParty.creditLimit > 0
+          ? viewingParty.creditLimit
+          : "",
+    });
+  }, [viewingUser, viewingParty]);
+
+  const capCtx = capabilityContextFrom(db);
 
   const viewingHistory = useMemo(
     () => (viewUserId ? getUserHistorySummary(viewUserId) : null),
@@ -190,38 +261,91 @@ export default function AdminUsersPage() {
     [viewUserId, db]
   );
 
-  const pending = useMemo(
-    () =>
-      (db?.users ?? []).filter(
-        (u) => u.role === "customer" && !u.approved && u.active
-      ),
-    [db]
-  );
+  const pending = useMemo(() => {
+    const tombs = tombsFromDb(db ?? {});
+    const byId = new Map<string, UserProfile>();
+    for (const u of db?.users ?? []) {
+      if (
+        u.role === "customer" &&
+        u.approved !== true &&
+        u.active !== false &&
+        userBeatsTomb(u, tombs)
+      ) {
+        byId.set(u.id, u);
+      }
+    }
+    for (const u of cloudPending) {
+      if (userBeatsTomb(u, tombs)) byId.set(u.id, u);
+    }
+    return [...byId.values()].sort((a, b) =>
+      (b.createdAt || "").localeCompare(a.createdAt || "")
+    );
+  }, [db, cloudPending]);
 
-  const dealers = useMemo(
-    () => (db?.users ?? []).filter((u) => u.role === "customer"),
-    [db]
-  );
+  const dealers = useMemo(() => {
+    const tombs = tombsFromDb(db ?? {});
+    const byId = new Map<string, UserProfile>();
+    for (const u of db?.users ?? []) {
+      if (u.role === "customer" && userBeatsTomb(u, tombs)) byId.set(u.id, u);
+    }
+    for (const u of cloudPending) {
+      if (!byId.has(u.id) && userBeatsTomb(u, tombs)) byId.set(u.id, u);
+    }
+    return [...byId.values()];
+  }, [db, cloudPending]);
 
   const staff = useMemo(
     () => (db?.users ?? []).filter((u) => u.role !== "customer"),
     [db]
   );
 
+  const passwordRequests = useMemo(() => {
+    const tombs = tombsFromDb(db ?? {});
+    return (db?.users ?? [])
+      .filter(
+        (u) =>
+          Boolean(u.passwordResetRequestedAt) && userBeatsTomb(u, tombs)
+      )
+      .sort((a, b) =>
+        String(b.passwordResetRequestedAt || "").localeCompare(
+          String(a.passwordResetRequestedAt || "")
+        )
+      );
+  }, [db]);
+
+  const visibleDealers = useMemo(() => {
+    const q = dealerSearch.trim().toLowerCase();
+    return dealers.filter((u) => {
+      if (
+        dealerFilter !== "all" &&
+        dealerFileStatus(u) !== dealerFilter
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      return [u.name, u.phone, u.company, u.gstOrAadhar, u.address]
+        .some((s) => (s || "").toLowerCase().includes(q));
+    });
+  }, [dealers, dealerSearch, dealerFilter]);
+
   const onCreate = async (e: FormEvent) => {
     e.preventDefault();
     if (createBusy) return;
     if (!session || session.role !== "super_admin") {
-      setMsg(
-        locale === "hi"
-          ? "केवल सुपर एडमिन स्टाफ बना सकता है"
-          : "Only a super admin can create staff"
-      );
+      setMsg(t("admin.peopleStaffOnlyOwner"));
+      return;
+    }
+    if (!form.password.trim() || form.password.trim().length < 6) {
+      setMsg(t("admin.peoplePasswordMin"));
       return;
     }
     setCreateBusy(true);
     try {
-      const overrides = capabilityOverridesFromChecked(form.role, form.caps);
+      const overrides = capabilityOverridesFromChecked(
+        form.role,
+        form.caps,
+        db?.rolePresets
+      );
       const created = await createStaffUserAsync({
         name: form.name,
         phone: form.phone,
@@ -238,9 +362,9 @@ export default function AdminUsersPage() {
       setForm({
         name: "",
         phone: "",
-        password: "staff123",
+        password: "",
         role: "sales",
-        caps: rolePresetCapabilities("sales"),
+        caps: rolePresetCapabilities("sales", db?.rolePresets),
       });
       setTab("staff");
       refresh();
@@ -283,30 +407,35 @@ export default function AdminUsersPage() {
     }
   };
 
-  const promptResetPassword = (userId: string, name: string) => {
-    if (!session) return;
+  const promptResetPassword = async (userId: string, name: string) => {
+    if (!session || resetBusyId) return;
     const next = window.prompt(
-      locale === "hi"
-        ? `${name} का नया पासवर्ड? (कम से कम 6 वर्ण)`
-        : `New password for ${name}? (min 6 characters)`,
+      t("admin.peopleNewPassword", { name }),
       ""
     );
     if (next === null) return;
+    setResetBusyId(userId);
     try {
-      setUserPassword(userId, next, session.id);
+      const visible = await setUserPasswordAsync(userId, next, session.id);
       setMsg(
         locale === "hi"
-          ? `${name} का पासवर्ड बदल दिया — नया: ${next.trim()}`
-          : `${name}'s password reset — new: ${next.trim()}`
+          ? `${name} का पासवर्ड बदल दिया — नया: ${visible}`
+          : `${name}'s password reset — new: ${visible}`
       );
       setRevealed((cur) => new Set(cur).add(userId));
       refresh();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Reset failed");
+    } finally {
+      setResetBusyId(null);
     }
   };
 
-  if (!session || !checkCapability(session, db?.users, "manage_users")) {
+  if (
+    !session ||
+    (!checkCapability(session, db, "manage_users") &&
+      !checkCapability(session, db, "approve_dealers"))
+  ) {
     return (
       <AdminShell>
         <AdminAccessDenied />
@@ -315,99 +444,416 @@ export default function AdminUsersPage() {
   }
 
   const isOwner = session.role === "super_admin";
+  const canManageStaff = checkCapability(session, db, "manage_users");
+  const canManageDealerFile = checkCapability(session, db, "approve_dealers");
   const permEditUser =
     (db?.users ?? []).find((u) => u.id === permEditId) ?? null;
 
-  const renderPasswordCell = (u: { id: string; passwordVisible?: string; name: string }) => {
-    const shown = revealed.has(u.id);
-    if (!u.passwordVisible) {
-      return (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-[var(--ink-muted)]">
-            {locale === "hi" ? "छिपा (डीलर सेट)" : "Hidden (user-set)"}
-          </span>
-          <button
-            type="button"
-            className="text-xs font-semibold text-[var(--brand)] underline underline-offset-2"
-            onClick={() => promptResetPassword(u.id, u.name)}
-          >
-            {locale === "hi" ? "रीसेट" : "Reset"}
-          </button>
-        </div>
-      );
+  const pingDealerRejected = (u: UserProfile) => {
+    if (db) {
+      void notifyDealerRejected({ user: u, settings: db.settings });
     }
+  };
+
+  const reviewDealerCloud = async (
+    u: UserProfile,
+    action: "approve" | "reject"
+  ) => {
+    if (reviewBusyId) return;
+    setReviewBusyId(u.id);
+    try {
+      const res = await fetch("/api/account/pending-dealers", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: u.id, action }),
+      });
+      const data = (await res.json()) as {
+        error?: string;
+        users?: UserProfile[];
+        waSent?: boolean;
+      };
+      if (!res.ok) {
+        setMsg(data.error || "Could not update dealer");
+        return;
+      }
+      setCloudPending((cur) => cur.filter((x) => x.id !== u.id));
+      const waNote =
+        data.waSent === true
+          ? locale === "hi"
+            ? " · WhatsApp भेजा"
+            : " · WhatsApp sent"
+          : locale === "hi"
+            ? " · WhatsApp नहीं गया"
+            : " · WhatsApp not sent";
+      setMsg(
+        (locale === "hi"
+          ? action === "approve"
+            ? `${u.name} अप्रूव हो गया`
+            : `${u.name} अस्वीकृत`
+          : action === "approve"
+            ? `${u.name} approved`
+            : `${u.name} rejected`) + waNote
+      );
+      if (action === "approve") {
+        void notifyUserPush({
+          userId: u.id,
+          title: u.locale === "hi" ? "अकाउंट मंज़ूर" : "Account approved",
+          body:
+            u.locale === "hi"
+              ? "अब आप लॉगिन करके ऑर्डर कर सकते हैं"
+              : "You can now login and place orders",
+          url: `/${u.locale === "hi" ? "hi" : "en"}/catalog`,
+        });
+        if (!data.waSent && db) {
+          void notifyDealerApproved({ user: u, settings: db.settings });
+        }
+      } else if (!data.waSent) {
+        pingDealerRejected(u);
+      }
+      try {
+        const m = await import("@/lib/supabase/sync");
+        const { loadDb, replaceDbFromCloud } = await import("@/lib/store/db");
+        const remote = await m.pullCloudDatabase(loadDb());
+        if (remote) replaceDbFromCloud(remote);
+      } catch {
+        /* list already updated from cloud */
+      }
+      refresh();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not update dealer");
+    } finally {
+      setReviewBusyId(null);
+    }
+  };
+
+  const saveDealerFile = async () => {
+    if (!session || !viewingUser || viewingUser.role !== "customer") return;
+    if (reviewBusyId) return;
+    setReviewBusyId(viewingUser.id);
+    try {
+      const res = await fetch("/api/account/pending-dealers", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: viewingUser.id,
+          action: "update",
+          patch: {
+            name: dealerEdit.name,
+            phone: dealerEdit.phone,
+            company: dealerEdit.company,
+            address: dealerEdit.address,
+            pincode: dealerEdit.pincode,
+            gstOrAadhar: dealerEdit.gstOrAadhar,
+            transport: dealerEdit.transport,
+            creditLimit:
+              dealerEdit.creditLimit === ""
+                ? null
+                : Number(dealerEdit.creditLimit),
+          },
+        }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        setMsg(data.error || t("admin.peopleDealerSaved"));
+        return;
+      }
+      setMsg(t("admin.peopleDealerSaved"));
+      try {
+        const m = await import("@/lib/supabase/sync");
+        const { loadDb, replaceDbFromCloud } = await import("@/lib/store/db");
+        const remote = await m.pullCloudDatabase(loadDb());
+        if (remote) replaceDbFromCloud(remote);
+      } catch {
+        /* poll still runs */
+      }
+      refresh();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : t("admin.peopleDealerSaved"));
+    } finally {
+      setReviewBusyId(null);
+    }
+  };
+
+  const bulkReviewDealers = async (
+    ids: string[],
+    action: "approve" | "reject"
+  ) => {
+    if (!ids.length || reviewBusyId) {
+      if (!ids.length) setMsg(t("admin.peopleBulkNone"));
+      return;
+    }
+    setReviewBusyId("bulk");
+    try {
+      const res = await fetch("/api/account/pending-dealers", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userIds: ids, action }),
+      });
+      const data = (await res.json()) as {
+        error?: string;
+        waSent?: boolean;
+        count?: number;
+      };
+      if (!res.ok) {
+        setMsg(data.error || "Could not update dealer");
+        return;
+      }
+      const idSet = new Set(ids);
+      setCloudPending((cur) => cur.filter((x) => !idSet.has(x.id)));
+      setSelectedDealers(new Set());
+      setMsg(
+        action === "approve"
+          ? t("admin.peopleBulkApproveDone", { n: data.count ?? ids.length })
+          : t("admin.peopleBulkRevokeDone", { n: data.count ?? ids.length })
+      );
+      try {
+        const m = await import("@/lib/supabase/sync");
+        const { loadDb, replaceDbFromCloud } = await import("@/lib/store/db");
+        const remote = await m.pullCloudDatabase(loadDb());
+        if (remote) replaceDbFromCloud(remote);
+      } catch {
+        /* list already updated from cloud */
+      }
+      refresh();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not update dealer");
+    } finally {
+      setReviewBusyId(null);
+    }
+  };
+
+  const bulkRevokeSelected = async () => {
+    const ids = [...selectedDealers].filter((id) => {
+      const u = dealers.find((d) => d.id === id);
+      return !!u?.active;
+    });
+    if (!ids.length) {
+      setMsg(t("admin.peopleBulkNone"));
+      return;
+    }
+    const reason = window.prompt(t("admin.peopleRevokeReason"), "");
+    if (reason === null) return;
+    if (reviewBusyId) return;
+    setReviewBusyId("bulk");
+    try {
+      const res = await fetch("/api/account/pending-dealers", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userIds: ids, action: "revoke", reason }),
+      });
+      const data = (await res.json()) as { error?: string; count?: number };
+      if (!res.ok) {
+        setMsg(data.error || "Could not update dealer");
+        return;
+      }
+      setSelectedDealers(new Set());
+      setMsg(t("admin.peopleBulkRevokeDone", { n: data.count ?? ids.length }));
+      try {
+        const m = await import("@/lib/supabase/sync");
+        const { loadDb, replaceDbFromCloud } = await import("@/lib/store/db");
+        const remote = await m.pullCloudDatabase(loadDb());
+        if (remote) replaceDbFromCloud(remote);
+      } catch {
+        /* poll */
+      }
+      refresh();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not update dealer");
+    } finally {
+      setReviewBusyId(null);
+    }
+  };
+
+  const bulkRestoreSelected = async () => {
+    const ids = [...selectedDealers].filter((id) => {
+      const u = dealers.find((d) => d.id === id);
+      return !!u && !u.active;
+    });
+    if (!ids.length) {
+      setMsg(t("admin.peopleBulkNone"));
+      return;
+    }
+    if (reviewBusyId) return;
+    setReviewBusyId("bulk");
+    try {
+      const res = await fetch("/api/account/pending-dealers", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userIds: ids, action: "restore" }),
+      });
+      const data = (await res.json()) as { error?: string; count?: number };
+      if (!res.ok) {
+        setMsg(data.error || "Could not update dealer");
+        return;
+      }
+      setSelectedDealers(new Set());
+      setMsg(t("admin.peopleBulkRestoreDone", { n: data.count ?? ids.length }));
+      try {
+        const m = await import("@/lib/supabase/sync");
+        const { loadDb, replaceDbFromCloud } = await import("@/lib/store/db");
+        const remote = await m.pullCloudDatabase(loadDb());
+        if (remote) replaceDbFromCloud(remote);
+      } catch {
+        /* poll */
+      }
+      refresh();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not update dealer");
+    } finally {
+      setReviewBusyId(null);
+    }
+  };
+
+  const renderPasswordCell = (u: {
+    id: string;
+    passwordVisible?: string;
+    passwordResetRequestedAt?: string;
+    name: string;
+  }) => {
+    const shown = revealed.has(u.id);
+    const requested = Boolean(u.passwordResetRequestedAt);
     return (
       <div className="flex flex-wrap items-center gap-1.5">
-        <code className="rounded bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-xs">
-          {shown ? u.passwordVisible : "••••••••"}
-        </code>
-        <button
-          type="button"
-          className="text-xs font-semibold text-[var(--brand)] underline underline-offset-2"
-          onClick={() => toggleReveal(u.id)}
-        >
-          {shown
-            ? locale === "hi"
-              ? "छिपाएँ"
-              : "Hide"
-            : locale === "hi"
-              ? "दिखाएँ"
-              : "Show"}
-        </button>
-        {shown ? (
-          <button
-            type="button"
-            className="text-xs font-semibold text-[var(--ink-muted)] underline underline-offset-2"
-            onClick={() => {
-              void navigator.clipboard?.writeText(u.passwordVisible || "");
-              setMsg(locale === "hi" ? "कॉपी हो गया" : "Copied");
-            }}
-          >
-            {locale === "hi" ? "कॉपी" : "Copy"}
-          </button>
+        {requested ? (
+          <span className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-900">
+            {t("admin.peoplePasswordRequest")}
+          </span>
         ) : null}
+        {u.passwordVisible ? (
+          <>
+            <code className="rounded bg-[var(--surface-2)] px-1.5 py-0.5 font-mono text-xs">
+              {shown ? u.passwordVisible : "••••••••"}
+            </code>
+            <button
+              type="button"
+              className="text-xs font-semibold text-[var(--brand)] underline underline-offset-2"
+              onClick={() => toggleReveal(u.id)}
+            >
+              {shown ? t("admin.peopleHide") : t("admin.peopleShow")}
+            </button>
+            {shown ? (
+              <button
+                type="button"
+                className="text-xs font-semibold text-[var(--ink-muted)] underline underline-offset-2"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(u.passwordVisible || "");
+                  setMsg(t("admin.peopleCopy"));
+                }}
+              >
+                {t("admin.peopleCopyBtn")}
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <span className="text-xs text-[var(--ink-muted)]">
+            {t("admin.peopleHiddenPassword")}
+          </span>
+        )}
         <button
           type="button"
           className="text-xs font-semibold text-[var(--brand)] underline underline-offset-2"
-          onClick={() => promptResetPassword(u.id, u.name)}
+          disabled={resetBusyId === u.id}
+          onClick={() => void promptResetPassword(u.id, u.name)}
         >
-          {locale === "hi" ? "बदलें" : "Change"}
+          {t("admin.peopleReset")}
         </button>
       </div>
     );
   };
 
-  const promptRevoke = (userId: string, name: string) => {
+  const promptRevoke = async (userId: string, name: string) => {
     if (!session) return;
-    const reason = window.prompt(
-      locale === "hi"
-        ? `${name} की एक्सेस रोकने का कारण? (वैकल्पिक)`
-        : `Reason for revoking ${name}'s access? (optional)`,
-      ""
-    );
+    const target =
+      (db?.users ?? []).find((u) => u.id === userId) ??
+      dealers.find((u) => u.id === userId);
+    const reason = window.prompt(t("admin.peopleRevokeReason"), "");
     if (reason === null) return;
+    if (target?.role === "customer" || !target) {
+      if (reviewBusyId) return;
+      setReviewBusyId(userId);
+      try {
+        const res = await fetch("/api/account/pending-dealers", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, action: "revoke", reason }),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setMsg(data.error || "Revoke failed");
+          return;
+        }
+        setMsg(t("admin.peopleAccessRevoked", { name }));
+        try {
+          const m = await import("@/lib/supabase/sync");
+          const { loadDb, replaceDbFromCloud } = await import("@/lib/store/db");
+          const remote = await m.pullCloudDatabase(loadDb());
+          if (remote) replaceDbFromCloud(remote);
+        } catch {
+          /* poll */
+        }
+        refresh();
+      } catch (err) {
+        setMsg(err instanceof Error ? err.message : "Revoke failed");
+      } finally {
+        setReviewBusyId(null);
+      }
+      return;
+    }
     try {
       revokeUserAccess(userId, session.id, reason);
-      setMsg(
-        locale === "hi"
-          ? `${name} की एक्सेस रोक दी गई`
-          : `${name}'s access revoked`
-      );
+      setMsg(t("admin.peopleAccessRevoked", { name }));
       refresh();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Revoke failed");
     }
   };
 
-  const doRestore = (userId: string, name: string) => {
+  const doRestore = async (userId: string, name: string) => {
     if (!session) return;
+    const target =
+      (db?.users ?? []).find((u) => u.id === userId) ??
+      dealers.find((u) => u.id === userId);
+    if (target?.role === "customer" || !target) {
+      if (reviewBusyId) return;
+      setReviewBusyId(userId);
+      try {
+        const res = await fetch("/api/account/pending-dealers", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, action: "restore" }),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setMsg(data.error || "Restore failed");
+          return;
+        }
+        setMsg(t("admin.peopleAccessRestored", { name }));
+        try {
+          const m = await import("@/lib/supabase/sync");
+          const { loadDb, replaceDbFromCloud } = await import("@/lib/store/db");
+          const remote = await m.pullCloudDatabase(loadDb());
+          if (remote) replaceDbFromCloud(remote);
+        } catch {
+          /* poll */
+        }
+        refresh();
+      } catch (err) {
+        setMsg(err instanceof Error ? err.message : "Restore failed");
+      } finally {
+        setReviewBusyId(null);
+      }
+      return;
+    }
     try {
       restoreUserAccess(userId, session.id);
-      setMsg(
-        locale === "hi"
-          ? `${name} की एक्सेस फिर से चालू`
-          : `${name}'s access restored`
-      );
+      setMsg(t("admin.peopleAccessRestored", { name }));
       refresh();
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "Restore failed");
@@ -415,15 +861,13 @@ export default function AdminUsersPage() {
   };
 
   const canDeposit =
-    !!session && checkCapability(session, db?.users, "manage_wallet");
+    canManageStaff &&
+    !!session &&
+    checkCapability(session, db, "manage_wallet");
 
   const promptDeposit = (userId: string, name: string) => {
     if (!session || !canDeposit) {
-      window.alert(
-        locale === "hi"
-          ? "वॉलेट जमा करने की अनुमति नहीं"
-          : "You do not have permission to deposit to wallets"
-      );
+      window.alert(t("admin.peopleNoWalletPerm"));
       return;
     }
     const raw = window.prompt(
@@ -435,11 +879,7 @@ export default function AdminUsersPage() {
     if (raw === null) return;
     const amount = Number(raw.replace(/,/g, "").trim());
     if (!Number.isFinite(amount) || amount <= 0) {
-      window.alert(
-        locale === "hi"
-          ? "सकारात्मक राशि डालें"
-          : "Enter a positive amount"
-      );
+      window.alert(t("admin.peoplePositiveAmount"));
       return;
     }
     const reason =
@@ -454,11 +894,7 @@ export default function AdminUsersPage() {
         reason: reason.trim() || "Wallet deposit",
         adminId: session.id,
       });
-      setMsg(
-        locale === "hi"
-          ? `${name} के वॉलेट में ${formatInr(amount)} जमा`
-          : `Deposited ${formatInr(amount)} to ${name}'s wallet`
-      );
+      setMsg(t("admin.peopleDeposited", { amount: formatInr(amount), name }));
       refresh();
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Deposit failed");
@@ -466,7 +902,7 @@ export default function AdminUsersPage() {
     }
   };
 
-  const promptDelete = (userId: string, name: string) => {
+  const promptDelete = async (userId: string, name: string) => {
     if (!session) return;
     const hist = getUserHistorySummary(userId);
     const canHard = hist.canHardDelete;
@@ -493,11 +929,10 @@ export default function AdminUsersPage() {
       return;
     }
     try {
-      deleteUserAccount(userId, session.id, { force: true });
+      await deleteUserAccountAndSync(userId, session.id, { force: true });
       if (viewUserId === userId) setViewUserId(null);
-      setMsg(
-        locale === "hi" ? `${name} हटा दिया गया` : `${name} deleted`
-      );
+      setCloudPending((p) => p.filter((u) => u.id !== userId));
+      setMsg(t("admin.peopleDeleted", { name }));
       refresh();
     } catch (err) {
       window.alert(err instanceof Error ? err.message : "Delete failed");
@@ -511,7 +946,7 @@ export default function AdminUsersPage() {
       { label: locale === "hi" ? "फ़ोन" : "Phone", value: u.phone },
       {
         label: locale === "hi" ? "रोल" : "Role",
-        value: u.role,
+        value: staffRoleLabel(u.role, locale),
       },
       {
         label: locale === "hi" ? "कंपनी" : "Company",
@@ -589,7 +1024,15 @@ export default function AdminUsersPage() {
         value: u.revokedReason,
       });
     }
-    if (u.passwordVisible) {
+    if (u.passwordResetRequestedAt) {
+      rows.push({
+        label: t("admin.peoplePasswordRequests"),
+        value: new Date(u.passwordResetRequestedAt).toLocaleString(
+          locale === "hi" ? "hi-IN" : "en-IN"
+        ),
+      });
+    }
+    if (u.passwordVisible && canManageStaff) {
       rows.push({
         label: locale === "hi" ? "पासवर्ड" : "Password",
         value: u.passwordVisible,
@@ -600,8 +1043,14 @@ export default function AdminUsersPage() {
 
   const tabs: { key: PeopleTab; label: string }[] = [
     { key: "dealers", label: t("admin.tabDealers") },
-    { key: "staff", label: t("admin.tabStaff") },
-    { key: "tools", label: t("admin.tabTools") },
+    ...(canManageStaff
+      ? [
+          { key: "staff" as const, label: t("admin.tabStaff") },
+          { key: "jobs" as const, label: t("admin.tabJobs") },
+          { key: "tools" as const, label: t("admin.tabTools") },
+          { key: "log" as const, label: t("admin.tabPeopleLog") },
+        ]
+      : []),
   ];
 
   return (
@@ -610,10 +1059,13 @@ export default function AdminUsersPage() {
         <div>
           <h1 className="text-2xl font-semibold">{t("admin.users")}</h1>
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {t("admin.usersHint")}
+            {canManageStaff
+              ? t("admin.usersHint")
+              : t("admin.usersHintDealers")}
+            {pulling ? ` · ${t("admin.peopleRefreshing")}` : ""}
           </p>
         </div>
-        {tab === "staff" ? (
+        {tab === "staff" && canManageStaff ? (
           <button
             type="button"
             className="tt-btn tt-btn-dark"
@@ -626,7 +1078,20 @@ export default function AdminUsersPage() {
             {t("admin.createStaff")}
           </button>
         ) : null}
-        {tab === "dealers" ? (
+        {tab === "jobs" && isOwner ? (
+          <button
+            type="button"
+            className="tt-btn tt-btn-dark"
+            onClick={() => {
+              document.getElementById("create-job-form")?.scrollIntoView({
+                behavior: "smooth",
+              });
+            }}
+          >
+            {t("admin.peopleNewJob")}
+          </button>
+        ) : null}
+        {tab === "dealers" && canManageStaff ? (
           <button
             type="button"
             className="tt-btn tt-btn-dark"
@@ -636,7 +1101,7 @@ export default function AdminUsersPage() {
                 ?.scrollIntoView({ behavior: "smooth" });
             }}
           >
-            {locale === "hi" ? "+ नया डीलर" : "+ Create dealer"}
+            {t("admin.peopleCreateDealer")}
           </button>
         ) : null}
       </div>
@@ -660,7 +1125,9 @@ export default function AdminUsersPage() {
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-[var(--brand-deep)]">
-                {locale === "hi" ? "यूज़र जानकारी" : "User info"}
+                {viewingUser.role === "customer" && canManageDealerFile
+                  ? t("admin.peopleEditDealer")
+                  : t("admin.peopleUserInfo")}
               </h2>
               <p className="text-xs text-[var(--ink-muted)]">
                 {viewingUser.name} · {viewingUser.phone}
@@ -671,38 +1138,123 @@ export default function AdminUsersPage() {
               className="tt-btn tt-btn-outline"
               onClick={() => setViewUserId(null)}
             >
-              {locale === "hi" ? "बंद करें" : "Close"}
+              {t("admin.peopleClose")}
             </button>
           </div>
-          <dl className="grid gap-2 sm:grid-cols-2">
-            {infoRows(viewingUser).map((row) => (
-              <div
-                key={row.label}
-                className="rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2"
-              >
-                <dt className="text-[10px] font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-                  {row.label}
-                </dt>
-                <dd className="mt-0.5 break-words text-sm font-medium text-[var(--ink)]">
-                  {row.value}
-                </dd>
+          {viewingUser.role === "customer" && canManageDealerFile ? (
+            <form
+              className="grid gap-3 sm:grid-cols-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void saveDealerFile();
+              }}
+            >
+              <input
+                className="tt-input"
+                placeholder={t("common.name")}
+                value={dealerEdit.name}
+                onChange={(e) =>
+                  setDealerEdit({ ...dealerEdit, name: e.target.value })
+                }
+                required
+              />
+              <input
+                className="tt-input"
+                type="tel"
+                placeholder={t("common.phone")}
+                value={dealerEdit.phone}
+                onChange={(e) =>
+                  setDealerEdit({ ...dealerEdit, phone: e.target.value })
+                }
+                required
+              />
+              <input
+                className="tt-input"
+                placeholder={t("admin.peopleCompany")}
+                value={dealerEdit.company}
+                onChange={(e) =>
+                  setDealerEdit({ ...dealerEdit, company: e.target.value })
+                }
+              />
+              <input
+                className="tt-input"
+                placeholder={t("admin.peopleGst")}
+                value={dealerEdit.gstOrAadhar}
+                onChange={(e) =>
+                  setDealerEdit({ ...dealerEdit, gstOrAadhar: e.target.value })
+                }
+              />
+              <input
+                className="tt-input sm:col-span-2"
+                placeholder={t("admin.peopleAddress")}
+                value={dealerEdit.address}
+                onChange={(e) =>
+                  setDealerEdit({ ...dealerEdit, address: e.target.value })
+                }
+              />
+              <input
+                className="tt-input"
+                placeholder={t("admin.peoplePincode")}
+                value={dealerEdit.pincode}
+                onChange={(e) =>
+                  setDealerEdit({ ...dealerEdit, pincode: e.target.value })
+                }
+              />
+              <NumberField
+                className="tt-input"
+                min={0}
+                step="1"
+                emptyAs={null}
+                placeholder={t("admin.peopleCreditLimit")}
+                value={dealerEdit.creditLimit}
+                onValueChange={(v) =>
+                  setDealerEdit({
+                    ...dealerEdit,
+                    creditLimit: typeof v === "number" ? v : "",
+                  })
+                }
+              />
+              <TransportInput
+                className="tt-input sm:col-span-2"
+                placeholder={t("admin.peopleTransport")}
+                value={dealerEdit.transport}
+                onChange={(transport) =>
+                  setDealerEdit({ ...dealerEdit, transport })
+                }
+              />
+              <div className="sm:col-span-2">
+                <button type="submit" className="tt-btn tt-btn-dark" disabled={!!reviewBusyId}>
+                  {t("admin.peopleSaveDealer")}
+                </button>
               </div>
-            ))}
-          </dl>
+            </form>
+          ) : (
+            <dl className="grid gap-2 sm:grid-cols-2">
+              {infoRows(viewingUser).map((row) => (
+                <div
+                  key={row.label}
+                  className="rounded-lg border border-[var(--line)] bg-[var(--surface)] px-3 py-2"
+                >
+                  <dt className="text-[10px] font-bold uppercase tracking-wide text-[var(--ink-muted)]">
+                    {row.label}
+                  </dt>
+                  <dd className="mt-0.5 break-words text-sm font-medium text-[var(--ink)]">
+                    {row.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
           {viewingHistory ? (
             <div className="rounded-xl bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--ink)]">
-              {locale === "hi" ? "इतिहास: " : "History: "}
-              <strong>{viewingHistory.orders}</strong>{" "}
-              {locale === "hi" ? "ऑर्डर" : "orders"} ·{" "}
-              <strong>{viewingHistory.walletTxs}</strong>{" "}
-              {locale === "hi" ? "वॉलेट" : "wallet"} ·{" "}
-              <strong>{viewingHistory.vouchers}</strong>{" "}
-              {locale === "hi" ? "वाउचर" : "vouchers"}
+              {t("admin.peopleHistory", {
+                orders: viewingHistory.orders,
+                wallet: viewingHistory.walletTxs,
+                vouchers: viewingHistory.vouchers,
+              })}
               {!viewingHistory.canHardDelete ? (
                 <span className="ml-2 text-[var(--danger)]">
-                  {locale === "hi"
-                    ? "(Delete = force delete)"
-                    : "(Delete = force delete)"}
+                  {t("admin.peopleForceDeleteNote")}
                 </span>
               ) : null}
             </div>
@@ -728,33 +1280,41 @@ export default function AdminUsersPage() {
                       promptDeposit(viewingUser.id, viewingUser.name)
                     }
                   >
-                    {locale === "hi" ? "वॉलेट में जमा" : "Deposit to wallet"}
+                    {t("admin.peopleDepositWallet")}
                   </button>
                 ) : null}
+                {canManageDealerFile ? (
+                  <>
                 {viewingUser.active ? (
                   <button
                     type="button"
                     className="tt-btn tt-btn-outline text-[var(--danger)]"
-                    onClick={() => promptRevoke(viewingUser.id, viewingUser.name)}
+                    disabled={reviewBusyId === viewingUser.id}
+                    onClick={() => void promptRevoke(viewingUser.id, viewingUser.name)}
                   >
-                    {locale === "hi" ? "एक्सेस रोकें" : "Revoke access"}
+                    {t("admin.peopleRevoke")}
                   </button>
                 ) : (
                   <button
                     type="button"
                     className="tt-btn tt-btn-outline"
-                    onClick={() => doRestore(viewingUser.id, viewingUser.name)}
+                    disabled={reviewBusyId === viewingUser.id}
+                    onClick={() => void doRestore(viewingUser.id, viewingUser.name)}
                   >
-                    {locale === "hi" ? "फिर चालू" : "Restore"}
+                    {t("admin.peopleRestore")}
                   </button>
                 )}
+                  </>
+                ) : null}
+                {canManageStaff ? (
                 <button
                   type="button"
                   className="tt-btn tt-btn-outline text-[var(--danger)]"
                   onClick={() => promptDelete(viewingUser.id, viewingUser.name)}
                 >
-                  {locale === "hi" ? "Force Delete" : "Force Delete"}
+                  {t("admin.peopleForceDelete")}
                 </button>
+                ) : null}
               </>
               );
             })()}
@@ -784,6 +1344,51 @@ export default function AdminUsersPage() {
         ))}
       </div>
 
+      {canManageStaff && passwordRequests.length ? (
+        <div className="mt-5 rounded-2xl border border-sky-300 bg-sky-50 p-5">
+          <h2 className="font-semibold text-sky-950">
+            {t("admin.peoplePasswordRequests")} ({passwordRequests.length})
+          </h2>
+          <p className="mt-1 text-sm text-sky-900">
+            {t("admin.peoplePasswordRequestHint")}
+          </p>
+          <ul className="mt-4 space-y-3">
+            {passwordRequests.map((u) => (
+              <li
+                key={u.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white px-4 py-3 text-sm"
+              >
+                <div>
+                  <p className="font-semibold">{u.name}</p>
+                  <p className="text-[var(--ink-muted)]">
+                    {u.phone}
+                    {u.company ? ` · ${u.company}` : ""}
+                    {u.role !== "customer" ? ` · ${u.role}` : ""}
+                  </p>
+                  {u.passwordResetRequestedAt ? (
+                    <p className="mt-0.5 text-xs text-sky-800">
+                      {t("admin.peoplePasswordRequestedAt", {
+                        when: new Date(
+                          u.passwordResetRequestedAt
+                        ).toLocaleString(locale === "hi" ? "hi-IN" : "en-IN"),
+                      })}
+                    </p>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  className="tt-btn tt-btn-dark"
+                  disabled={resetBusyId === u.id}
+                  onClick={() => void promptResetPassword(u.id, u.name)}
+                >
+                  {t("admin.peopleReset")}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {tab === "dealers" ? (
         <>
           {pending.length ? (
@@ -808,52 +1413,21 @@ export default function AdminUsersPage() {
                       <button
                         type="button"
                         className="tt-btn tt-btn-dark"
-                        onClick={() => {
-                          approveDealer(u.id, session.id);
-                          setMsg(
-                            locale === "hi"
-                              ? `${u.name} अप्रूव हो गया`
-                              : `${u.name} approved`
-                          );
-                          // Only lands if they already have a device
-                          // subscribed — a first-time dealer has never
-                          // been able to log in.
-                          void notifyUserPush({
-                            userId: u.id,
-                            title:
-                              u.locale === "hi"
-                                ? "अकाउंट मंज़ूर"
-                                : "Account approved",
-                            body:
-                              u.locale === "hi"
-                                ? "अब आप लॉगिन करके ऑर्डर कर सकते हैं"
-                                : "You can now login and place orders",
-                            url: `/${u.locale === "hi" ? "hi" : "en"}/catalog`,
-                          });
-                          refresh();
-                        }}
+                        disabled={reviewBusyId === u.id}
+                        onClick={() => void reviewDealerCloud(u, "approve")}
                       >
                         {t("admin.approve")}
                       </button>
                       <button
                         type="button"
                         className="tt-btn tt-btn-outline text-[var(--danger)]"
+                        disabled={reviewBusyId === u.id}
                         onClick={() => {
                           if (
-                            !confirm(
-                              locale === "hi"
-                                ? "इस रजिस्ट्रेशन को अस्वीकार करें?"
-                                : "Reject this registration?"
-                            )
+                            !confirm(t("admin.peopleRejectConfirm"))
                           )
                             return;
-                          rejectDealer(u.id, session.id);
-                          setMsg(
-                            locale === "hi"
-                              ? `${u.name} अस्वीकृत`
-                              : `${u.name} rejected`
-                          );
-                          refresh();
+                          void reviewDealerCloud(u, "reject");
                         }}
                       >
                         {t("admin.reject")}
@@ -865,22 +1439,131 @@ export default function AdminUsersPage() {
             </div>
           ) : null}
 
+          <div className="tt-panel mt-5 space-y-3 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                className="tt-input min-w-[220px] flex-1"
+                placeholder={t("admin.peopleSearch")}
+                value={dealerSearch}
+                onChange={(e) => setDealerSearch(e.target.value)}
+              />
+              {(
+                [
+                  ["all", t("common.all")],
+                  ["pending", t("admin.peopleFilterPending")],
+                  ["approved", t("admin.peopleFilterApproved")],
+                  ["revoked", t("admin.peopleFilterRevoked")],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setDealerFilter(key)}
+                  className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
+                    dealerFilter === key
+                      ? "tt-selected bg-[var(--brand-deep)] text-white"
+                      : "border border-[var(--line)] bg-white text-[var(--ink-muted)]"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-[var(--ink-muted)]">
+                {t("admin.peopleSelected", { n: selectedDealers.size })}
+              </span>
+              <button
+                type="button"
+                className="tt-btn tt-btn-dark"
+                disabled={!!reviewBusyId}
+                onClick={() =>
+                  void bulkReviewDealers(
+                    visibleDealers
+                      .filter(
+                        (u) =>
+                          selectedDealers.has(u.id) &&
+                          u.active &&
+                          !u.approved
+                      )
+                      .map((u) => u.id),
+                    "approve"
+                  )
+                }
+              >
+                {t("admin.peopleBulkApprove")}
+              </button>
+              {canManageDealerFile ? (
+                <>
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline text-[var(--danger)]"
+                disabled={!!reviewBusyId}
+                onClick={() => void bulkRevokeSelected()}
+              >
+                {t("admin.peopleBulkRevoke")}
+              </button>
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline"
+                disabled={!!reviewBusyId}
+                onClick={() => void bulkRestoreSelected()}
+              >
+                {t("admin.peopleBulkRestore")}
+              </button>
+                </>
+              ) : null}
+            </div>
+          </div>
+
           <div className="tt-panel mt-5 overflow-x-auto">
             <table className="tt-table min-w-[1200px]">
               <thead>
                 <tr>
+                  <th>
+                    <input
+                      type="checkbox"
+                      checked={
+                        visibleDealers.length > 0 &&
+                        visibleDealers.every((u) => selectedDealers.has(u.id))
+                      }
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedDealers(
+                            new Set(visibleDealers.map((u) => u.id))
+                          );
+                        } else {
+                          setSelectedDealers(new Set());
+                        }
+                      }}
+                    />
+                  </th>
                   <th>{t("common.name")}</th>
                   <th>{t("common.phone")}</th>
                   <th>{t("common.status")}</th>
                   <th>{t("common.wallet")}</th>
-                  <th>Lifting kg</th>
-                  <th>{locale === "hi" ? "पासवर्ड" : "Password"}</th>
+                  <th>{t("admin.peopleLifting")}</th>
+                  <th>{t("admin.peoplePassword")}</th>
                   <th>{t("common.actions")}</th>
                 </tr>
               </thead>
               <tbody>
-                {dealers.map((u) => (
+                {visibleDealers.map((u) => (
                   <tr key={u.id}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedDealers.has(u.id)}
+                        onChange={(e) => {
+                          setSelectedDealers((cur) => {
+                            const next = new Set(cur);
+                            if (e.target.checked) next.add(u.id);
+                            else next.delete(u.id);
+                            return next;
+                          });
+                        }}
+                      />
+                    </td>
                     <td>
                       <button
                         type="button"
@@ -911,28 +1594,41 @@ export default function AdminUsersPage() {
                               : "")
                           }
                         >
-                          {locale === "hi" ? "एक्सेस बंद" : "Revoked"}
+                          {t("admin.peopleRevoked")}
                         </span>
                       ) : u.approved ? (
                         <span className="text-xs font-semibold text-[var(--ok)]">
-                          {locale === "hi" ? "अप्रूव्ड" : "Approved"}
+                          {t("admin.peopleApproved")}
                         </span>
                       ) : (
-                        <button
-                          type="button"
-                          className="text-xs font-semibold text-[var(--brand)]"
-                          onClick={() => {
-                            approveDealer(u.id, session.id);
-                            refresh();
-                          }}
-                        >
-                          {t("admin.approve")}
-                        </button>
+                        <div className="flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            className="text-xs font-semibold text-[var(--brand)]"
+                            disabled={reviewBusyId === u.id}
+                            onClick={() => void reviewDealerCloud(u, "approve")}
+                          >
+                            {t("admin.approve")}
+                          </button>
+                          <button
+                            type="button"
+                            className="text-xs font-semibold text-[var(--danger)]"
+                            disabled={reviewBusyId === u.id}
+                            onClick={() => {
+                              if (!confirm(t("admin.peopleRejectConfirm"))) {
+                                return;
+                              }
+                              void reviewDealerCloud(u, "reject");
+                            }}
+                          >
+                            {t("admin.reject")}
+                          </button>
+                        </div>
                       )}
                     </td>
                     <td>{formatInr(u.walletBalance)}</td>
                     <td>{u.liftingProgressKg}</td>
-                    <td>{renderPasswordCell(u)}</td>
+                    <td>{canManageStaff ? renderPasswordCell(u) : "—"}</td>
                     <td>
                       <div className="flex flex-wrap gap-1.5">
                         <button
@@ -940,7 +1636,7 @@ export default function AdminUsersPage() {
                           className="text-xs font-semibold text-[var(--brand)] underline underline-offset-2"
                           onClick={() => setViewUserId(u.id)}
                         >
-                          {locale === "hi" ? "जानकारी" : "Info"}
+                          {t("admin.peopleInfo")}
                         </button>
                         {canDeposit ? (
                           <button
@@ -948,51 +1644,53 @@ export default function AdminUsersPage() {
                             className="text-xs font-semibold text-[var(--ok)] underline underline-offset-2"
                             onClick={() => promptDeposit(u.id, u.name)}
                           >
-                            {locale === "hi" ? "जमा" : "Deposit"}
+                            {t("admin.peopleDeposit")}
                           </button>
                         ) : null}
-                        {u.active ? (
+                        {canManageDealerFile ? (
+                          u.active ? (
                           <button
                             type="button"
                             className="text-xs font-semibold text-[var(--danger)] underline underline-offset-2"
-                            onClick={() => promptRevoke(u.id, u.name)}
+                            disabled={reviewBusyId === u.id}
+                            onClick={() => void promptRevoke(u.id, u.name)}
                           >
-                            {locale === "hi" ? "एक्सेस रोकें" : "Revoke access"}
+                            {t("admin.peopleRevoke")}
                           </button>
                         ) : (
                           <button
                             type="button"
                             className="text-xs font-semibold text-[var(--ok)] underline underline-offset-2"
-                            onClick={() => doRestore(u.id, u.name)}
+                            disabled={reviewBusyId === u.id}
+                            onClick={() => void doRestore(u.id, u.name)}
                           >
-                            {locale === "hi" ? "फिर चालू" : "Restore"}
+                            {t("admin.peopleRestore")}
                           </button>
-                        )}
+                        )
+                        ) : null}
+                        {canManageStaff ? (
                         <button
                           type="button"
                           className="text-xs font-semibold text-[var(--danger)] underline underline-offset-2"
                           onClick={() => promptDelete(u.id, u.name)}
-                          title={
-                            locale === "hi"
-                              ? "Force delete — लॉगिन हटाएँ"
-                              : "Force delete — remove login"
-                          }
                         >
-                          {locale === "hi" ? "हटाएँ" : "Delete"}
+                          {t("common.delete")}
                         </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {!dealers.length ? (
+            {!visibleDealers.length ? (
               <p className="p-6 text-sm text-[var(--ink-muted)]">
                 {t("common.empty")}
               </p>
             ) : null}
           </div>
 
+          {canManageStaff ? (
           <form
             id="create-dealer-form"
             onSubmit={onCreateDealer}
@@ -1001,12 +1699,10 @@ export default function AdminUsersPage() {
             <div className="flex flex-wrap items-end justify-between gap-2">
               <div>
                 <h2 className="font-semibold">
-                  {locale === "hi" ? "नया डीलर बनाएँ" : "Create dealer"}
+                  {t("admin.peopleCreateDealer")}
                 </h2>
                 <p className="text-xs text-[var(--ink-muted)]">
-                  {locale === "hi"
-                    ? "एडमिन द्वारा बनाया गया — अप्रूवल की ज़रूरत नहीं। पासवर्ड यहीं देख सकते हैं।"
-                    : "Admin-created — no approval wait. Password stays visible in this table."}
+                  {t("admin.peopleCreateDealerHint")}
                 </p>
               </div>
             </div>
@@ -1034,7 +1730,7 @@ export default function AdminUsersPage() {
               <input
                 className="tt-input"
                 type="text"
-                placeholder={locale === "hi" ? "पासवर्ड" : "Password"}
+                placeholder={t("admin.peoplePassword")}
                 value={dealerForm.password}
                 onChange={(e) =>
                   setDealerForm({ ...dealerForm, password: e.target.value })
@@ -1043,7 +1739,7 @@ export default function AdminUsersPage() {
               />
               <input
                 className="tt-input"
-                placeholder={locale === "hi" ? "कंपनी (वैकल्पिक)" : "Company (optional)"}
+                placeholder={t("admin.peopleCompany")}
                 value={dealerForm.company}
                 onChange={(e) =>
                   setDealerForm({ ...dealerForm, company: e.target.value })
@@ -1051,7 +1747,7 @@ export default function AdminUsersPage() {
               />
               <input
                 className="tt-input sm:col-span-2"
-                placeholder={locale === "hi" ? "पता" : "Address"}
+                placeholder={t("admin.peopleAddress")}
                 value={dealerForm.address}
                 onChange={(e) =>
                   setDealerForm({ ...dealerForm, address: e.target.value })
@@ -1059,7 +1755,7 @@ export default function AdminUsersPage() {
               />
               <input
                 className="tt-input"
-                placeholder={locale === "hi" ? "पिनकोड" : "Pincode"}
+                placeholder={t("admin.peoplePincode")}
                 value={dealerForm.pincode}
                 onChange={(e) =>
                   setDealerForm({ ...dealerForm, pincode: e.target.value })
@@ -1067,7 +1763,7 @@ export default function AdminUsersPage() {
               />
               <input
                 className="tt-input"
-                placeholder="GST / Aadhaar"
+                placeholder={t("admin.peopleGst")}
                 value={dealerForm.gstOrAadhar}
                 onChange={(e) =>
                   setDealerForm({ ...dealerForm, gstOrAadhar: e.target.value })
@@ -1075,7 +1771,7 @@ export default function AdminUsersPage() {
               />
               <TransportInput
                 className="tt-input sm:col-span-2"
-                placeholder={locale === "hi" ? "ट्रांसपोर्ट" : "Transport"}
+                placeholder={t("admin.peopleTransport")}
                 value={dealerForm.transport}
                 onChange={(transport) =>
                   setDealerForm({ ...dealerForm, transport })
@@ -1083,13 +1779,14 @@ export default function AdminUsersPage() {
               />
             </div>
             <button type="submit" className="tt-btn tt-btn-dark">
-              {locale === "hi" ? "डीलर बनाएँ" : "Create dealer"}
+              {t("admin.peopleCreateDealer")}
             </button>
           </form>
+          ) : null}
         </>
       ) : null}
 
-      {tab === "staff" ? (
+      {tab === "staff" && canManageStaff ? (
         <>
           <p className="mt-4 text-sm text-[var(--ink-muted)]">
             {t("admin.ownersNote")}
@@ -1098,27 +1795,33 @@ export default function AdminUsersPage() {
             <div className="tt-panel mt-4 space-y-3 p-5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="font-semibold">
-                  {t("admin.customPermissions")} — {permEditUser.name}
+                  {t("admin.peopleCustomize")} — {permEditUser.name}
                 </h2>
                 <button
                   type="button"
                   className="tt-btn tt-btn-outline"
                   onClick={() => setPermEditId(null)}
                 >
-                  {locale === "hi" ? "बंद करें" : "Close"}
+                  {t("admin.peopleClose")}
                 </button>
               </div>
+              <p className="text-xs text-[var(--ink-muted)]">
+                {t("admin.peopleCustomizeHint")}
+              </p>
               <StaffPermissionsPanel
                 role={permEditUser.role}
-                checked={effectiveCapabilities(permEditUser)}
+                checked={effectiveCapabilities(permEditUser, capCtx)}
                 locale={locale}
+                presets={db?.rolePresets}
                 onChange={(caps) => {
                   const overrides = capabilityOverridesFromChecked(
                     permEditUser.role,
-                    caps
+                    caps,
+                    db?.rolePresets
                   );
                   upsertUser({
                     ...permEditUser,
+                    jobId: undefined,
                     extraCapabilities: overrides.extraCapabilities.length
                       ? overrides.extraCapabilities
                       : undefined,
@@ -1137,9 +1840,10 @@ export default function AdminUsersPage() {
                 <tr>
                   <th>{t("common.name")}</th>
                   <th>{t("common.phone")}</th>
-                  <th>Role</th>
+                  <th>{t("admin.peopleRole")}</th>
+                  <th>{t("admin.peopleJob")}</th>
                   <th>{t("common.status")}</th>
-                  <th>{locale === "hi" ? "पासवर्ड" : "Password"}</th>
+                  <th>{t("admin.peoplePassword")}</th>
                   <th>{t("common.actions")}</th>
                 </tr>
               </thead>
@@ -1160,7 +1864,7 @@ export default function AdminUsersPage() {
                         {u.name}
                         {u.id === session.id ? (
                           <span className="ml-2 text-xs text-[var(--ink-muted)]">
-                            ({locale === "hi" ? "आप" : "you"})
+                            ({t("admin.peopleYou")})
                           </span>
                         ) : null}
                       </td>
@@ -1177,11 +1881,7 @@ export default function AdminUsersPage() {
                               nextRole !== "super_admin" &&
                               otherOwners === 0
                             ) {
-                              setMsg(
-                                locale === "hi"
-                                  ? "अंतिम ओनर को डिमोट नहीं कर सकते"
-                                  : "Cannot demote the last owner"
-                              );
+                              setMsg(t("admin.peopleLastOwnerDemote"));
                               return;
                             }
                             upsertUser({
@@ -1189,16 +1889,54 @@ export default function AdminUsersPage() {
                               role: nextRole,
                               extraCapabilities: undefined,
                               deniedCapabilities: undefined,
+                              jobId: undefined,
                             });
                             refresh();
                           }}
                         >
                           {STAFF_ROLES.map((r) => (
                             <option key={r} value={r}>
-                              {r}
+                              {staffRoleLabel(r, locale)}
                             </option>
                           ))}
                         </select>
+                      </td>
+                      <td>
+                        {u.role === "super_admin" ? (
+                          <span className="text-xs text-[var(--ink-muted)]">
+                            —
+                          </span>
+                        ) : (
+                          <select
+                            className="tt-select"
+                            value={u.jobId || ""}
+                            disabled={locked || !isOwner}
+                            onChange={(e) => {
+                              try {
+                                assignStaffJob(
+                                  u.id,
+                                  e.target.value || null,
+                                  session.id
+                                );
+                                setMsg(t("admin.peopleJobAssigned"));
+                                refresh();
+                              } catch (err) {
+                                setMsg(
+                                  err instanceof Error
+                                    ? err.message
+                                    : t("admin.peopleJobAssigned")
+                                );
+                              }
+                            }}
+                          >
+                            <option value="">{t("admin.peopleNoJob")}</option>
+                            {(db?.staffJobs ?? []).map((job) => (
+                              <option key={job.id} value={job.id}>
+                                {staffJobLabel(job, locale)}
+                              </option>
+                            ))}
+                          </select>
+                        )}
                       </td>
                       <td>
                         {!u.active ? (
@@ -1206,11 +1944,11 @@ export default function AdminUsersPage() {
                             className="text-xs font-semibold text-[var(--danger)]"
                             title={u.revokedReason || ""}
                           >
-                            {locale === "hi" ? "एक्सेस बंद" : "Revoked"}
+                            {t("admin.peopleRevoked")}
                           </span>
                         ) : (
                           <span className="text-xs font-semibold text-[var(--ok)]">
-                            {locale === "hi" ? "चालू" : "Active"}
+                            {t("admin.peopleActive")}
                           </span>
                         )}
                       </td>
@@ -1218,11 +1956,11 @@ export default function AdminUsersPage() {
                       <td>
                         {locked && u.role === "super_admin" && otherOwners === 0 ? (
                           <span className="text-xs text-[var(--ink-muted)]">
-                            {locale === "hi" ? "सुरक्षित" : "Protected"}
+                            {t("admin.peopleProtected")}
                           </span>
                         ) : locked ? (
                           <span className="text-xs text-[var(--ink-muted)]">
-                            {locale === "hi" ? "स्वयं" : "Self"}
+                            {t("admin.peopleSelf")}
                           </span>
                         ) : (
                           <div className="flex flex-wrap gap-1.5">
@@ -1231,7 +1969,7 @@ export default function AdminUsersPage() {
                               className="text-xs font-semibold text-[var(--brand)] underline underline-offset-2"
                               onClick={() => setViewUserId(u.id)}
                             >
-                              {locale === "hi" ? "जानकारी" : "Info"}
+                              {t("admin.peopleInfo")}
                             </button>
                             {isOwner && u.role !== "super_admin" ? (
                               <button
@@ -1239,7 +1977,7 @@ export default function AdminUsersPage() {
                                 className="text-xs font-semibold text-[var(--brand)] underline underline-offset-2"
                                 onClick={() => setPermEditId(u.id)}
                               >
-                                {t("admin.customPermissions")}
+                                {t("admin.peopleCustomize")}
                               </button>
                             ) : null}
                             {u.active ? (
@@ -1248,7 +1986,7 @@ export default function AdminUsersPage() {
                                 className="text-xs font-semibold text-[var(--danger)] underline underline-offset-2"
                                 onClick={() => promptRevoke(u.id, u.name)}
                               >
-                                {locale === "hi" ? "एक्सेस रोकें" : "Revoke access"}
+                                {t("admin.peopleRevoke")}
                               </button>
                             ) : (
                               <button
@@ -1256,7 +1994,7 @@ export default function AdminUsersPage() {
                                 className="text-xs font-semibold text-[var(--ok)] underline underline-offset-2"
                                 onClick={() => doRestore(u.id, u.name)}
                               >
-                                {locale === "hi" ? "फिर चालू" : "Restore"}
+                                {t("admin.peopleRestore")}
                               </button>
                             )}
                             <button
@@ -1264,7 +2002,7 @@ export default function AdminUsersPage() {
                               className="text-xs font-semibold text-[var(--danger)] underline underline-offset-2"
                               onClick={() => promptDelete(u.id, u.name)}
                             >
-                              {locale === "hi" ? "हटाएँ" : "Delete"}
+                              {t("common.delete")}
                             </button>
                           </div>
                         )}
@@ -1317,13 +2055,13 @@ export default function AdminUsersPage() {
                 setForm({
                   ...form,
                   role,
-                  caps: rolePresetCapabilities(role),
+                  caps: rolePresetCapabilities(role, db?.rolePresets),
                 });
               }}
             >
               {STAFF_ROLES.map((r) => (
                 <option key={r} value={r}>
-                  {r}
+                  {staffRoleLabel(r, locale)}
                 </option>
               ))}
             </select>
@@ -1332,6 +2070,7 @@ export default function AdminUsersPage() {
                 role={form.role}
                 checked={form.caps}
                 locale={locale}
+                presets={db?.rolePresets}
                 title={t("admin.customPermissions")}
                 onChange={(caps) => setForm({ ...form, caps })}
               />
@@ -1347,7 +2086,18 @@ export default function AdminUsersPage() {
         </>
       ) : null}
 
-      {tab === "tools" ? (
+      {tab === "jobs" && canManageStaff ? (
+        <PeopleJobsTab
+          db={db}
+          locale={locale}
+          isOwner={isOwner}
+          actorId={session.id}
+          onMsg={setMsg}
+          onRefresh={refresh}
+        />
+      ) : null}
+
+      {tab === "tools" && canManageStaff ? (
         <div className="mt-5 grid gap-5 lg:grid-cols-2">
           <form
             className="tt-panel space-y-3 p-5"
@@ -1360,12 +2110,12 @@ export default function AdminUsersPage() {
                 reason: walletForm.reason,
                 adminId: session.id,
               });
-              setMsg(locale === "hi" ? "वॉलेट अपडेट" : "Wallet updated");
+              setMsg(t("admin.peopleWalletUpdated"));
               refresh();
             }}
           >
             <h2 className="font-semibold">
-              {locale === "hi" ? "वॉलेट में जमा / काटें" : "Deposit / adjust wallet"}
+              {t("admin.peopleWalletDeposit")}
             </h2>
             <select
               className="tt-select"
@@ -1387,7 +2137,7 @@ export default function AdminUsersPage() {
               min={0.01}
               step="0.01"
               emptyAs={null}
-              placeholder={locale === "hi" ? "जमा राशि ₹" : "Deposit amount ₹"}
+              placeholder={t("admin.peopleDepositAmount")}
               value={walletForm.amount || ""}
               onValueChange={(v) =>
                 setWalletForm({
@@ -1397,9 +2147,7 @@ export default function AdminUsersPage() {
               }
             />
             <p className="text-xs text-[var(--ink-muted)]">
-              {locale === "hi"
-                ? "जमा = धनात्मक। काटने के लिए ऋण संख्या डालें।"
-                : "Deposit = positive amount. Use a negative number to debit."}
+              {t("admin.peopleWalletHint")}
             </p>
             <input
               className="tt-input"
@@ -1407,24 +2155,25 @@ export default function AdminUsersPage() {
               onChange={(e) =>
                 setWalletForm({ ...walletForm, reason: e.target.value })
               }
-              placeholder={locale === "hi" ? "कारण" : "Reason"}
+              placeholder={t("admin.peopleReason")}
             />
             <button type="submit" className="tt-btn tt-btn-dark">
-              {locale === "hi" ? "जमा करें" : "Deposit"}
+              {t("admin.peopleDeposit")}
             </button>
           </form>
 
+          {checkCapability(session, db, "manage_schemes") ? (
           <form
             className="tt-panel space-y-3 p-5"
             onSubmit={(e) => {
               e.preventDefault();
               if (!assignForm.userId || !assignForm.schemeId) return;
               assignSchemeToUser(assignForm.userId, assignForm.schemeId);
-              setMsg(locale === "hi" ? "स्कीम असाइन" : "Scheme assigned");
+              setMsg(t("admin.peopleSchemeAssigned"));
               refresh();
             }}
           >
-            <h2 className="font-semibold">Assign scheme</h2>
+            <h2 className="font-semibold">{t("admin.peopleAssignScheme")}</h2>
             <select
               className="tt-select"
               value={assignForm.userId}
@@ -1456,9 +2205,86 @@ export default function AdminUsersPage() {
               ))}
             </select>
             <button type="submit" className="tt-btn tt-btn-dark">
-              Assign
+              {t("admin.peopleAssign")}
             </button>
           </form>
+          ) : (
+            <div className="tt-panel space-y-2 p-5">
+              <h2 className="font-semibold">{t("admin.peopleAssignScheme")}</h2>
+              <p className="text-sm text-[var(--ink-muted)]">
+                {t("admin.peopleNeedSchemes")}
+              </p>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {tab === "log" && canManageStaff ? (
+        <div className="tt-panel mt-5 overflow-x-auto">
+          <div className="border-b border-[var(--line)] px-4 py-3">
+            <h2 className="font-semibold">{t("admin.tabPeopleLog")}</h2>
+            <p className="text-xs text-[var(--ink-muted)]">
+              {t("admin.peopleLogHint")}
+            </p>
+          </div>
+          <table className="tt-table min-w-[900px]">
+            <thead>
+              <tr>
+                <th>{t("admin.peopleLogWhen")}</th>
+                <th>{t("admin.peopleLogWho")}</th>
+                <th>{t("admin.peopleLogAction")}</th>
+                <th>{t("admin.tabDealers")}</th>
+                <th>{t("admin.peopleLogDetail")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(db?.peopleActivity ?? []).slice(0, 80).map((row) => {
+                const actionLabel =
+                  row.action === "approve"
+                    ? t("admin.approve")
+                    : row.action === "reject"
+                      ? t("admin.reject")
+                      : row.action === "revoke"
+                        ? t("admin.peopleRevoke")
+                        : row.action === "restore"
+                          ? t("admin.peopleRestore")
+                          : t("admin.peopleLogEdit");
+                const detail = [
+                  row.reason,
+                  ...(row.changes ?? []).map(
+                    (c) => `${c.field}: ${c.from || "—"} → ${c.to || "—"}`
+                  ),
+                ]
+                  .filter(Boolean)
+                  .join(" · ");
+                return (
+                  <tr key={row.id}>
+                    <td className="whitespace-nowrap text-xs">
+                      {new Date(row.at).toLocaleString(
+                        locale === "hi" ? "hi-IN" : "en-IN"
+                      )}
+                    </td>
+                    <td>{row.actorName}</td>
+                    <td className="text-xs font-semibold">{actionLabel}</td>
+                    <td>
+                      <div className="font-medium">{row.userName}</div>
+                      <div className="font-mono text-xs text-[var(--ink-muted)]">
+                        {row.userPhone}
+                      </div>
+                    </td>
+                    <td className="text-xs text-[var(--ink-muted)]">
+                      {detail || "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!(db?.peopleActivity ?? []).length ? (
+            <p className="p-6 text-sm text-[var(--ink-muted)]">
+              {t("common.empty")}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </AdminShell>

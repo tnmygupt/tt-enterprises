@@ -1,10 +1,14 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
+import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { ExportButtons } from "@/components/ExportButtons";
+import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
 import {
   CreatePartyModal,
@@ -19,12 +23,19 @@ import {
 } from "@/lib/inventory";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
 import {
+  listOpenPurchaseOrders,
+  poLineRemaining,
+  poRemainingQty,
+} from "@/lib/purchase-orders";
+import {
   canViewFinancials,
   checkCapability,
+  createGoodsReceipt,
   listUnpricedGoodsReceipts,
   recordGoodsReceived,
   voidGoodsReceipt,
 } from "@/lib/store/db";
+import type { PurchaseOrder } from "@/lib/types";
 
 type LineDraft = {
   id: string;
@@ -34,6 +45,7 @@ type LineDraft = {
   itemLabel: string;
   qty: number;
   secondaryQty: number;
+  poLineId?: string;
 };
 
 function blankLine(): LineDraft {
@@ -48,34 +60,78 @@ function blankLine(): LineDraft {
   };
 }
 
+function linesFromPo(po: PurchaseOrder): LineDraft[] {
+  const remaining = po.lines.filter((l) => poLineRemaining(l) > 0.001);
+  if (!remaining.length) return [blankLine()];
+  return remaining.map((l) => {
+    const rem = poLineRemaining(l);
+    const ratio = l.qty > 0 ? rem / l.qty : 1;
+    return {
+      id: crypto.randomUUID(),
+      productId: l.productId || "",
+      variationId: l.variationId || "",
+      colorId: l.colorId || "",
+      itemLabel: l.itemLabel,
+      qty: rem,
+      secondaryQty: (l.secondaryQty ?? l.qty) * ratio,
+      poLineId: l.id,
+    };
+  });
+}
+
 export default function GoodsReceivedPage() {
+  return (
+    <Suspense
+      fallback={
+        <AccountsShell>
+          <p>Loading…</p>
+        </AccountsShell>
+      }
+    >
+      <GoodsReceivedInner />
+    </Suspense>
+  );
+}
+
+function GoodsReceivedInner() {
+  const t = useTranslations();
+  const search = useSearchParams();
+  const highlightId = search.get("id") || "";
   const { session } = useSession();
   const { db, refresh } = useDb();
   const isOwner = session ? canViewFinancials(session.role) : false;
+  const highlightRef = useRef<HTMLTableRowElement | null>(null);
 
   const [supplierId, setSupplierId] = useState("");
+  const [poId, setPoId] = useState("");
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [narration, setNarration] = useState("");
   const [lines, setLines] = useState<LineDraft[]>([blankLine()]);
   const [packingFile, setPackingFile] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
+  const [saving, setSaving] = useState(false);
   const [showSupplierModal, setShowSupplierModal] = useState(false);
   const [productModalLine, setProductModalLine] = useState<number | null>(
     null
   );
 
+  useEffect(() => {
+    if (!highlightId) return;
+    highlightRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [highlightId, db]);
+
   const catalog = useMemo(() => (db ? inventoryRows(db) : []), [db]);
-  const suppliers =
-    db?.parties.filter((p) => p.active && p.type === "supplier") ?? [];
   const supplierOptions = useMemo(
     () =>
-      suppliers.map((s) => ({
-        value: s.id,
-        label: s.name,
-        searchText: `${s.name} ${s.phone ?? ""} ${s.gstin ?? ""}`,
-      })),
-    [suppliers]
+      (db?.parties.filter((p) => p.active && p.type === "supplier") ?? []).map(
+        (s) => ({
+          value: s.id,
+          label: s.name,
+          searchText: `${s.name} ${s.phone ?? ""} ${s.gstin ?? ""}`,
+        })
+      ),
+    [db]
   );
   const unpriced = useMemo(
     () => (db ? listUnpricedGoodsReceipts(db) : []),
@@ -84,10 +140,14 @@ export default function GoodsReceivedPage() {
   const recent = useMemo(() => {
     if (!db) return [];
     return [...(db.goodsReceipts ?? [])]
-      .filter((g) => !g.voided)
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 30);
+      .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 40);
   }, [db]);
+  const openPos = useMemo(
+    () => listOpenPurchaseOrders(db?.purchaseOrders),
+    [db]
+  );
+  const selectedPo = openPos.find((p) => p.id === poId);
 
   const exportOptions = useMemo(
     () => ({
@@ -108,14 +168,14 @@ export default function GoodsReceivedPage() {
           supplier,
           g.lines.length,
           g.packingSlipName || (g.packingSlipDataUrl ? "Yes" : "—"),
-          billed ? "Priced" : "Needs pricing",
+          billed ? "Priced" : g.voided ? "Voided" : "Needs pricing",
         ];
       }),
     }),
     [db, recent]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -127,6 +187,7 @@ export default function GoodsReceivedPage() {
     e.preventDefault();
     setError("");
     setMsg("");
+    setSaving(true);
     try {
       let packingSlipDataUrl: string | undefined;
       let packingSlipName: string | undefined;
@@ -151,60 +212,88 @@ export default function GoodsReceivedPage() {
           throw new Error(`Enter quantity for ${l.itemLabel}`);
         }
       }
-      const { grn } = recordGoodsReceived({
-        supplierId,
-        date,
-        narration,
-        packingSlipDataUrl,
-        packingSlipName,
-        createdBy: session.id,
-        lines: cleaned.map((l) => ({
-          productId: l.productId,
-          variationId: l.variationId || undefined,
-          colorId: l.colorId || undefined,
-          itemLabel: l.itemLabel,
-          qty: l.qty,
-          secondaryQty: l.secondaryQty,
-          unit: db?.products.find((p) => p.id === l.productId)?.unit,
-        })),
-      });
+      let grnNumber = "";
+      if (poId) {
+        if (!selectedPo) throw new Error("Select an open purchase order");
+        const against = cleaned.filter((l) => l.poLineId);
+        if (!against.length) {
+          throw new Error("Receive remaining lines from the selected PO");
+        }
+        const grn = createGoodsReceipt({
+          poId,
+          date,
+          narration,
+          packingSlipDataUrl,
+          packingSlipName,
+          createdBy: session.id,
+          lines: against.map((l) => ({
+            id: `grnl_${crypto.randomUUID()}`,
+            poLineId: l.poLineId || "",
+            productId: l.productId,
+            variationId: l.variationId || undefined,
+            colorId: l.colorId || undefined,
+            itemLabel: l.itemLabel,
+            qty: l.qty,
+            secondaryQty: l.secondaryQty,
+            unit: db?.products.find((p) => p.id === l.productId)?.unit,
+          })),
+        });
+        grnNumber = grn.number;
+      } else {
+        const { grn } = recordGoodsReceived({
+          supplierId,
+          date,
+          narration,
+          packingSlipDataUrl,
+          packingSlipName,
+          createdBy: session.id,
+          lines: cleaned.map((l) => ({
+            productId: l.productId,
+            variationId: l.variationId || undefined,
+            colorId: l.colorId || undefined,
+            itemLabel: l.itemLabel,
+            qty: l.qty,
+            secondaryQty: l.secondaryQty,
+            unit: db?.products.find((p) => p.id === l.productId)?.unit,
+          })),
+        });
+        grnNumber = grn.number;
+      }
       setMsg(
-        `Saved ${grn.number}. Stock is in — check Stock (Alt+F2). Owner will set the rate next.`
+        `Saved ${grnNumber}. Stock is in — check Stock (Alt+F2). Owner will set the rate next.`
       );
       setSupplierId("");
+      setPoId("");
       setNarration("");
       setLines([blankLine()]);
       setPackingFile(null);
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setSaving(false);
     }
   };
 
   return (
     <AccountsShell focusMode>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold text-[var(--ink)]">
-            Goods received
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Enter supplier, items and quantities. Attach the packing slip.
-            Rates are set by the owner later.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <ExportButtons options={exportOptions} />
-          {isOwner && unpriced.length > 0 ? (
-            <Link
-              href="/admin/accounts/needs-pricing"
-              className="tt-btn tt-btn-dark"
-            >
-              Needs pricing · {unpriced.length}
-            </Link>
-          ) : null}
-        </div>
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.goodsReceived")}
+        hint={t("accounts.goodsReceivedHint")}
+        actions={
+          <>
+            <ExportButtons options={exportOptions} />
+            {isOwner && unpriced.length > 0 ? (
+              <Link
+                href="/admin/accounts/needs-pricing"
+                className="tt-btn tt-btn-dark"
+              >
+                {t("accounts.needsPricing")} · {unpriced.length}
+              </Link>
+            ) : null}
+          </>
+        }
+      />
 
       {unpriced.length > 0 ? (
         <p className="mt-3 rounded-lg bg-[var(--brand-soft)] px-3 py-2 text-sm text-[var(--brand-deep)]">
@@ -236,18 +325,122 @@ export default function GoodsReceivedPage() {
         <p className="mt-3 text-sm text-[var(--danger)]">{error}</p>
       ) : null}
 
+      {openPos.length ? (
+        <div className="tt-panel mt-5 overflow-x-auto">
+          <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
+            Open purchase orders
+          </p>
+          <table className="tt-table min-w-[560px]">
+            <thead>
+              <tr>
+                <th>No.</th>
+                <th>Supplier</th>
+                <th>Status</th>
+                <th>Remaining</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {openPos.map((po) => {
+                const supplier =
+                  db?.parties.find((p) => p.id === po.supplierId)?.name || "—";
+                return (
+                  <tr key={po.id}>
+                    <td className="font-mono text-xs">{po.number}</td>
+                    <td>{supplier}</td>
+                    <td className="capitalize">{po.status}</td>
+                    <td className="tabular-nums">{poRemainingQty(po)}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className="text-sm font-semibold text-[var(--brand-deep)] underline"
+                        onClick={() => {
+                          setPoId(po.id);
+                          setSupplierId(po.supplierId);
+                          setLines(linesFromPo(po));
+                          setError("");
+                        }}
+                      >
+                        Receive
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
       <form onSubmit={onSave} className="tt-panel mt-5 space-y-4 p-5">
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={`tt-btn ${!poId ? "tt-btn-dark" : "tt-btn-outline"}`}
+            onClick={() => {
+              setPoId("");
+              setLines([blankLine()]);
+            }}
+          >
+            Walk-in (new PO)
+          </button>
+          <button
+            type="button"
+            className={`tt-btn ${poId ? "tt-btn-dark" : "tt-btn-outline"}`}
+            onClick={() => {
+              if (openPos[0]) {
+                setPoId(openPos[0].id);
+                setSupplierId(openPos[0].supplierId);
+                setLines(linesFromPo(openPos[0]));
+              }
+            }}
+            disabled={!openPos.length}
+          >
+            Receive against PO
+          </button>
+        </div>
+        {poId ? (
+          <div>
+            <label className="tt-label">Purchase order</label>
+            <select
+              className="tt-select"
+              value={poId}
+              onChange={(e) => {
+                const nextId = e.target.value;
+                setPoId(nextId);
+                const po = openPos.find((p) => p.id === nextId);
+                if (po) {
+                  setSupplierId(po.supplierId);
+                  setLines(linesFromPo(po));
+                }
+              }}
+            >
+              {openPos.map((po) => {
+                const supplier =
+                  db?.parties.find((p) => p.id === po.supplierId)?.name || "—";
+                return (
+                  <option key={po.id} value={po.id}>
+                    {po.number} · {supplier} · {po.status} · left{" "}
+                    {poRemainingQty(po)}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+        ) : null}
         <div className="grid gap-3 sm:grid-cols-3">
           <div>
             <div className="mb-1 flex items-center justify-between gap-2">
               <label className="tt-label mb-0">Supplier</label>
-              <button
-                type="button"
-                className="inline-flex min-h-11 items-center text-sm font-semibold text-[var(--brand-deep)] underline"
-                onClick={() => setShowSupplierModal(true)}
-              >
-                + New supplier
-              </button>
+              {!poId ? (
+                <button
+                  type="button"
+                  className="inline-flex min-h-11 items-center text-sm font-semibold text-[var(--brand-deep)] underline"
+                  onClick={() => setShowSupplierModal(true)}
+                >
+                  + New supplier
+                </button>
+              ) : null}
             </div>
             <SearchSelect
               options={supplierOptions}
@@ -255,7 +448,8 @@ export default function GoodsReceivedPage() {
               onChange={setSupplierId}
               placeholder="Search supplier…"
               emptyLabel="Select supplier…"
-              required
+              required={!poId}
+              disabled={!!poId}
             />
           </div>
           <div>
@@ -279,15 +473,12 @@ export default function GoodsReceivedPage() {
           </div>
         </div>
 
-        <div>
-          <label className="tt-label">Packing slip (photo or PDF)</label>
-          <input
-            type="file"
-            accept="image/*,.pdf"
-            className="tt-input"
-            onChange={(e) => setPackingFile(e.target.files?.[0] ?? null)}
-          />
-        </div>
+        <FilePick
+          kind="photoOrPdf"
+          value={packingFile}
+          onChange={(files) => setPackingFile(files[0] ?? null)}
+          label="Packing slip (photo or PDF)"
+        />
 
         <div className="space-y-3">
           <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
@@ -444,6 +635,7 @@ export default function GoodsReceivedPage() {
               kg / pcs
             </p>
           ) : null}
+          {poId ? null : (
           <button
             type="button"
             className="text-sm font-semibold text-[var(--brand)]"
@@ -451,14 +643,102 @@ export default function GoodsReceivedPage() {
           >
             + Add line
           </button>
+          )}
         </div>
 
-        <button type="submit" className="tt-btn tt-btn-dark">
-          Save — stock in
+        <button type="submit" className="tt-btn tt-btn-dark" disabled={saving}>
+          {saving ? "Saving…" : "Save — stock in"}
         </button>
       </form>
 
-      <div className="tt-panel mt-6 overflow-x-auto">
+      <div className="mt-6 space-y-2 sm:hidden">
+        <p className="text-sm font-semibold">Recent receipts</p>
+        {recent.map((g) => {
+          const po = db?.purchaseOrders.find((p) => p.id === g.poId);
+          const supplier =
+            db?.parties.find((p) => p.id === po?.supplierId)?.name || "—";
+          const bill = db?.vouchers.find(
+            (v) =>
+              v.linkedGrnId === g.id && v.type === "purchase" && !v.voided
+          );
+          const billed = !!bill;
+          const highlighted = highlightId === g.id;
+          return (
+            <div
+              key={g.id}
+              className={`tt-panel p-3 ${g.voided ? "opacity-50" : ""} ${
+                highlighted
+                  ? "bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]"
+                  : ""
+              }`}
+            >
+              <p className="font-mono text-sm font-semibold">{g.number}</p>
+              <p className="text-sm">{supplier}</p>
+              <p className="text-xs text-[var(--ink-muted)]">
+                {g.date} · {g.lines.length} items
+              </p>
+              <p className="mt-1 text-sm">
+                {g.voided ? (
+                  <span className="text-[var(--danger)]">Voided</span>
+                ) : billed ? (
+                  <span className="text-[var(--ok)]">Priced</span>
+                ) : (
+                  <span className="font-semibold text-[var(--brand-deep)]">
+                    Needs pricing
+                  </span>
+                )}
+              </p>
+              {g.voided ? null : billed && bill ? (
+                <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                  Void the purchase bill first.{" "}
+                  <Link
+                    href={`/admin/accounts/vouchers?id=${encodeURIComponent(bill.id)}`}
+                    className="font-semibold text-[var(--brand-deep)] underline"
+                  >
+                    {bill.number}
+                  </Link>
+                </p>
+              ) : (
+                <button
+                  type="button"
+                  className="mt-2 text-xs font-semibold text-[var(--danger)]"
+                  onClick={() => {
+                    if (
+                      !window.confirm(
+                        `Void ${g.number}? Stock and contract usage will be reversed.`
+                      )
+                    ) {
+                      return;
+                    }
+                    try {
+                      voidGoodsReceipt(g.id, session?.id || "system");
+                      setMsg(`Voided ${g.number}`);
+                      setError("");
+                      refresh();
+                    } catch (err) {
+                      setError(
+                        err instanceof Error
+                          ? err.message
+                          : "Could not void GRN"
+                      );
+                      setMsg("");
+                    }
+                  }}
+                >
+                  Void
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {!recent.length ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">
+            No goods received yet
+          </p>
+        ) : null}
+      </div>
+
+      <div className="tt-panel mt-6 hidden overflow-x-auto sm:block">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
           Recent receipts
         </p>
@@ -479,12 +759,23 @@ export default function GoodsReceivedPage() {
               const po = db?.purchaseOrders.find((p) => p.id === g.poId);
               const supplier =
                 db?.parties.find((p) => p.id === po?.supplierId)?.name || "—";
-              const billed = db?.vouchers.some(
+              const bill = db?.vouchers.find(
                 (v) =>
                   v.linkedGrnId === g.id && v.type === "purchase" && !v.voided
               );
+              const billed = !!bill;
+              const highlighted = highlightId === g.id;
               return (
-                <tr key={g.id} className={g.voided ? "opacity-50" : undefined}>
+                <tr
+                  key={g.id}
+                  ref={highlighted ? highlightRef : undefined}
+                  id={g.id}
+                  className={`${g.voided ? "opacity-50" : ""} ${
+                    highlighted
+                      ? "bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]"
+                      : ""
+                  }`}
+                >
                   <td className="font-mono text-xs">{g.number}</td>
                   <td>{g.date}</td>
                   <td>{supplier}</td>
@@ -515,7 +806,17 @@ export default function GoodsReceivedPage() {
                     )}
                   </td>
                   <td>
-                    {!g.voided && !billed ? (
+                    {g.voided ? null : billed && bill ? (
+                      <span className="block max-w-[14rem] text-xs text-[var(--ink-muted)]">
+                        Void the purchase bill first, then void this GRN.{" "}
+                        <Link
+                          href={`/admin/accounts/vouchers?id=${encodeURIComponent(bill.id)}`}
+                          className="font-semibold text-[var(--brand-deep)] underline"
+                        >
+                          {bill.number}
+                        </Link>
+                      </span>
+                    ) : (
                       <button
                         type="button"
                         className="text-xs font-semibold text-[var(--danger)]"
@@ -544,7 +845,7 @@ export default function GoodsReceivedPage() {
                       >
                         Void
                       </button>
-                    ) : null}
+                    )}
                   </td>
                 </tr>
               );

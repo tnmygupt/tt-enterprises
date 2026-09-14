@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { ExportButtons } from "@/components/ExportButtons";
 import { runBooksHealthCheck } from "@/lib/accounting";
@@ -60,6 +62,24 @@ const MANUAL: Omit<CheckItem, "ok" | "auto">[] = [
     href: "/admin/accounts/match-statement",
   },
   {
+    id: "pay_verify",
+    label: "Payments desk verify",
+    detail: "UPI proof on Payments desk → receipt posts. Then tick the same credit in BRS.",
+    href: "/admin/accounts/payments",
+  },
+  {
+    id: "brs",
+    label: "Bank BRS to zero (Alt+B)",
+    detail: "Enter today's bank SMS closing, tick cleared lines, add charges until difference is ₹0.",
+    href: "/admin/accounts/brs",
+  },
+  {
+    id: "wa_desk",
+    label: "WhatsApp desk + daily summary",
+    detail: "Gateway on, send a test to yourself, then send owner daily summary.",
+    href: "/admin/whatsapp",
+  },
+  {
     id: "expense",
     label: "Log expense with bill photo",
     detail: "Freight or other head from cash/bank.",
@@ -86,6 +106,7 @@ const MANUAL: Omit<CheckItem, "ok" | "auto">[] = [
 ];
 
 export default function FlowAuditPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db } = useDb();
   const isOwner = session ? canViewFinancials(session.role) : false;
@@ -175,7 +196,7 @@ export default function FlowAuditPage() {
     [all, today]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -185,29 +206,24 @@ export default function FlowAuditPage() {
 
   return (
     <AccountsShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            Flow audit
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Automated health checks plus a manual walkthrough of the full books
-            chain. Manual ticks are saved in this browser.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <ExportButtons options={exportOptions} />
-          <Link href="/admin/help" className="tt-btn tt-btn-outline">
-            Help guide
-          </Link>
-          <Link
-            href="/admin/accounts/controls/health"
-            className="tt-btn tt-btn-outline"
-          >
-            Health check
-          </Link>
-        </div>
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.flowAudit")}
+        hint={t("accounts.flowAuditHint")}
+        actions={
+          <>
+            <ExportButtons options={exportOptions} />
+            <Link href="/admin/help" className="tt-btn tt-btn-outline">
+              {t("accounts.helpBooks")}
+            </Link>
+            <Link
+              href="/admin/accounts/controls/health"
+              className="tt-btn tt-btn-outline"
+            >
+              {t("accounts.healthCheck")}
+            </Link>
+          </>
+        }
+      />
 
       <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <div className="tt-panel p-4">

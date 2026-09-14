@@ -2,20 +2,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
+import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AdminShell } from "@/components/AdminShell";
+import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
 import { useDb, useSession } from "@/lib/hooks";
 import {
-  clearOrderHistoryAndSync,
   checkCapability,
-  purgeOpsDataAndSync,
   resetDb,
   saveSettings,
 } from "@/lib/store/db";
-import { isFirebaseConfigured } from "@/lib/firebase/config";
 import { uploadMediaFile } from "@/lib/upload-media";
+import { formatSeasonMonths, parseSeasonMonthsFromText } from "@/lib/accounting";
 import { UPI_MAX_AMOUNT_DEFAULT, listPayableAccounts } from "@/lib/upi";
+import { WhatsAppTemplateEditor } from "@/components/WhatsAppTemplateEditor";
 import type { BankAccountDetails } from "@/lib/types";
 
 export default function AdminSettingsPage() {
@@ -24,13 +25,14 @@ export default function AdminSettingsPage() {
   const { session } = useSession();
   const { db, refresh, cloudReady } = useDb();
   const [waConfigured, setWaConfigured] = useState<boolean | null>(null);
+  const [waMode, setWaMode] = useState<
+    "tally_instance" | "cloud_api" | "wa.me_fallback" | null
+  >(null);
   const [supabaseConfigured, setSupabaseConfigured] = useState<boolean | null>(
     null
   );
-  const [tallyStatus, setTallyStatus] = useState<string>("…");
   const [qrBusyId, setQrBusyId] = useState<string>("");
   const [msg, setMsg] = useState<string>("");
-  const [purgeBusy, setPurgeBusy] = useState(false);
   // Memoize the derived accounts list here (before any conditional early
   // return) so React's rules-of-hooks are satisfied.
   const bankAccounts = useMemo(
@@ -41,26 +43,28 @@ export default function AdminSettingsPage() {
   useEffect(() => {
     void fetch("/api/whatsapp/send")
       .then((r) => r.json())
-      .then((d: { configured?: boolean }) => setWaConfigured(!!d.configured))
-      .catch(() => setWaConfigured(false));
+      .then(
+        (d: {
+          configured?: boolean;
+          mode?: "tally_instance" | "cloud_api" | "wa.me_fallback";
+        }) => {
+          setWaConfigured(!!d.configured);
+          setWaMode(
+            d.mode ?? (d.configured ? "cloud_api" : "wa.me_fallback")
+          );
+        }
+      )
+      .catch(() => {
+        setWaConfigured(false);
+        setWaMode("wa.me_fallback");
+      });
     void fetch("/api/db")
       .then((r) => setSupabaseConfigured(r.status !== 503))
       .catch(() => setSupabaseConfigured(false));
-    void fetch("/api/tally/sync")
-      .then((r) => r.json())
-      .then((d: { lastSyncedAt?: string | null; persist?: boolean }) => {
-        setTallyStatus(
-          d.lastSyncedAt
-            ? `Last sync ${new Date(d.lastSyncedAt).toLocaleString()}`
-            : d.persist
-              ? "Ready — waiting for bridge"
-              : "Not ready"
-        );
-      })
-      .catch(() => setTallyStatus("API unreachable"));
   }, []);
 
-  if (!session || !checkCapability(session, db?.users, "manage_users")) {
+
+  if (!session || !checkCapability(session, db, "manage_users")) {
     return (
       <AdminShell>
         <AdminAccessDenied />
@@ -227,11 +231,16 @@ export default function AdminSettingsPage() {
         <p className="text-sm text-[var(--ink-muted)]">
           {t("whatsapp.settingsHint")}
         </p>
+        <p className="text-sm">
+          <Link href="/admin/whatsapp" className="font-semibold underline">
+            {t("admin.whatsappDesk")}
+          </Link>
+        </p>
         <label className="flex items-center gap-2 text-sm">
           <input
             type="checkbox"
             className="h-4 w-4 accent-[var(--brand)]"
-            defaultChecked={db.settings.whatsappNotifyEnabled !== false}
+            checked={db.settings.whatsappNotifyEnabled !== false}
             onChange={(e) => {
               saveSettings({
                 ...db.settings,
@@ -242,6 +251,24 @@ export default function AdminSettingsPage() {
           />
           {t("whatsapp.enabled")}
         </label>
+        <p className="text-xs font-semibold text-[var(--ink)]">
+          {t("whatsapp.eventsTitle")}
+        </p>
+        <ul className="list-disc space-y-0.5 pl-5 text-sm text-[var(--ink-muted)]">
+          <li>{t("whatsapp.eventSignup")}</li>
+          <li>{t("whatsapp.eventApproved")}</li>
+          <li>{t("whatsapp.eventRejected")}</li>
+          <li>{t("whatsapp.eventNewOrder")}</li>
+          <li>{t("whatsapp.eventProof")}</li>
+          <li>{t("whatsapp.eventVerified")}</li>
+          <li>{t("whatsapp.eventStatus")}</li>
+          <li>{t("whatsapp.eventPacking")}</li>
+          <li>{t("whatsapp.eventOverdue")}</li>
+          <li>{t("whatsapp.eventCredit")}</li>
+          <li>{t("whatsapp.eventSchemeEnd")}</li>
+          <li>{t("whatsapp.eventLowStock")}</li>
+          <li>{t("whatsapp.eventDaily")}</li>
+        </ul>
         <div>
           <label className="tt-label">{t("whatsapp.countryCode")}</label>
           <input
@@ -256,6 +283,14 @@ export default function AdminSettingsPage() {
             }}
           />
         </div>
+        <WhatsAppTemplateEditor
+          settings={db.settings}
+          locale={locale}
+          onSave={(whatsappTemplates) => {
+            saveSettings({ ...db.settings, whatsappTemplates });
+            refresh();
+          }}
+        />
       </div>
 
       <div className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5">
@@ -577,31 +612,16 @@ export default function AdminSettingsPage() {
                       </div>
                     )}
                     <div className="flex flex-col gap-2">
-                      <label className="tt-btn tt-btn-outline cursor-pointer text-sm">
-                        {uploading
-                          ? locale === "hi"
-                            ? "अपलोड हो रहा है…"
-                            : "Uploading…"
-                          : a.staticQrDataUrl
-                            ? locale === "hi"
-                              ? "QR बदलें"
-                              : "Replace QR"
-                            : locale === "hi"
-                              ? "QR अपलोड करें"
-                              : "Upload QR image"}
-                        <input
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          disabled={uploading}
-                          onChange={async (e) => {
-                            const file = e.target.files?.[0];
-                            e.target.value = "";
-                            if (!file) return;
-                            await uploadStaticQr(id, file);
-                          }}
-                        />
-                      </label>
+                      <FilePick
+                        kind="qr"
+                        compact
+                        busy={uploading}
+                        onPick={async (files) => {
+                          const file = files[0];
+                          if (!file) return;
+                          await uploadStaticQr(id, file);
+                        }}
+                      />
                       {a.staticQrDataUrl ? (
                         <button
                           type="button"
@@ -735,11 +755,19 @@ export default function AdminSettingsPage() {
       </div>
 
       <div className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm">
-        <p className="font-semibold text-[var(--ink)]">Auto reorder (draft POs)</p>
+        <p className="font-semibold text-[var(--ink)]">
+          {t("admin.autoReorderTitle")}
+        </p>
+        <p className="text-[var(--ink-muted)]">{t("admin.autoReorderHint")}</p>
+        <p className="text-[var(--ink-muted)]">
+          {t("admin.autoReorderCover")}
+        </p>
         <p className="text-[var(--ink-muted)]">
           Weekly cron hits <code>/api/cron/reorder</code> with{" "}
           <code>Authorization: Bearer CRON_SECRET</code>. Products need a
-          preferred supplier. See <code>HOSTINGER.md</code>.
+          preferred supplier. Draft POs also WhatsApp staff (orders). Overdue,
+          credit-limit, scheme-ending and stale-estimate WhatsApp:{" "}
+          <code>/api/cron/whatsapp-digest</code>. See <code>HOSTINGER.md</code>.
         </p>
         <label className="flex items-center gap-2">
           <input
@@ -753,11 +781,25 @@ export default function AdminSettingsPage() {
               refresh();
             }}
           />
-          Enable auto draft POs when cron runs
+          {t("admin.autoReorderEnableCron")}
+        </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={db.settings.autoReorderUseVelocity !== false}
+            onChange={(e) => {
+              saveSettings({
+                ...db.settings,
+                autoReorderUseVelocity: e.target.checked,
+              });
+              refresh();
+            }}
+          />
+          {t("admin.autoReorderUseVelocity")}
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
-            <label className="tt-label">Cron hint (display only)</label>
+            <label className="tt-label">{t("admin.autoReorderCronHint")}</label>
             <input
               className="tt-input"
               defaultValue={db.settings.autoReorderCron || "0 6 * * 1"}
@@ -776,7 +818,7 @@ export default function AdminSettingsPage() {
             </p>
           </div>
           <div>
-            <label className="tt-label">Min suggested qty</label>
+            <label className="tt-label">{t("admin.autoReorderMinQty")}</label>
             <NumberField
               className="tt-input"
               min={1}
@@ -788,6 +830,102 @@ export default function AdminSettingsPage() {
                 saveSettings({
                   ...db.settings,
                   autoReorderMinQty: Math.max(1, v),
+                });
+                refresh();
+              }}
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("admin.autoReorderLookback")}</label>
+            <NumberField
+              className="tt-input"
+              min={7}
+              max={365}
+              integer
+              emptyAs={null}
+              value={db.settings.autoReorderLookbackDays ?? 30}
+              onValueChange={(v) => {
+                if (v === "") return;
+                saveSettings({
+                  ...db.settings,
+                  autoReorderLookbackDays: Math.max(7, Math.min(365, v)),
+                });
+                refresh();
+              }}
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("admin.autoReorderLeadTime")}</label>
+            <NumberField
+              className="tt-input"
+              min={0}
+              integer
+              emptyAs={null}
+              value={db.settings.autoReorderLeadTimeDays ?? 10}
+              onValueChange={(v) => {
+                if (v === "") return;
+                saveSettings({
+                  ...db.settings,
+                  autoReorderLeadTimeDays: Math.max(0, v),
+                });
+                refresh();
+              }}
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("admin.autoReorderSafety")}</label>
+            <NumberField
+              className="tt-input"
+              min={0}
+              integer
+              emptyAs={null}
+              value={db.settings.autoReorderSafetyDays ?? 7}
+              onValueChange={(v) => {
+                if (v === "") return;
+                saveSettings({
+                  ...db.settings,
+                  autoReorderSafetyDays: Math.max(0, v),
+                });
+                refresh();
+              }}
+            />
+          </div>
+          <div>
+            <label className="tt-label">
+              {t("admin.autoReorderSeasonMonths")}
+            </label>
+            <input
+              className="tt-input"
+              defaultValue={formatSeasonMonths(
+                db.settings.autoReorderSeasonMonths
+              )}
+              placeholder="5-9"
+              onBlur={(e) => {
+                saveSettings({
+                  ...db.settings,
+                  autoReorderSeasonMonths: parseSeasonMonthsFromText(
+                    e.target.value
+                  ),
+                });
+                refresh();
+              }}
+            />
+          </div>
+          <div>
+            <label className="tt-label">
+              {t("admin.autoReorderSeasonMultiplier")}
+            </label>
+            <NumberField
+              className="tt-input"
+              min={1}
+              step={0.1}
+              emptyAs={null}
+              value={db.settings.autoReorderSeasonMultiplier ?? 1.4}
+              onValueChange={(v) => {
+                if (v === "") return;
+                saveSettings({
+                  ...db.settings,
+                  autoReorderSeasonMultiplier: Math.max(1, v),
                 });
                 refresh();
               }}
@@ -808,45 +946,29 @@ export default function AdminSettingsPage() {
                   ? cloudReady
                     ? "Connected (sync on)"
                     : "Connecting…"
-                  : "Off — set SUPABASE_URL + SUPABASE_API_KEY"}
+                  : "Off — set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY"}
             </strong>
           </li>
           <li>
-            Firebase shared DB:{" "}
-            <strong className="text-[var(--ink)]">
-              {isFirebaseConfigured()
-                ? cloudReady
-                  ? "Connected (sync on)"
-                  : "Connecting…"
-                : "Off — local browser only"}
-            </strong>
-          </li>
-          <li>
-            WhatsApp Cloud API:{" "}
+            WhatsApp:{" "}
             <strong className="text-[var(--ink)]">
               {waConfigured == null
                 ? "Checking…"
-                : waConfigured
-                  ? "Configured (auto-send)"
-                  : "Off — falls back to wa.me"}
+                : waMode === "tally_instance"
+                  ? "Tally WhatsApp instance — silent send"
+                  : waConfigured
+                    ? "Meta Cloud API — silent send"
+                    : "Off — falls back to wa.me"}
             </strong>
-          </li>
-          <li>
-            Tally sync API:{" "}
-            <strong className="text-[var(--ink)]">{tallyStatus}</strong>
           </li>
           <li>
             Uploads:{" "}
             <strong className="text-[var(--ink)]">
-              Firebase Storage when Firebase on, else server /uploads
+              Server /api/upload (Supabase Storage when configured)
             </strong>
           </li>
         </ul>
-        <p className="mt-2 text-[var(--ink-muted)]">
-          Set keys in <code>.env.local</code> (see <code>.env.example</code>).
-          Deploy Firestore/Storage rules, enable Anonymous Auth, then restart{" "}
-          <code>npm run dev</code>.
-        </p>
+        <p className="mt-2 text-[var(--ink-muted)]">{t("shop.cloudHint")}</p>
         <button
           type="button"
           className="tt-btn tt-btn-outline mt-2"
@@ -859,70 +981,6 @@ export default function AdminSettingsPage() {
         >
           Reset local demo data
         </button>
-        {session?.role === "super_admin" ? (
-          <>
-            <button
-              type="button"
-              className="tt-btn tt-btn-outline mt-2 ml-2 border-amber-700 text-amber-900"
-              disabled={purgeBusy}
-              onClick={() => {
-                const ok = confirm(
-                  "CLEAR ORDER HISTORY on cloud + this browser?\n\nRemoves: all orders (and order-linked wallet/stock movement rows).\n\nKeeps: all users, products, current stock qty.\n\nHard-refresh every other device after."
-                );
-                if (!ok) return;
-                setPurgeBusy(true);
-                setMsg("");
-                void clearOrderHistoryAndSync()
-                  .then((r) => {
-                    if (!r.ok) {
-                      setMsg(r.error || "Clear failed");
-                      return;
-                    }
-                    setMsg(
-                      `Cleared ${r.removedOrders ?? 0} orders. Users + stock kept. Hard-refresh other devices.`
-                    );
-                    refresh();
-                  })
-                  .finally(() => setPurgeBusy(false));
-              }}
-            >
-              {purgeBusy ? "Clearing…" : "Clear order history only"}
-            </button>
-            <button
-              type="button"
-              className="tt-btn tt-btn-outline mt-2 ml-2 border-red-600 text-red-700"
-              disabled={purgeBusy}
-              onClick={() => {
-                const ok = confirm(
-                  "LAUNCH WIPE — cloud + this browser?\n\nRemoves: ALL products, schemes, orders, wallets, vouchers, ledger, parties, and every user EXCEPT 6386685663.\n\nKeeps: that owner login, company settings, categories, shipping rules, chart of accounts.\n\nEvery other device must hard-refresh after."
-                );
-                if (!ok) return;
-                const again = confirm(
-                  "This cannot be undone. Continue with launch wipe?"
-                );
-                if (!again) return;
-                setPurgeBusy(true);
-                setMsg("");
-                void purgeOpsDataAndSync("6386685663")
-                  .then((r) => {
-                    if (!r.ok) {
-                      setMsg(r.error || "Purge failed");
-                      return;
-                    }
-                    setMsg(
-                      `Launch wipe done. Removed ${r.removedUsers ?? 0} users, ${r.removedOrders ?? 0} orders. Products left: ${r.keptProducts ?? 0}. Hard-refresh other devices.`
-                    );
-                    refresh();
-                  })
-                  .finally(() => setPurgeBusy(false));
-              }}
-            >
-              {purgeBusy
-                ? "Clearing…"
-                : "Launch wipe (keep only 6386685663)"}
-            </button>
-          </>
-        ) : null}
       </div>
     </AdminShell>
   );

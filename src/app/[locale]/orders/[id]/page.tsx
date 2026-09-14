@@ -4,12 +4,13 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { TransportInput } from "@/components/TransportInput";
 import { useLocale, useTranslations } from "next-intl";
 import { useParams } from "next/navigation";
-import { Link } from "@/i18n/routing";
-import { NotifyWhatsAppToggle } from "@/components/NotifyWhatsAppToggle";
+import { Link, useRouter } from "@/i18n/routing";
 import { NumberField } from "@/components/NumberField";
+import { FilePick } from "@/components/FilePick";
 import { PaymentInstructions } from "@/components/PaymentInstructions";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
 import { calcLineTotal, computeBillFromActualWeights, formatInr } from "@/lib/pricing";
+import { nextPayRefFromItems } from "@/lib/pay-ref";
 import { getProofItems, proofPaidTotal, proofRemaining } from "@/lib/proofs";
 import { uploadMediaFile } from "@/lib/upload-media";
 import {
@@ -24,6 +25,8 @@ import {
   orderHasLr,
   removePaymentProofItem,
   repairOrderShippingFromSlip,
+  getCart,
+  saveCart,
   updateOrderStatus,
   uploadBill,
   uploadLr,
@@ -32,16 +35,22 @@ import {
 import {
   dealerHasScheme,
   isSchemeVisibleToDealer,
+  orderDiscountLabelForOrder,
   progressForScheme,
   schemeUnitLabel,
 } from "@/lib/schemes";
 import { paymentAmountDue } from "@/lib/upi";
 import type { OrderStatus, PaymentProofItem } from "@/lib/types";
-import { notifyOrderWhatsApp } from "@/lib/whatsapp";
+import { notifyLrWhatsApp, notifyOrderWhatsApp, notifyStaffPaymentProof, whatsappResultCopy } from "@/lib/whatsapp";
 import { computeBillFromSlip } from "@/lib/packing-slip";
 import { companyFromSettings } from "@/lib/export-pdf";
 import { loadPackingSlipPdf } from "@/lib/packing-slip-pdf-lazy";
 import { OrderStageTracker } from "@/components/OrderStageTracker";
+import {
+  ORDER_AGAIN_HINT_KEY,
+  mergeOrderLinesIntoCart,
+  orderAgainHint,
+} from "@/lib/order-again";
 import {
   allowedNextOrderStatuses,
   timelineStatusLabel,
@@ -58,6 +67,7 @@ function roundLineWeightTotal(weights: string[]): number {
 export default function OrderDetailPage() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
+  const router = useRouter();
   const params = useParams<{ id: string }>();
   const { session } = useSession();
   const { db, refresh } = useDb();
@@ -99,9 +109,6 @@ export default function OrderDetailPage() {
   const [lrFile, setLrFile] = useState<File | null>(null);
   const [msg, setMsg] = useState("");
   const [cancelNote, setCancelNote] = useState("");
-  const [notifyWa, setNotifyWa] = useState(
-    () => db?.settings.whatsappNotifyEnabled !== false
-  );
   const [editingOrder, setEditingOrder] = useState(false);
   const [editQtys, setEditQtys] = useState<string[]>([]);
   const [editRates, setEditRates] = useState<string[]>([]);
@@ -133,6 +140,22 @@ export default function OrderDetailPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (order?.lrNumber) setLrNumber(order.lrNumber);
   }, [order?.id, order?.lrNumber]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const jumpPay =
+      window.location.hash === "#pay" ||
+      new URLSearchParams(window.location.search).get("pay") === "1";
+    if (!jumpPay) return;
+    const go = () =>
+      document.getElementById("pay-now")?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    go();
+    const t = window.setTimeout(go, 400);
+    return () => window.clearTimeout(t);
+  }, [order?.id, order?.status]);
 
   useEffect(() => {
     if (!order) return;
@@ -266,13 +289,19 @@ export default function OrderDetailPage() {
   }
 
   const isOwner = session?.id === order.userId;
-  const canManage = session && checkCapability(session, db?.users, "manage_orders");
-  const canBill = session && checkCapability(session, db?.users, "upload_bill");
-  const canVerify = session && checkCapability(session, db?.users, "verify_payment");
+  const canManage = session && checkCapability(session, db, "manage_orders");
+  const canBill = session && checkCapability(session, db, "upload_bill");
+  const canVerify = session && checkCapability(session, db, "verify_payment");
   const canLr =
     session &&
-    (checkCapability(session, db?.users, "upload_lr") ||
-      checkCapability(session, db?.users, "manage_orders"));
+    (checkCapability(session, db, "upload_lr") ||
+      checkCapability(session, db, "manage_orders"));
+  const discountLabel = orderDiscountLabelForOrder(
+    order,
+    db?.schemes ?? [],
+    db?.products ?? [],
+    locale
+  );
 
   // Access control: only the owner (dealer) or staff with manage caps may view.
   if (!isOwner && !canManage) {
@@ -296,12 +325,40 @@ export default function OrderDetailPage() {
   const showCancel =
     Boolean(canManage) && canCancelOrderStatus(order.status);
 
+  const sendLrToDealer = (
+    saved: typeof order,
+    lrFileDataUrl?: string
+  ) => {
+    if (db.settings.whatsappNotifyEnabled === false) {
+      setMsg(
+        locale === "hi" ? "LR अपलोड · डिलीवर मार्क" : "LR uploaded · marked delivered"
+      );
+      return;
+    }
+    void notifyLrWhatsApp({
+      order: saved,
+      settings: db.settings,
+      users: db.users,
+      locale,
+      lrFileUrl: lrFileDataUrl || saved.lrFileDataUrl,
+    }).then((result) => {
+      const base = locale === "hi" ? "LR अपलोड · डिलीवर मार्क" : "LR uploaded · marked delivered";
+      const wa = whatsappResultCopy(result, {
+        sent: t("common.whatsappSent"),
+        opened: t("common.whatsappOpened"),
+        fail: t("common.whatsappSendFailed"),
+        noPhone: t("common.whatsappNoPhone"),
+      });
+      setMsg(`${base} · ${wa}`);
+    });
+  };
+
   const tryNotify = (
     status: OrderStatus,
     patch?: Partial<typeof order>,
     extraNote?: string
   ) => {
-    if (!notifyWa || !canManage) return;
+    if (status !== "payment_verified" && !canManage) return;
     const updated = { ...order, ...patch, status };
     void notifyOrderWhatsApp({
       order: updated,
@@ -310,9 +367,36 @@ export default function OrderDetailPage() {
       users: db.users,
       locale,
       extraNote,
-    }).then((ok) => {
-      setMsg(ok ? t("common.whatsappOpened") : t("common.whatsappNoPhone"));
+    }).then((result) => {
+      if (db.settings.whatsappNotifyEnabled === false) return;
+      setMsg(
+        whatsappResultCopy(result, {
+          sent: t("common.whatsappSent"),
+          opened: t("common.whatsappOpened"),
+          fail: t("common.whatsappSendFailed"),
+          noPhone: t("common.whatsappNoPhone"),
+        })
+      );
     });
+  };
+
+  const onOrderAgain = () => {
+    if (!isOwner || !order.lines.length) return;
+    const { cart, addedLines, skippedLines } = mergeOrderLinesIntoCart(
+      order.lines,
+      db.products ?? [],
+      getCart()
+    );
+    const hint = orderAgainHint({ addedLines, skippedLines, locale });
+    setMsg(hint);
+    if (addedLines <= 0) return;
+    saveCart(cart);
+    try {
+      sessionStorage.setItem(ORDER_AGAIN_HINT_KEY, hint);
+    } catch {
+      /* private mode */
+    }
+    router.push("/quick-order");
   };
 
   const onCancelOrder = () => {
@@ -402,6 +486,10 @@ export default function OrderDetailPage() {
             type: up.type === "pdf" ? "pdf" : "image",
             fileName: file.name,
             note: proofNote.trim() || undefined,
+            payRef: nextPayRefFromItems(
+              order.orderNumber,
+              getProofItems(order.paymentProof)
+            ),
             amount: perFile,
             uploadedAt: new Date().toISOString(),
             uploadedBy: session.id,
@@ -417,9 +505,9 @@ export default function OrderDetailPage() {
         setProofFiles([]);
         setProofNote("");
         setProofAmount("");
+        const uploadedAmt = items.reduce((s, it) => s + (it.amount || 0), 0);
         const nextPaid =
-          proofPaidTotal(order.paymentProof) +
-          items.reduce((s, it) => s + (it.amount || 0), 0);
+          proofPaidTotal(order.paymentProof) + uploadedAmt;
         const nextRemain = Math.max(0, Math.round((amountDue - nextPaid) * 100) / 100);
         setMsg(
           locale === "hi"
@@ -430,6 +518,18 @@ export default function OrderDetailPage() {
                 nextRemain > 0 ? ` · remaining ${formatInr(nextRemain, locale)}` : " · fully paid"
               }`
         );
+        if (db.settings.whatsappNotifyEnabled !== false) {
+          void notifyStaffPaymentProof({
+            order,
+            settings: db.settings,
+            users: db.users,
+            locale,
+            amount: uploadedAmt || nextPaid || amountDue,
+            payRef: items[0]?.payRef,
+            remaining: nextRemain,
+            skipUserIds: [session.id],
+          });
+        }
         refresh();
       } else if (errors.length) {
         setMsg(errors.join(" · "));
@@ -541,25 +641,10 @@ export default function OrderDetailPage() {
         const up = await uploadMediaFile(lrFile, "lr");
         lrFileDataUrl = up.url;
       }
-      uploadLr(order.id, { lrNumber, lrFileDataUrl });
-      setMsg(
-        locale === "hi"
-          ? "LR अपलोड · डिलीवर मार्क"
-          : "LR uploaded · marked delivered"
-      );
+      const saved = uploadLr(order.id, { lrNumber, lrFileDataUrl });
       setLrFile(null);
+      sendLrToDealer(saved, lrFileDataUrl);
       refresh();
-      tryNotify(
-        "delivered",
-        { lrNumber },
-        lrNumber
-          ? locale === "hi"
-            ? `LR नंबर: ${lrNumber}`
-            : `LR number: ${lrNumber}`
-          : locale === "hi"
-            ? "LR अपलोड · डिलीवर"
-            : "LR uploaded · delivered"
-      );
     } catch (err) {
       setMsg(err instanceof Error ? err.message : "LR upload failed");
     }
@@ -580,7 +665,7 @@ export default function OrderDetailPage() {
               {order.orderNumber}
             </h1>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <span className="tt-status inline-flex">
+              <span className="tt-status inline-flex text-base">
                 {t(`orderStatus.${order.status}` as "orderStatus.estimate")}
               </span>
               {pendingLr && canManage ? (
@@ -601,7 +686,45 @@ export default function OrderDetailPage() {
                 </span>
               ) : null}
             </div>
+            <p className="mt-3 text-sm font-semibold text-[var(--ink)]">
+              {order.status === "estimate"
+                ? locale === "hi"
+                  ? "ऑफिस को अनुमान मिल गया है। पैकिंग के बाद अंतिम बिल आएगा।"
+                  : "Office has your estimate. Final bill comes after packing."
+                : order.status === "confirmed"
+                  ? locale === "hi"
+                    ? "ऑर्डर कन्फर्म है। स्टाफ वजन और पैकिंग स्लिप बनाएगा।"
+                    : "Confirmed. Staff will weigh and make the packing slip."
+                  : order.status === "payment_pending"
+                    ? locale === "hi"
+                      ? "बिल तैयार है। नीचे QR स्कैन करें या UPI ऐप खोलें, फिर प्रूफ अपलोड करें।"
+                      : "Bill is ready. Scan the QR or open the UPI app below, then upload proof."
+                    : order.status === "payment_verified"
+                      ? locale === "hi"
+                        ? "पेमेंट मिल गया। माल डिस्पैच होगा।"
+                        : "Payment received. Goods will be dispatched."
+                      : order.status === "dispatched"
+                        ? locale === "hi"
+                          ? "माल रस्ते में है। LR कॉपी WhatsApp पर आएगी।"
+                          : "On the way. LR copy will be sent on WhatsApp."
+                        : order.status === "delivered"
+                          ? locale === "hi"
+                            ? "डिलीवर हो गया। LR इसी पेज पर है।"
+                            : "Delivered. LR is on this page."
+                          : locale === "hi"
+                            ? "यह ऑर्डर रद्द है।"
+                            : "This order was cancelled."}
+            </p>
           </div>
+          {isOwner && order.lines.length ? (
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline text-sm"
+              onClick={onOrderAgain}
+            >
+              {t("common.orderAgain")}
+            </button>
+          ) : null}
         </div>
 
         <div className="mt-5 rounded-2xl border-2 border-[var(--brand-deep)]/20 bg-white p-4 sm:p-5">
@@ -1167,9 +1290,7 @@ export default function OrderDetailPage() {
                   <div className="tt-kv-row text-[var(--ok)]">
                     <span>
                       {t("common.schemeDiscount")}
-                      {order.schemeDiscountLabel
-                        ? ` · ${order.schemeDiscountLabel}`
-                        : ""}
+                      {discountLabel ? ` · ${discountLabel}` : ""}
                     </span>
                     <span>-{formatInr(order.schemeDiscount || 0, locale)}</span>
                   </div>
@@ -1203,9 +1324,7 @@ export default function OrderDetailPage() {
                   <div className="tt-kv-row text-[var(--ok)]">
                     <span>
                       {t("common.schemeDiscount")}
-                      {order.schemeDiscountLabel
-                        ? ` · ${order.schemeDiscountLabel}`
-                        : ""}
+                      {discountLabel ? ` · ${discountLabel}` : ""}
                     </span>
                     <span>-{formatInr(order.schemeDiscount || 0, locale)}</span>
                   </div>
@@ -1347,7 +1466,8 @@ export default function OrderDetailPage() {
           {(order.billFileDataUrl ||
             order.lrFileDataUrl ||
             order.lrNumber ||
-            order.actualBillAmount != null) && (
+            order.actualBillAmount != null ||
+            order.packingSlip?.customerPdfUrl) && (
             <div className="rounded-2xl border-2 border-[var(--brand-deep)]/20 bg-white p-4 space-y-3">
               <h3 className="text-base font-bold text-[var(--brand-deep)]">
                 {locale === "hi" ? "बिल / दस्तावेज़" : "Bill & documents"}
@@ -1382,6 +1502,16 @@ export default function OrderDetailPage() {
                     className="tt-btn tt-btn-outline w-full text-base font-bold"
                   >
                     {locale === "hi" ? "LR देखें" : "View LR"}
+                  </a>
+                ) : null}
+                {order.packingSlip?.customerPdfUrl ? (
+                  <a
+                    href={order.packingSlip.customerPdfUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="tt-btn tt-btn-outline w-full text-base font-bold"
+                  >
+                    {locale === "hi" ? "पैकिंग स्लिप देखें" : "View packing slip"}
                   </a>
                 ) : null}
               </div>
@@ -1429,6 +1559,18 @@ export default function OrderDetailPage() {
           ) : null}
 
           {(isOwner || canManage) &&
+          (order.status === "estimate" || order.status === "confirmed") ? (
+            <div className="rounded-2xl border-2 border-[var(--brand-deep)]/20 bg-white p-4">
+              <h3 className="text-base font-bold text-[var(--brand-deep)]">
+                {t("shop.waitingBillTitle")}
+              </h3>
+              <p className="mt-1 text-sm text-[var(--ink-muted)]">
+                {t("shop.waitingBillBody")}
+              </p>
+            </div>
+          ) : null}
+
+          {(isOwner || canManage) &&
           (order.status === "payment_pending" ||
             order.status === "payment_verified") &&
           (() => {
@@ -1444,12 +1586,17 @@ export default function OrderDetailPage() {
               Number.isFinite(typed) && typed > 0
                 ? Math.min(typed, rem)
                 : rem;
+            const payRef = nextPayRefFromItems(
+              order.orderNumber,
+              getProofItems(order.paymentProof)
+            );
             return (
               <PaymentInstructions
                 settings={db.settings}
                 amount={thisPay}
                 remainingBalance={rem}
                 orderNumber={order.orderNumber}
+                payRef={payRef}
                 locale={locale}
               />
             );
@@ -1516,7 +1663,17 @@ export default function OrderDetailPage() {
                     </div>
                     {paidSoFar > 0 && remaining <= 0 ? (
                       <p className="mt-1 text-center text-[10px] font-semibold uppercase tracking-wide text-[var(--ok)]">
-                        {locale === "hi" ? "पूरा भुगतान" : "Fully paid"}
+                        {isVerified
+                          ? locale === "hi"
+                            ? "पेड"
+                            : "Paid"
+                          : locale === "hi"
+                            ? "पूरा भुगतान"
+                            : "Fully paid"}
+                      </p>
+                    ) : paidSoFar > 0 ? (
+                      <p className="mt-1 text-center text-[10px] font-semibold uppercase tracking-wide text-[var(--brand-deep)]">
+                        {locale === "hi" ? "पार्ट पेड" : "Part paid"}
                       </p>
                     ) : null}
                   </div>
@@ -1555,8 +1712,14 @@ export default function OrderDetailPage() {
                               </p>
                             ) : null}
                           </div>
+                          {it.payRef ? (
+                            <p className="mt-0.5 font-mono text-xs font-semibold text-[var(--brand-deep)]">
+                              {it.payRef}
+                            </p>
+                          ) : null}
                           {it.note ? (
                             <p className="mt-0.5 break-words text-xs text-[var(--ink-muted)]">
+                              {locale === "hi" ? "UTR / नोट: " : "UTR / note: "}
                               {it.note}
                             </p>
                           ) : null}
@@ -1626,36 +1789,21 @@ export default function OrderDetailPage() {
                     onSubmit={onProof}
                     className="space-y-3 border-t border-[var(--line)] pt-4"
                   >
-                    <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-                      {items.length
-                        ? locale === "hi"
-                          ? "और प्रूफ जोड़ें"
-                          : "Add more proofs"
-                        : locale === "hi"
-                          ? "प्रूफ अपलोड करें"
-                          : "Upload proofs"}
-                    </p>
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/jpg,image/png,image/webp,image/*,.jpg,.jpeg,.png,.webp,.pdf,application/pdf"
+                    <FilePick
+                      kind="photoOrPdf"
                       multiple
-                      className="block w-full text-sm font-medium"
-                      onChange={(e) =>
-                        setProofFiles(Array.from(e.target.files || []))
+                      value={proofFiles}
+                      onChange={setProofFiles}
+                      label={
+                        items.length
+                          ? locale === "hi"
+                            ? "और प्रूफ जोड़ें"
+                            : "Add more proofs"
+                          : locale === "hi"
+                            ? "पेमेंट प्रूफ"
+                            : "Payment proof"
                       }
                     />
-                    <p className="text-[11px] text-[var(--ink-muted)]">
-                      {locale === "hi"
-                        ? "फ़ोन गैलरी से JPG / PNG / PDF चुनें (HEIC नहीं)।"
-                        : "Pick JPG / PNG / PDF from your phone gallery (not HEIC)."}
-                    </p>
-                    {proofFiles.length ? (
-                      <p className="text-xs text-[var(--ink-muted)]">
-                        {locale === "hi"
-                          ? `${proofFiles.length} फ़ाइल चुनी`
-                          : `${proofFiles.length} file${proofFiles.length === 1 ? "" : "s"} selected`}
-                      </p>
-                    ) : null}
                     <div className="grid gap-2 sm:grid-cols-2">
                       <div>
                         <label className="tt-label">
@@ -1861,11 +2009,11 @@ export default function OrderDetailPage() {
               <h3 className="text-base font-bold text-[var(--brand-deep)]">
                 {t("common.whatsapp")}
               </h3>
-              <NotifyWhatsAppToggle
-                checked={notifyWa}
-                onChange={setNotifyWa}
-                disabled={db.settings.whatsappNotifyEnabled === false}
-              />
+              <p className="text-xs text-[var(--ink-muted)]">
+                {locale === "hi"
+                  ? "कन्फर्म / बिल / डिस्पैच / LR / डिलीवर पर मैसेज अपने आप जाता है। फिर से भेजने के लिए नीचे दबाएँ।"
+                  : "Confirm, bill ready, dispatch, LR and delivered send automatically. Use this to resend."}
+              </p>
               <button
                 type="button"
                 className="tt-btn tt-btn-outline w-full text-base font-bold"
@@ -1876,17 +2024,29 @@ export default function OrderDetailPage() {
                     settings: db.settings,
                     users: db.users,
                     locale,
-                  }).then((ok) => {
+                  }).then((result) => {
                     setMsg(
-                      ok
-                        ? t("common.whatsappOpened")
-                        : t("common.whatsappNoPhone")
+                      whatsappResultCopy(result, {
+                        sent: t("common.whatsappSent"),
+                        opened: t("common.whatsappOpened"),
+                        fail: t("common.whatsappSendFailed"),
+                        noPhone: t("common.whatsappNoPhone"),
+                      })
                     );
                   });
                 }}
               >
                 {t("common.sendWhatsApp")}
               </button>
+              {orderHasLr(order) ? (
+                <button
+                  type="button"
+                  className="tt-btn tt-btn-outline w-full text-base font-bold"
+                  onClick={() => sendLrToDealer(order)}
+                >
+                  {locale === "hi" ? "LR WhatsApp पर भेजें" : "Send LR on WhatsApp"}
+                </button>
+              ) : null}
             </div>
           ) : null}
 
@@ -1900,7 +2060,6 @@ export default function OrderDetailPage() {
                   ? "पहले डिस्पैच करें। LR अलग से बाद में अपलोड होगा।"
                   : "Mark dispatched first. LR is uploaded separately after that."}
               </p>
-              <NotifyWhatsAppToggle checked={notifyWa} onChange={setNotifyWa} />
               <button
                 type="button"
                 className="tt-btn tt-btn-dark w-full text-base font-bold"
@@ -2053,25 +2212,20 @@ export default function OrderDetailPage() {
               </div>
 
               <div>
-                <label className="tt-label">
-                  {locale === "hi"
-                    ? "बिल स्कैन / PDF (वैकल्पिक)"
-                    : "Bill scan / PDF (optional)"}
-                </label>
-                <input
-                  type="file"
-                  accept="image/*,.pdf"
-                  className="mt-1 block w-full text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60"
+                <FilePick
+                  kind="photoOrPdf"
+                  value={billFile}
+                  onChange={(files) => setBillFile(files[0] ?? null)}
                   disabled={order.packingSlip?.status === "finalized"}
-                  onChange={(e) => setBillFile(e.target.files?.[0] ?? null)}
+                  label={
+                    locale === "hi"
+                      ? "बिल स्कैन / PDF (वैकल्पिक)"
+                      : "Bill scan / PDF (optional)"
+                  }
                 />
               </div>
               {order.packingSlip?.status !== "finalized" ? (
                 <>
-                  <NotifyWhatsAppToggle
-                    checked={notifyWa}
-                    onChange={setNotifyWa}
-                  />
                   <button
                     type="submit"
                     className="tt-btn tt-btn-dark w-full text-base font-bold"
@@ -2129,11 +2283,11 @@ export default function OrderDetailPage() {
                 value={lrNumber}
                 onChange={(e) => setLrNumber(e.target.value)}
               />
-              <input
-                type="file"
-                accept="image/*,.pdf"
-                className="block w-full text-sm font-medium"
-                onChange={(e) => setLrFile(e.target.files?.[0] ?? null)}
+              <FilePick
+                kind="photoOrPdf"
+                value={lrFile}
+                onChange={(files) => setLrFile(files[0] ?? null)}
+                label={locale === "hi" ? "LR स्कैन" : "LR scan"}
               />
               {order.lrFileDataUrl ? (
                 <a
@@ -2145,7 +2299,6 @@ export default function OrderDetailPage() {
                   {locale === "hi" ? "मौजूदा LR देखें" : "View current LR"}
                 </a>
               ) : null}
-              <NotifyWhatsAppToggle checked={notifyWa} onChange={setNotifyWa} />
               <button
                 type="submit"
                 className="tt-btn tt-btn-dark w-full text-base font-bold"
@@ -2177,13 +2330,12 @@ export default function OrderDetailPage() {
                 value={lrNumber}
                 onChange={(e) => setLrNumber(e.target.value)}
               />
-              <input
-                type="file"
-                accept="image/*,.pdf"
-                className="block w-full text-sm font-medium"
-                onChange={(e) => setLrFile(e.target.files?.[0] ?? null)}
+              <FilePick
+                kind="photoOrPdf"
+                value={lrFile}
+                onChange={(files) => setLrFile(files[0] ?? null)}
+                label={locale === "hi" ? "LR स्कैन" : "LR scan"}
               />
-              <NotifyWhatsAppToggle checked={notifyWa} onChange={setNotifyWa} />
               <button
                 type="button"
                 className="tt-btn tt-btn-dark w-full text-base font-bold"
@@ -2196,23 +2348,10 @@ export default function OrderDetailPage() {
                         const up = await uploadMediaFile(lrFile, "lr");
                         lrFileDataUrl = up.url;
                       }
-                      uploadLr(order.id, { lrNumber, lrFileDataUrl });
+                      const saved = uploadLr(order.id, { lrNumber, lrFileDataUrl });
                       setLrFile(null);
-                      setMsg(
-                        locale === "hi"
-                          ? "LR अपलोड · डिलीवर मार्क"
-                          : "LR uploaded · marked delivered"
-                      );
+                      sendLrToDealer(saved, lrFileDataUrl);
                       refresh();
-                      tryNotify(
-                        "delivered",
-                        lrNumber.trim() ? { lrNumber } : undefined,
-                        lrNumber.trim()
-                          ? locale === "hi"
-                            ? `LR नंबर: ${lrNumber}`
-                            : `LR number: ${lrNumber}`
-                          : undefined
-                      );
                     } catch (err) {
                       setMsg(
                         err instanceof Error ? err.message : "LR save failed"
@@ -2259,7 +2398,6 @@ export default function OrderDetailPage() {
               <h3 className="text-base font-bold text-[var(--brand-deep)]">
                 {locale === "hi" ? "स्टेटस अपडेट" : "Update status"}
               </h3>
-              <NotifyWhatsAppToggle checked={notifyWa} onChange={setNotifyWa} />
               <select
                 className="tt-select font-semibold"
                 value={order.status}

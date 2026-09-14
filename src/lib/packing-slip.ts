@@ -1,5 +1,5 @@
 import type { Order, OrderLine, PackingSlip } from "./types";
-import { roundMoney, roundOffRupees } from "./pricing";
+import { isPackCountUnit, roundMoney, roundOffRupees } from "./pricing";
 
 /** Fallback max rows; actual rows = max ordered bundles (see rowCountForOrder). */
 export const PACKING_SLIP_ROW_COUNT = 25;
@@ -156,7 +156,7 @@ export function lineActualWeightsFromSlip(
 /**
  * Weight for kg shipping slab.
  * - jhal: excluded (uses ₹/jhal instead)
- * - pkt/pcs: always admin pack weight × packs (never slip weighment)
+ * - pkt/pcs/sqft: always admin pack weight × packs (never slip weighment)
  * - kg/other: slip weighment, else estimate line.weightKg
  */
 export function shippingWeightFromSlip(
@@ -176,7 +176,7 @@ export function shippingWeightFromSlip(
       products.find((p) => p.id === line.productId)?.unit ||
       "";
     if (unit === "jhal") continue;
-    if (unit === "pkt" || unit === "pcs") {
+    if (isPackCountUnit(unit)) {
       const ordered = Math.max(0, Number(line.quantity) || 0);
       const packs = Math.max(
         0,
@@ -214,7 +214,7 @@ export type PackingSlipBillPreview = {
 
 /**
  * Bill from slip weighments.
- * Bundle / kg / jhal = ₹/kg × kg; pkt/pcs = rate × packs (qty).
+ * Bundle / kg / jhal = ₹/kg × kg; pkt/pcs/sqft = rate × packs (qty).
  * Shipping: slip.shippingAmount when set, else order.shippingAmount.
  */
 export function computeBillFromSlip(

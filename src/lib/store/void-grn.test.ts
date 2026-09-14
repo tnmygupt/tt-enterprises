@@ -245,3 +245,92 @@ describe("voidGoodsReceipt", () => {
     );
   });
 });
+
+describe("createGoodsReceipt against PO", () => {
+  beforeEach(() => {
+    const ls = memoryStorage();
+    vi.stubGlobal("localStorage", ls);
+    vi.stubGlobal("window", {
+      localStorage: ls,
+      dispatchEvent: () => true,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    });
+    vi.stubGlobal("crypto", {
+      randomUUID: () => `id_${Math.random().toString(16).slice(2)}`,
+    });
+  });
+
+  it("posts remaining qty onto an open PO", async () => {
+    const { loadDb, createGoodsReceipt, saveDb } = await import("./db");
+    const product = seedProduct();
+    const db = loadDb();
+    db.products = [product];
+    db.parties = [
+      {
+        id: "s1",
+        name: "Supplier",
+        phone: "9999999999",
+        type: "supplier",
+        openingBalance: 0,
+        active: true,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+    db.purchaseOrders = [
+      {
+        id: "po1",
+        number: "PO-1",
+        supplierId: "s1",
+        date: "2026-01-02",
+        status: "ordered",
+        total: 500,
+        lines: [
+          {
+            id: "pl1",
+            productId: "p1",
+            variationId: "v1",
+            colorId: "c1",
+            itemLabel: "HDPE",
+            qty: 5,
+            receivedQty: 0,
+            rate: 100,
+            amount: 500,
+            unit: "kg",
+          },
+        ],
+        createdAt: "2026-01-02T00:00:00.000Z",
+        createdBy: "test",
+      },
+    ];
+    db.goodsReceipts = [];
+    db.stockBatches = [];
+    saveDb(db);
+
+    const before = getSizeColorStock(loadDb().products[0], "v1", "c1");
+    createGoodsReceipt({
+      poId: "po1",
+      date: "2026-01-02",
+      createdBy: "tester",
+      lines: [
+        {
+          id: "gl_new",
+          poLineId: "pl1",
+          productId: "p1",
+          variationId: "v1",
+          colorId: "c1",
+          itemLabel: "HDPE",
+          qty: 2,
+          secondaryQty: 70,
+          unit: "kg",
+        },
+      ],
+    });
+
+    const next = loadDb();
+    expect(next.purchaseOrders[0].lines[0].receivedQty).toBe(2);
+    expect(["ordered", "partial"]).toContain(next.purchaseOrders[0].status);
+    expect(next.goodsReceipts[0].voided).toBe(false);
+    expect(getSizeColorStock(next.products[0], "v1", "c1")).toBe(before + 2);
+  });
+});

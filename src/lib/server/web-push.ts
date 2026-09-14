@@ -1,27 +1,31 @@
 import webpush from "web-push";
 import type { Capability, UserProfile } from "@/lib/types";
-import { userHasCapability } from "@/lib/capabilities";
+import {
+  staffMatchingAnyCap,
+  type CapabilityContext,
+} from "@/lib/capabilities";
+import { serverCfgValue } from "@/lib/server/read-cfg";
 
 export type PushSub = NonNullable<UserProfile["pushSubscriptions"]>[number];
 
 export function getVapidPublicKey(): string {
-  return (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "").trim();
+  return serverCfgValue("NEXT_PUBLIC_VAPID_PUBLIC_KEY");
 }
 
 export function vapidConfigured(): boolean {
   return Boolean(
     getVapidPublicKey() &&
-      (process.env.VAPID_PRIVATE_KEY || "").trim() &&
-      (process.env.VAPID_SUBJECT || "").trim()
+      serverCfgValue("VAPID_PRIVATE_KEY") &&
+      serverCfgValue("VAPID_SUBJECT")
   );
 }
 
 function configureWebPush(): boolean {
   if (!vapidConfigured()) return false;
   webpush.setVapidDetails(
-    process.env.VAPID_SUBJECT!.trim(),
-    process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!.trim(),
-    process.env.VAPID_PRIVATE_KEY!.trim()
+    serverCfgValue("VAPID_SUBJECT"),
+    serverCfgValue("NEXT_PUBLIC_VAPID_PUBLIC_KEY"),
+    serverCfgValue("VAPID_PRIVATE_KEY")
   );
   return true;
 }
@@ -86,17 +90,25 @@ export async function sendWebPushToSubs(
 
 export function staffWithCapability(
   users: UserProfile[],
-  cap: Capability
+  cap: Capability,
+  ctx?: CapabilityContext | null
 ): UserProfile[] {
-  return users.filter(
-    (u) =>
-      u.active &&
-      u.role !== "customer" &&
-      userHasCapability(u, cap) &&
-      (u.pushSubscriptions?.length ?? 0) > 0
+  return staffWithAnyCapability(users, [cap], ctx);
+}
+
+export function staffWithAnyCapability(
+  users: UserProfile[],
+  caps: Capability[],
+  ctx?: CapabilityContext | null
+): UserProfile[] {
+  return staffMatchingAnyCap(users, caps, ctx).filter(
+    (u) => (u.pushSubscriptions?.length ?? 0) > 0
   );
 }
 
-export function staffWithManageOrders(users: UserProfile[]): UserProfile[] {
-  return staffWithCapability(users, "manage_orders");
+export function staffWithManageOrders(
+  users: UserProfile[],
+  ctx?: CapabilityContext | null
+): UserProfile[] {
+  return staffWithCapability(users, "manage_orders", ctx);
 }

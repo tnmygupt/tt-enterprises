@@ -15,12 +15,17 @@ import {
   tombsFromDb,
 } from "@/lib/user-tombs";
 import { getPublicDbApiKey, isSupabaseConfigured } from "./config";
+import {
+  rememberLiveConfig,
+  setLiveSyncState,
+  shouldPullFromLivePulse,
+} from "./live";
 import { sanitizeDbForCloud } from "./sanitize";
 
 let apiAvailable: boolean | null = null;
 let lastPushJson = "";
 let lastCloudUpdatedAt: string | null = null;
-let lastScope: "public" | "staff" | "dealer" | null = null;
+let lastScope: "public" | "staff" | "dealer" | "owner" | null = null;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let queuedPushDb: AppDatabase | null = null;
 let silentConflictRetries = 0;
@@ -60,21 +65,55 @@ export function lastPullScope(): typeof lastScope {
   return lastScope;
 }
 
+/** After login, drop the public-catalog probe stamp and pull the session slice. */
+export async function repullForSession(): Promise<AppDatabase | null> {
+  lastCloudUpdatedAt = null;
+  try {
+    const { loadDb } = await import("@/lib/store/db");
+    return await pullCloudDatabase(loadDb());
+  } catch {
+    return null;
+  }
+}
+
+function parseApiError(text: string): string {
+  try {
+    return String((JSON.parse(text) as { error?: string }).error || "");
+  } catch {
+    return "";
+  }
+}
+
 /** Probe once so Hostinger server-only SUPABASE_* keys still enable sync. */
 export async function detectSupabaseSync(): Promise<boolean> {
   if (typeof window === "undefined") return isSupabaseConfigured();
-  if (apiAvailable !== null) return apiAvailable;
+  if (apiAvailable === true) return true;
   try {
     const res = await fetch("/api/db", {
       cache: "no-store",
       credentials: "include",
       headers: dbHeaders(),
     });
-    apiAvailable = res.ok || res.status === 200 || res.status === 204;
+    const bodyText = res.ok ? "" : await res.clone().text();
+    const errorKind = bodyText ? parseApiError(bodyText) : "";
+    if (res.ok || res.status === 204) {
+      apiAvailable = true;
+    } else if (res.status === 401 || res.status === 403) {
+      // Bad public DB key is "Unauthorized". Session/account errors still
+      // mean cloud is up — expire the cookie and keep sync on for a public retry.
+      if (errorKind === "Unauthorized") {
+        apiAvailable = false;
+      } else {
+        apiAvailable = true;
+        emitSessionExpiredFromApi(res.status, bodyText);
+      }
+    } else {
+      apiAvailable = false;
+    }
   } catch {
     apiAvailable = false;
   }
-  return apiAvailable;
+  return apiAvailable === true;
 }
 
 /** Overlay catalog fields from a public (anonymous) pull without wiping local users/orders. */
@@ -104,26 +143,115 @@ export function mergePublicCatalog(
   };
 }
 
+function emitSessionExpiredFromApi(status: number, body: string): void {
+  if (typeof window === "undefined") return;
+  if (status !== 401 && status !== 403) return;
+  let error = "";
+  try {
+    error = String((JSON.parse(body) as { error?: string }).error || "");
+  } catch {
+    /* ignore */
+  }
+  // Missing DB_API_KEY is "Unauthorized" — not a user session problem.
+  if (error === "Unauthorized") return;
+  window.dispatchEvent(
+    new CustomEvent("tt-session-expired", {
+      detail: error || "Session invalid",
+    })
+  );
+  window.dispatchEvent(
+    new CustomEvent("tt-sync-error", {
+      detail: error || "Login required to sync — please log in again",
+    })
+  );
+}
+
 async function pullViaApi(): Promise<{
   db: AppDatabase;
   updatedAt?: string;
-  scope?: "public" | "staff" | "dealer";
+  scope?: "public" | "staff" | "dealer" | "owner";
 } | null> {
   const res = await fetch("/api/db", {
     cache: "no-store",
     credentials: "include",
     headers: dbHeaders(),
   });
+  const pullText = await res.text();
+  let pullError = "";
+  try {
+    pullError = String((JSON.parse(pullText) as { error?: string }).error || "");
+  } catch {
+    pullError = "";
+  }
   if (res.status === 204 || res.status === 404) return null;
+  if (res.status === 401 || res.status === 403) {
+    emitSessionExpiredFromApi(res.status, pullText);
+    // Session/account 401 ≠ cloud off. Retry without cookies for catalog.
+    if (pullError !== "Unauthorized") {
+      const pub = await fetch("/api/db", {
+        cache: "no-store",
+        credentials: "omit",
+        headers: dbHeaders(),
+      });
+      if (pub.ok) {
+        const pubText = await pub.text();
+        try {
+          const pubData = JSON.parse(pubText) as {
+            db?: AppDatabase;
+            updatedAt?: string;
+            scope?: "public" | "staff" | "dealer" | "owner";
+          };
+          if (pubData.db) {
+            lastScope = "public";
+            return {
+              db: pubData.db,
+              updatedAt: pubData.updatedAt,
+              scope: "public",
+            };
+          }
+        } catch {
+          /* fall through to throw */
+        }
+      }
+    }
+  }
   if (!res.ok) throw new Error(`pull failed: ${res.status}`);
-  const data = (await res.json()) as {
+  if (!pullText.trim()) throw new Error("pull failed: empty body");
+  const data = JSON.parse(pullText) as {
     db?: AppDatabase;
     updatedAt?: string;
-    scope?: "public" | "staff" | "dealer";
+    scope?: "public" | "staff" | "dealer" | "owner";
   };
   if (!data.db) return null;
   lastScope = data.scope ?? null;
   return { db: data.db, updatedAt: data.updatedAt, scope: data.scope };
+}
+
+function emitAppliedDb(db: AppDatabase): void {
+  for (const fn of conflictListeners) {
+    try {
+      fn(db);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+async function warnIfStaffGotPublicCatalog(): Promise<void> {
+  if (typeof window === "undefined") return;
+  try {
+    const { getSession } = await import("@/lib/store/db");
+    const session = getSession();
+    if (!session || session.role === "customer") return;
+    window.dispatchEvent(
+      new CustomEvent("tt-sync-error", {
+        detail:
+          "Admin login cookie missing — log in again to see new dealer signups.",
+      })
+    );
+  } catch {
+    /* ignore */
+  }
 }
 
 function mergeByIdKeepLocalOnly<T extends { id: string }>(
@@ -173,11 +301,8 @@ export function mergeLocalUsersIntoRemote(
       .map((t) => t.userId)
   );
   let tombs = mergeTombMaps(tombsFromDb(remote), tombsFromDb(local));
-  // Only a NEWER user.createdAt (re-create) may clear a tomb — not stale presence
-  tombs = clearTombsBeatenByUsers(tombs, [
-    ...(remote.users ?? []),
-    ...(local.users ?? []),
-  ]);
+  // Only a NEWER local createdAt (re-create) may clear a tomb.
+  tombs = clearTombsBeatenByUsers(tombs, local.users ?? []);
   const tombFields = syncTombFields(tombs);
 
   const byId = new Map(
@@ -191,6 +316,9 @@ export function mergeLocalUsersIntoRemote(
     }
     const remoteU = byId.get(u.id);
     if (!remoteU) {
+      // Cloud directory is truth for dealers. Do not pull a deleted login
+      // back from this browser, then push it to every other device.
+      if (u.role === "customer") continue;
       byId.set(u.id, { ...u });
       continue;
     }
@@ -221,41 +349,10 @@ export { remoteOpsPurgeIsNewer, localOpsPurgeIsNewer } from "@/lib/ops-purge";
  * Cloud poll / 409 must not erase a just-placed order (or its wallet/stock
  * side effects) before the debounced push lands.
  */
-export function mergeLocalPendingIntoRemote(
+function mergePendingCollections(
   local: AppDatabase,
   remote: AppDatabase
 ): AppDatabase {
-  // After an admin ops purge, trust cloud — stale localStorage must not
-  // re-merge deleted users/orders and push them back.
-  if (remoteOpsPurgeIsNewer(local, remote)) {
-    return stripPrePurgeOps(remote);
-  }
-
-  // Local just cleared history — do not rehydrate cloud orders over the wipe.
-  if (localOpsPurgeIsNewer(local, remote)) {
-    const base = mergeLocalUsersIntoRemote(local, remote);
-    return stripPrePurgeOps({
-      ...base,
-      products: remote.products ?? local.products,
-      orders: local.orders ?? [],
-      walletTransactions: local.walletTransactions ?? [],
-      walletDeposits: local.walletDeposits ?? remote.walletDeposits,
-      stockMovements: local.stockMovements ?? [],
-      goodsReceipts: local.goodsReceipts ?? [],
-      purchaseOrders: local.purchaseOrders ?? [],
-      vouchers: local.vouchers ?? [],
-      ledgerEntries: local.ledgerEntries ?? [],
-      stockBatches: local.stockBatches ?? [],
-      batchConsumptions: local.batchConsumptions ?? [],
-      billAllocations: local.billAllocations ?? [],
-      settings: {
-        ...(remote.settings ?? {}),
-        ...(local.settings ?? {}),
-        opsPurgeAt: getOpsPurgeAt(local),
-      },
-    });
-  }
-
   const base = mergeLocalUsersIntoRemote(local, remote);
   const orders = mergeByIdPreferNewer(remote.orders, local.orders);
   const localOnlyOrderIds = new Set(
@@ -276,12 +373,20 @@ export function mergeLocalPendingIntoRemote(
   // local-only orders or GRNs, keep the full local catalog so stock can't
   // snap back to a stale cloud snapshot mid-push.
   let products = mergeByIdPreferNewer(remote.products, local.products);
-  if (
+  // Dealer/public pulls strip stockMovements to []. Treating those as
+  // "local-only movements" kept the undeducted local catalog after an
+  // estimate, so the shop still showed old bundle counts.
+  const remoteHasMovementLedger = (remote.stockMovements ?? []).length > 0;
+  const keepLocalCatalog =
+    remoteHasMovementLedger &&
     (localOnlyOrderIds.size > 0 ||
       localOnlyGrnIds.size > 0 ||
       localOnlyStockMovements) &&
-    (local.products?.length || 0) > 0
-  ) {
+    (local.products?.length || 0) > 0;
+  if (keepLocalCatalog) {
+    products = local.products;
+  }
+  if (!(products?.length) && (local.products?.length || 0) > 0) {
     products = local.products;
   }
 
@@ -337,7 +442,45 @@ export function mergeLocalPendingIntoRemote(
       remote.statementMatches,
       local.statementMatches
     ),
+    bankRecons: mergeByIdKeepLocalOnly(
+      remote.bankRecons,
+      local.bankRecons
+    ),
   });
+}
+
+/**
+ * Cloud poll / 409 must not erase a just-placed order (or its wallet/stock
+ * side effects) before the debounced push lands.
+ */
+export function mergeLocalPendingIntoRemote(
+  local: AppDatabase,
+  remote: AppDatabase
+): AppDatabase {
+  // After an admin ops purge, trust cloud — stale localStorage must not
+  // re-merge deleted users/orders and push them back.
+  if (remoteOpsPurgeIsNewer(local, remote)) {
+    return stripPrePurgeOps(remote);
+  }
+
+  // Local wipe stamp is newer — still keep cloud rows created after that
+  // stamp. Replacing orders with local [] was hiding (and re-pushing a wipe of)
+  // estimates placed from another device after launch wipe.
+  if (localOpsPurgeIsNewer(local, remote)) {
+    const stamp = getOpsPurgeAt(local);
+    const settings = {
+      ...(remote.settings ?? {}),
+      ...(local.settings ?? {}),
+      opsPurgeAt: stamp,
+    };
+    const merged = mergePendingCollections(
+      { ...local, settings },
+      { ...remote, settings }
+    );
+    return merged;
+  }
+
+  return mergePendingCollections(local, remote);
 }
 
 /** True when merge added / preferred local rows that cloud did not have. */
@@ -346,17 +489,9 @@ export function localPendingDiffers(
   merged: AppDatabase,
   remote: AppDatabase
 ): boolean {
-  // Local purge newer / cleared more orders than cloud — must push wipe
-  if (localOpsPurgeIsNewer(local, remote)) return true;
-  const localPurge = getOpsPurgeAt(local);
-  const remotePurge = getOpsPurgeAt(remote);
-  if (
-    localPurge &&
-    localPurge >= remotePurge &&
-    (local.orders ?? []).length < (remote.orders ?? []).length
-  ) {
-    return true;
-  }
+  // Never push a history wipe from localStorage. Launch wipe is server-side
+  // (/api/admin/purge-ops). A stale browser with a newer opsPurgeAt and
+  // empty orders must not overwrite cloud estimates or tombstone dealers.
   const remoteOrderIds = new Set((remote.orders ?? []).map((o) => o.id));
   if ((local.orders ?? []).some((o) => !remoteOrderIds.has(o.id))) return true;
   const remoteTxIds = new Set((remote.walletTransactions ?? []).map((t) => t.id));
@@ -397,7 +532,10 @@ export function localPendingDiffers(
   const remoteTombs = tombsFromDb(remote);
   if (
     (local.users ?? []).some(
-      (u) => !remoteUserIds.has(u.id) && applyTombsToUsers([u], remoteTombs).length
+      (u) =>
+        u.role !== "customer" &&
+        !remoteUserIds.has(u.id) &&
+        applyTombsToUsers([u], remoteTombs).length
     )
   ) {
     return true;
@@ -551,6 +689,23 @@ async function pushViaApi(
         })
       );
     }
+    // Server merge keeps cloud-only signups; pull so this tab sees them.
+    try {
+      const remote = await pullViaApi();
+      if (remote?.db) {
+        if (remote.scope === "public") {
+          await warnIfStaffGotPublicCatalog();
+        } else {
+          if (remote.updatedAt) lastCloudUpdatedAt = remote.updatedAt;
+          const localNow = await readLatestLocalDb(db);
+          const applyDb = mergeLocalPendingIntoRemote(localNow, remote.db);
+          lastPushJson = JSON.stringify(sanitizeDbForCloud(applyDb));
+          emitAppliedDb(applyDb);
+        }
+      }
+    } catch {
+      /* push already succeeded */
+    }
   } catch {
     /* ignore */
   }
@@ -584,8 +739,15 @@ export function isCloudPushPending(): boolean {
   return pushTimer != null || queuedPushDb != null;
 }
 
+function canPushNow(): boolean {
+  return lastScope === "staff" || lastScope === "owner" || lastScope === "dealer";
+}
+
 export function schedulePushCloudDatabase(db: AppDatabase): void {
   if (!supabaseSyncEnabled()) return;
+  // Public catalog pulls have no write cookie. Pushing them 401s as
+  // "Unauthorized" on Hostinger builds that lack NEXT_PUBLIC_DB_API_KEY.
+  if (!canPushNow()) return;
   queuedPushDb = db;
   if (pushTimer) clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
@@ -604,6 +766,7 @@ export async function flushPushCloudDatabase(
   db: AppDatabase
 ): Promise<boolean> {
   if (!supabaseSyncEnabled()) return false;
+  if (!canPushNow()) return false;
   if (pushTimer) {
     clearTimeout(pushTimer);
     pushTimer = null;
@@ -621,10 +784,13 @@ export async function pushCloudDatabase(db: AppDatabase): Promise<boolean> {
     const cleaned = sanitizeDbForCloud(latest);
     const json = JSON.stringify(cleaned);
     if (json === lastPushJson) return true;
+    const lastPushJsonBefore = lastPushJson;
     try {
       const ok = await pushViaApi(cleaned);
       if (!ok) return false;
-      lastPushJson = json;
+      if (lastPushJson === lastPushJsonBefore) {
+        lastPushJson = json;
+      }
       return true;
     } catch (err) {
       console.warn("[supabase] push failed", err);
@@ -696,14 +862,18 @@ async function probeUpdatedAt(): Promise<string | null | undefined> {
     headers: dbHeaders(),
   });
   if (!res.ok) return undefined;
-  const data = (await res.json()) as { updatedAt?: string | null };
+  const data = (await res.json()) as {
+    updatedAt?: string | null;
+    live?: { url?: string; key?: string };
+  };
+  rememberLiveConfig(data.live);
   return data.updatedAt ?? null;
 }
 
 /**
- * Live shared DB via /api/db polling (works with locked RLS; no anon SELECT needed).
- * Uses a cheap updatedAt probe, pauses when the tab is hidden, and backs off
- * while idle so mid-range phones are not hammered every 4s.
+ * Shared DB via /api/db. Staff desks also listen for a Realtime ping
+ * (no jsonb SELECT) so a dealer proof shows without waiting for the poll.
+ * Poll remains the fallback when the tab is hidden or the socket drops.
  */
 export function subscribeCloudDatabase(
   onChange: (db: AppDatabase) => void,
@@ -715,15 +885,23 @@ export function subscribeCloudDatabase(
   let timer: number | null = null;
   let unchangedStreak = 0;
   let busy = false;
+  let pulseQueued = false;
+  let liveOn = false;
+  let stopLive: (() => void) | null = null;
+  let liveAttachStarted = false;
   const FAST_MS = 4000;
   const SLOW_MS = 20_000;
+  const LIVE_FALLBACK_MS = 45_000;
 
   const onConflict = (db: AppDatabase) => {
     if (!cancelled) onChange(db);
   };
   conflictListeners.add(onConflict);
 
-  const intervalMs = () => (unchangedStreak >= 3 ? SLOW_MS : FAST_MS);
+  const intervalMs = () => {
+    if (liveOn) return LIVE_FALLBACK_MS;
+    return unchangedStreak >= 3 ? SLOW_MS : FAST_MS;
+  };
 
   const scheduleNext = () => {
     if (cancelled) return;
@@ -734,7 +912,73 @@ export function subscribeCloudDatabase(
     }, intervalMs());
   };
 
-  const tick = async () => {
+  let tick: () => Promise<void> = async () => undefined;
+
+  const requestTick = () => {
+    if (cancelled) return;
+    unchangedStreak = 0;
+    if (busy) {
+      pulseQueued = true;
+      return;
+    }
+    void tick();
+  };
+
+  const staffWantsLive = async (): Promise<boolean> => {
+    if (lastScope === "staff" || lastScope === "owner") return true;
+    try {
+      const { getSession } = await import("@/lib/store/db");
+      const session = getSession();
+      return !!session && session.role !== "customer";
+    } catch {
+      return false;
+    }
+  };
+
+  const attachLive = () => {
+    if (cancelled || liveAttachStarted) return;
+    liveAttachStarted = true;
+    void (async () => {
+      if (!(await staffWantsLive())) {
+        liveAttachStarted = false;
+        return;
+      }
+      const { startAppDbLive } = await import("./live-client");
+      if (cancelled) {
+        liveAttachStarted = false;
+        return;
+      }
+      const stop = await startAppDbLive({
+        onPulse: (incomingAt) => {
+          if (isCloudPushPending()) return;
+          if (!shouldPullFromLivePulse(lastCloudUpdatedAt, incomingAt)) return;
+          requestTick();
+        },
+        onState: (state) => {
+          liveOn = state === "on";
+          if (state === "on") {
+            unchangedStreak = 0;
+            if (timer != null) {
+              window.clearTimeout(timer);
+              timer = null;
+            }
+            scheduleNext();
+          }
+        },
+      });
+      if (!stop) {
+        liveAttachStarted = false;
+        return;
+      }
+      stopLive = stop;
+      if (cancelled) {
+        stopLive();
+        stopLive = null;
+      }
+    })();
+  };
+
+  tick = async () => {
     if (cancelled || busy) return;
     if (document.visibilityState === "hidden") return;
     busy = true;
@@ -756,6 +1000,9 @@ export function subscribeCloudDatabase(
       if (cancelled || !remote) return;
       if (remote.updatedAt) lastCloudUpdatedAt = remote.updatedAt;
       const local = getLocal?.() ?? null;
+      if (remote.scope === "public") {
+        await warnIfStaffGotPublicCatalog();
+      }
       let applyDb =
         remote.scope === "public" && local
           ? mergePublicCatalog(local, remote.db)
@@ -783,7 +1030,13 @@ export function subscribeCloudDatabase(
       /* ignore transient errors */
     } finally {
       busy = false;
-      scheduleNext();
+      attachLive();
+      if (pulseQueued) {
+        pulseQueued = false;
+        void tick();
+      } else {
+        scheduleNext();
+      }
     }
   };
 
@@ -792,6 +1045,7 @@ export function subscribeCloudDatabase(
     if (document.visibilityState === "visible") {
       unchangedStreak = 0;
       void tick();
+      attachLive();
     } else if (timer != null) {
       window.clearTimeout(timer);
       timer = null;
@@ -804,13 +1058,19 @@ export function subscribeCloudDatabase(
 
   document.addEventListener("visibilitychange", onVisibility);
   window.addEventListener("tt-db-updated", onLocalWrite);
+  window.addEventListener("tt-session-updated", attachLive);
 
+  attachLive();
   void tick();
   return () => {
     cancelled = true;
     conflictListeners.delete(onConflict);
     if (timer != null) window.clearTimeout(timer);
+    stopLive?.();
+    stopLive = null;
+    setLiveSyncState("off");
     document.removeEventListener("visibilitychange", onVisibility);
     window.removeEventListener("tt-db-updated", onLocalWrite);
+    window.removeEventListener("tt-session-updated", attachLive);
   };
 }

@@ -3,6 +3,15 @@
 import { FormEvent, useMemo, useState } from "react";
 import { NumberField } from "@/components/NumberField";
 import { useDb } from "@/lib/hooks";
+import {
+  applySqftComputedRate,
+  formatInr,
+  isPackCountUnit,
+  isSqftUnit,
+  ratePerPacket,
+  ratePerPiece,
+  sqftSizeLabel,
+} from "@/lib/pricing";
 import { upsertParty, upsertProduct } from "@/lib/store/db";
 import type {
   Party,
@@ -177,6 +186,9 @@ export function CreateProductModal({
   const [size, setSize] = useState("");
   const [rate, setRate] = useState<number | "">(0);
   const [weightKg, setWeightKg] = useState<number | "">(1);
+  const [lengthFt, setLengthFt] = useState<number | "">("");
+  const [widthFt, setWidthFt] = useState<number | "">("");
+  const [pcsPerPacket, setPcsPerPacket] = useState<number | "">("");
   const [error, setError] = useState("");
 
   const onSubmit = (e: FormEvent) => {
@@ -189,16 +201,42 @@ export function CreateProductModal({
     const now = new Date().toISOString();
     const rateN = typeof rate === "number" ? rate : 0;
     const wt = typeof weightKg === "number" ? weightKg : 1;
+    const lFt = typeof lengthFt === "number" ? lengthFt : 0;
+    const wFt = typeof widthFt === "number" ? widthFt : 0;
+    const pcs = typeof pcsPerPacket === "number" ? pcsPerPacket : 0;
+    if (isSqftUnit(unit)) {
+      if (!(lFt > 0) || !(wFt > 0)) {
+        setError("Sq/ft needs length and width in feet");
+        return;
+      }
+      if (!(pcs > 0)) {
+        setError("Sq/ft needs pieces per packet");
+        return;
+      }
+      if (!(rateN > 0)) {
+        setError("Sq/ft needs ₹ per sqft");
+        return;
+      }
+    }
     const codeTrim = code.trim() || `SKU-${Date.now().toString(36).toUpperCase()}`;
-    const variation: ProductVariation = {
+    const sizeEn = isSqftUnit(unit) ? sqftSizeLabel(lFt, wFt) : size.trim();
+    let variation: ProductVariation = {
       id: `var_${crypto.randomUUID()}`,
-      label: { en: size.trim() || "Standard", hi: size.trim() || "स्टैंडर्ड" },
-      size: { en: size.trim(), hi: size.trim() },
+      label: { en: sizeEn || "Standard", hi: sizeEn || "स्टैंडर्ड" },
+      size: { en: sizeEn, hi: sizeEn },
       sku: `${codeTrim}-1`,
       rate: rateN,
       weightKg: wt,
       stock: 0,
       stockSecondary: 0,
+      ...(isSqftUnit(unit)
+        ? {
+            lengthFt: lFt,
+            widthFt: wFt,
+            pcsPerPacket: pcs,
+            ratePerSqft: rateN,
+          }
+        : {}),
     };
     const product: Product = {
       id: `prod_${crypto.randomUUID()}`,
@@ -209,9 +247,12 @@ export function CreateProductModal({
       description: { en: "", hi: "" },
       unit,
       baseRate: rateN,
+      ratePerSqft: isSqftUnit(unit) ? rateN : undefined,
+      lengthFt: isSqftUnit(unit) ? lFt : undefined,
+      widthFt: isSqftUnit(unit) ? wFt : undefined,
+      pcsPerPacket: isSqftUnit(unit) ? pcs : undefined,
       baseWeightKg: wt,
-      pricingMode:
-        unit === "pcs" || unit === "pkt" ? "pcs" : "bundle",
+      pricingMode: isPackCountUnit(unit) ? "pcs" : "bundle",
       brand: "TT",
       hsnCode: "",
       minOrderQty: 1,
@@ -232,6 +273,13 @@ export function CreateProductModal({
       createdAt: now,
       updatedAt: now,
     };
+    if (isSqftUnit(unit)) {
+      product.variations = [
+        applySqftComputedRate(product, product.variations[0]),
+      ];
+      variation = product.variations[0];
+      product.baseRate = variation.rate;
+    }
     upsertProduct(product);
     refresh();
     onCreated(product, variation.id);
@@ -280,15 +328,53 @@ export function CreateProductModal({
           </div>
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
-          <div>
-            <label className="tt-label">Size / variation</label>
-            <input
-              className="tt-input"
-              value={size}
-              onChange={(e) => setSize(e.target.value)}
-              placeholder="e.g. 12x18"
-            />
-          </div>
+          {isSqftUnit(unit) ? (
+            <>
+              <div>
+                <label className="tt-label">Length (ft)</label>
+                <NumberField
+                  className="tt-input"
+                  min={0}
+                  step={0.01}
+                  emptyAs={null}
+                  value={lengthFt}
+                  onValueChange={setLengthFt}
+                />
+              </div>
+              <div>
+                <label className="tt-label">Width (ft)</label>
+                <NumberField
+                  className="tt-input"
+                  min={0}
+                  step={0.01}
+                  emptyAs={null}
+                  value={widthFt}
+                  onValueChange={setWidthFt}
+                />
+              </div>
+              <div>
+                <label className="tt-label">Pcs / packet</label>
+                <NumberField
+                  className="tt-input"
+                  min={0}
+                  integer
+                  emptyAs={null}
+                  value={pcsPerPacket}
+                  onValueChange={setPcsPerPacket}
+                />
+              </div>
+            </>
+          ) : (
+            <div>
+              <label className="tt-label">Size / variation</label>
+              <input
+                className="tt-input"
+                value={size}
+                onChange={(e) => setSize(e.target.value)}
+                placeholder="e.g. 12x18"
+              />
+            </div>
+          )}
           <div>
             <label className="tt-label">Unit</label>
             <select
@@ -299,11 +385,14 @@ export function CreateProductModal({
               <option value="kg">kg</option>
               <option value="pcs">pcs</option>
               <option value="pkt">pkt/pc</option>
+              <option value="sqft">sq/ft</option>
               <option value="jhal">jhal</option>
             </select>
           </div>
           <div>
-            <label className="tt-label">Rate</label>
+            <label className="tt-label">
+              {isSqftUnit(unit) ? "₹ / sqft" : "Rate"}
+            </label>
             <NumberField
               className="tt-input"
               value={rate}
@@ -311,6 +400,23 @@ export function CreateProductModal({
             />
           </div>
         </div>
+        {isSqftUnit(unit) &&
+        typeof lengthFt === "number" &&
+        typeof widthFt === "number" &&
+        typeof pcsPerPacket === "number" &&
+        typeof rate === "number" &&
+        lengthFt > 0 &&
+        widthFt > 0 &&
+        pcsPerPacket > 0 &&
+        rate > 0 ? (
+          <p className="text-xs text-[var(--ink-muted)]">
+            {sqftSizeLabel(lengthFt, widthFt)} ·{" "}
+            {formatInr(ratePerPiece(rate, lengthFt, widthFt))}
+            /pc ·{" "}
+            {formatInr(ratePerPacket(rate, lengthFt, widthFt, pcsPerPacket))}
+            /pkt
+          </p>
+        ) : null}
         <div>
           <label className="tt-label">Kg per bundle (optional)</label>
           <NumberField

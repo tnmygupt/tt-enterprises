@@ -1,9 +1,11 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { ExportButtons } from "@/components/ExportButtons";
 import { NumberField } from "@/components/NumberField";
@@ -46,6 +48,7 @@ function blankStock(): StockLine {
 }
 
 export default function OpeningsPage() {
+  const t = useTranslations();
   const { session } = useSession();
   const { db, refresh } = useDb();
   const today = toDateInputValue();
@@ -152,7 +155,7 @@ export default function OpeningsPage() {
   if (!session || !canViewFinancials(session.role)) {
     return (
       <AccountsShell>
-        <AdminAccessDenied title="Owner only — opening balances" />
+        <AdminAccessDenied title={t("accounts.ownerOnlyOpenings")} />
       </AccountsShell>
     );
   }
@@ -279,13 +282,10 @@ export default function OpeningsPage() {
     <AccountsShell>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-            Opening balances
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Bring stock, party balances and old unpaid bills from Tally into
-            these books. Owner only.
-          </p>
+          <AccountsPageHeader
+            title={t("accounts.openingBalances")}
+            hint={`${t("accounts.openingsHint")} ${t("accounts.ownerOnly")}`}
+          />
         </div>
         <ExportButtons options={exportOptions} />
       </div>

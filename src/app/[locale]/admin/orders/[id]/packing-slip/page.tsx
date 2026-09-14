@@ -7,9 +7,16 @@ import { useParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AdminShell } from "@/components/AdminShell";
+import { BackToBooksBar } from "@/components/AccountsShell";
 import { NumberField } from "@/components/NumberField";
 import { useDb, useSession } from "@/lib/hooks";
+import { StaffBillDiscountFields } from "@/components/StaffBillDiscountFields";
 import { formatInr, roundMoney } from "@/lib/pricing";
+import {
+  notifyPackingSlipFinalizedWhatsApp,
+  notifyPackingSlipWhatsApp,
+  whatsappResultCopy,
+} from "@/lib/whatsapp";
 import {
   attachPackingSlipPdf,
   calcShipping,
@@ -35,11 +42,20 @@ import {
 } from "@/lib/packing-slip";
 import { companyFromSettings } from "@/lib/export-pdf";
 import {
+  buildPackingSlipPdfBlob,
   buildPackingSlipPdfDataUrl,
   downloadPackingSlipPdf,
 } from "@/lib/packing-slip-pdf";
-import { pickBestOrderDiscount } from "@/lib/schemes";
-import type { PackingSlip } from "@/lib/types";
+import { uploadMediaFile } from "@/lib/upload-media";
+import {
+  applyBillDiscounts,
+  orderDiscountMathLabel,
+  orderDiscountMathQty,
+  orderDiscountReceiptLabel,
+  pickBestOrderDiscount,
+  type ManualDiscountKind,
+} from "@/lib/schemes";
+import type { Order, PackingSlip } from "@/lib/types";
 
 export default function AdminPackingSlipPage() {
   const t = useTranslations();
@@ -53,13 +69,15 @@ export default function AdminPackingSlipPage() {
   /** Keep decimal typing like "12." without jumping to "12" */
   const [cellDrafts, setCellDrafts] = useState<Record<string, string>>({});
   const [shippingDraft, setShippingDraft] = useState("");
+  const [discKind, setDiscKind] = useState<ManualDiscountKind | "">("");
+  const [discValue, setDiscValue] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmFinalize, setConfirmFinalize] = useState(false);
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const canManage =
-    !!session && checkCapability(session, db?.users, "manage_orders");
+    !!session && checkCapability(session, db, "manage_orders");
 
   useEffect(() => {
     if (!order || !canManage) return;
@@ -167,6 +185,17 @@ export default function AdminPackingSlipPage() {
     return autoShipping;
   }, [slip, autoShipping]);
 
+  useEffect(() => {
+    if (!order) return;
+    // Hydrate staff override from the saved order
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setDiscKind(order.manualDiscountKind || "");
+    setDiscValue(
+      order.manualDiscountValue != null ? String(order.manualDiscountValue) : ""
+    );
+    /* eslint-enable react-hooks/set-state-in-effect */
+  }, [order?.id, order?.manualDiscountKind, order?.manualDiscountValue]);
+
   const preview = useMemo(() => {
     if (!order || !slip || !db) return null;
     const base = computeBillFromSlip(order, slip, {
@@ -176,29 +205,54 @@ export default function AdminPackingSlipPage() {
     const kgTotals =
       slip.columns.length === order.lines.length
         ? columnKgTotals(slip)
-        : order.lines.map((l) => l.actualWeightKg || l.weightKg || 0);
+        : order.lines.map(() => 0);
+    const slipKg = roundMoney(kgTotals.reduce((s, n) => s + (Number(n) || 0), 0));
     const bundles = columnBundles(slip);
     const linesForDisc = order.lines.map((line, i) => ({
       ...line,
       lineTotal: base.lineAmounts[i] ?? line.lineTotal,
-      actualWeightKg: kgTotals[i] > 0 ? kgTotals[i] : line.actualWeightKg,
+      actualWeightKg: kgTotals[i] || 0,
+      estimatedWeightKg: 0,
+      weightKg: kgTotals[i] || 0,
       quantity:
         line.pricingMode === "pcs" && (bundles[i] || 0) > 0
           ? bundles[i]
           : line.quantity,
     }));
     const dealer = db.users.find((u) => u.id === order.userId);
-    const best = pickBestOrderDiscount(
-      db.schemes,
-      dealer?.assignedSchemeIds,
-      linesForDisc,
-      db.products
-    );
-    return computeBillFromSlip(order, slip, {
-      shippingAmount: effectiveShipping,
-      schemeDiscount: best?.amount ?? 0,
+    const billedOpts = { billedOnly: true } as const;
+    const best =
+      slipKg > 0
+        ? pickBestOrderDiscount(
+            db.schemes,
+            dealer?.assignedSchemeIds,
+            linesForDisc,
+            db.products,
+            undefined,
+            billedOpts
+          )
+        : null;
+    const applied = applyBillDiscounts({
+      goodsSubtotal: base.subtotal,
+      schemeAmount: best?.amount ?? 0,
+      manualKind: discKind,
+      manualValue: Number(discValue) || 0,
     });
-  }, [order, slip, effectiveShipping, db]);
+    const discQty = best
+      ? orderDiscountMathQty(best.scheme, linesForDisc, db.products, billedOpts)
+      : 0;
+    return {
+      ...computeBillFromSlip(order, slip, {
+        shippingAmount: effectiveShipping,
+        schemeDiscount: applied.total,
+      }),
+      schemeAuto: applied.schemeAmount,
+      schemeBest: best,
+      staffExtra: applied.manualAmount,
+      discountMath: orderDiscountMathLabel(best, discQty, locale),
+      weighed: slipKg > 0,
+    };
+  }, [order, slip, effectiveShipping, db, discKind, discValue, locale]);
 
   useEffect(() => {
     if (!slip) return;
@@ -341,6 +395,81 @@ export default function AdminPackingSlipPage() {
     window.setTimeout(cleanup, 1500);
   };
 
+  const publishPackingSlipPdfUrl = async (source: Order): Promise<string> => {
+    const filename = `${source.orderNumber}-packing-slip.pdf`;
+    const blob = buildPackingSlipPdfBlob(
+      source,
+      locale,
+      companyFromSettings(db?.settings)
+    );
+    const file = new File([blob], filename, { type: "application/pdf" });
+    const uploaded = await uploadMediaFile(file, "bills");
+    const url = uploaded.url || "";
+    if (/^https:\/\//i.test(url)) return url;
+    if (url.startsWith("/") && window.location.origin.startsWith("https://")) {
+      return `${window.location.origin}${url}`;
+    }
+    throw new Error(
+      hi
+        ? "PDF अपलोड नहीं हुआ — WhatsApp में फ़ाइल नहीं जा सकती"
+        : "Could not upload PDF — WhatsApp cannot attach the file"
+    );
+  };
+
+  const onWhatsAppPdf = async () => {
+    if (!db || !order) return;
+    const phone = order.phone || db.users.find((u) => u.id === order.userId)?.phone;
+    if (!phone) {
+      setMsg(
+        hi ? "डिलर फ़ोन नहीं मिला" : "Dealer phone missing"
+      );
+      return;
+    }
+    setBusy(true);
+    setMsg("");
+    try {
+      let pdfUrl = order.packingSlip?.customerPdfUrl || "";
+      if (!/^https:\/\//i.test(pdfUrl)) {
+        pdfUrl = await publishPackingSlipPdfUrl(order);
+        attachPackingSlipPdf(order.id, pdfUrl);
+        refresh();
+      }
+      const wa = await notifyPackingSlipWhatsApp({
+        phone,
+        partyName: order.checkoutName || order.userName || "Dealer",
+        voucherNumber: order.orderNumber,
+        settings: db.settings,
+        locale,
+        orderNumber: order.orderNumber,
+        orderId: order.id,
+        packingSlipDataUrl: pdfUrl,
+        packingSlipName: `${order.orderNumber}-packing-slip.pdf`,
+        audience: "customer",
+        discountAmount: order.schemeDiscount,
+        discountLabel: order.schemeDiscountLabel,
+        billAmount: order.actualBillAmount,
+        order,
+      });
+      setMsg(
+        whatsappResultCopy(wa, {
+          sent: t("common.whatsappSent"),
+          opened: t("common.whatsappOpened"),
+          fail: t("common.whatsappSendFailed"),
+          noPhone: t("common.whatsappNoPhone"),
+        }) +
+          (wa.attached
+            ? hi
+              ? " · PDF और पेमेंट QR WhatsApp पर गए"
+              : " · PDF and payment QR sent on WhatsApp"
+            : "")
+      );
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "WhatsApp PDF failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onDownloadPdf = () => {
     // Start PDF open/share BEFORE any React setState so iOS still treats it
     // as a user gesture (setBusy would break Safari window.open / share).
@@ -447,7 +576,12 @@ export default function AdminPackingSlipPage() {
   const onSave = () => {
     try {
       const ready = flushCellDrafts(slip);
-      const saved = savePackingSlipDraft(order.id, persistSlip(ready));
+      const saved = savePackingSlipDraft(order.id, persistSlip(ready), {
+        manualDiscountKind:
+          discKind === "percent" || discKind === "flat" ? discKind : undefined,
+        manualDiscountValue:
+          discKind && Number(discValue) > 0 ? Number(discValue) : undefined,
+      });
       setSlip(structuredClone(saved.packingSlip!));
       setCellDrafts({});
       setMsg(hi ? "ड्राफ्ट सेव हो गया" : "Draft saved");
@@ -470,28 +604,76 @@ export default function AdminPackingSlipPage() {
     try {
       const ready = flushCellDrafts(slip);
       setSlip(ready);
-      savePackingSlipDraft(order.id, persistSlip(ready));
+      savePackingSlipDraft(order.id, persistSlip(ready), {
+        manualDiscountKind:
+          discKind === "percent" || discKind === "flat" ? discKind : undefined,
+        manualDiscountValue:
+          discKind && Number(discValue) > 0 ? Number(discValue) : undefined,
+      });
       const done = finalizePackingSlip(order.id, session.id, {
         preparedBy: ready.preparedBy,
         checkedBy: ready.checkedBy,
+        manualDiscountKind:
+          discKind === "percent" || discKind === "flat" ? discKind : undefined,
+        manualDiscountValue:
+          discKind && Number(discValue) > 0 ? Number(discValue) : undefined,
       });
+      let billed = done;
       try {
-        const pdf = buildPackingSlipPdfDataUrl(
-          done,
-          locale,
-          companyFromSettings(db?.settings)
-        );
-        attachPackingSlipPdf(order.id, pdf);
+        let pdfUrl = "";
+        try {
+          pdfUrl = await publishPackingSlipPdfUrl(billed);
+        } catch (uploadErr) {
+          console.warn("[packing-slip] PDF upload skipped", uploadErr);
+        }
+        if (!pdfUrl) {
+          pdfUrl = buildPackingSlipPdfDataUrl(
+            billed,
+            locale,
+            companyFromSettings(db?.settings)
+          );
+        }
+        billed = attachPackingSlipPdf(order.id, pdfUrl);
       } catch (pdfErr) {
         console.warn("[packing-slip] PDF attach skipped", pdfErr);
       }
-      setMsg(
-        hi
-          ? "पैकिंग स्लिप फाइनल · वजन, शिपिंग और बिल अपडेट"
-          : "Packing slip finalized · weights, shipping and bill updated"
-      );
+      try {
+        if (!db) throw new Error("missing db");
+        const wa = await notifyPackingSlipFinalizedWhatsApp({
+          order: billed,
+          settings: db.settings,
+          users: db.users,
+          locale,
+        });
+        const waCopy = whatsappResultCopy(wa, {
+          sent: t("common.whatsappSent"),
+          opened: t("common.whatsappOpened"),
+          fail: t("common.whatsappSendFailed"),
+          noPhone: t("common.whatsappNoPhone"),
+        });
+        const attachHint = wa.attached
+          ? hi
+            ? " · पैकिंग स्लिप PDF और पेमेंट QR WhatsApp पर गए"
+            : " · packing slip PDF and payment QR sent on WhatsApp"
+          : wa.ok
+            ? hi
+              ? " · ऑर्डर लिंक मैसेज में है"
+              : " · order link is in the message"
+            : "";
+        setMsg(
+          hi
+            ? `पैकिंग स्लिप फाइनल · वजन, शिपिंग और बिल अपडेट · ${waCopy}${attachHint}`
+            : `Packing slip finalized · weights, shipping and bill updated · ${waCopy}${attachHint}`
+        );
+      } catch {
+        setMsg(
+          hi
+            ? "पैकिंग स्लिप फाइनल · वजन, शिपिंग और बिल अपडेट"
+            : "Packing slip finalized · weights, shipping and bill updated"
+        );
+      }
       refresh();
-      const updated = done.packingSlip;
+      const updated = billed.packingSlip;
       if (updated) setSlip(structuredClone(updated));
       setCellDrafts({});
       try {
@@ -584,6 +766,7 @@ export default function AdminPackingSlipPage() {
 
   return (
     <AdminShell wide>
+      <BackToBooksBar />
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3 print:hidden">
         <div>
           <Link
@@ -655,6 +838,14 @@ export default function AdminPackingSlipPage() {
                 onClick={() => void onDownloadPdf()}
               >
                 {hi ? "स्लिप सेव / शेयर" : "Save / share slip"}
+              </button>
+              <button
+                type="button"
+                className="tt-btn tt-btn-dark"
+                disabled={busy}
+                onClick={() => void onWhatsAppPdf()}
+              >
+                {hi ? "WhatsApp स्लिप + पेमेंट" : "WhatsApp slip + pay"}
               </button>
               <button
                 type="button"
@@ -1140,6 +1331,50 @@ export default function AdminPackingSlipPage() {
                     {formatInr(preview.subtotal, locale)}
                   </span>
                 </div>
+                <div className="print:hidden py-2">
+                  <StaffBillDiscountFields
+                    goodsSubtotal={preview.subtotal}
+                    schemeAmount={preview.schemeAuto}
+                    schemeLabel={
+                      preview.schemeBest
+                        ? orderDiscountReceiptLabel(preview.schemeBest, locale)
+                        : ""
+                    }
+                    kind={discKind}
+                    value={discValue}
+                    onKindChange={setDiscKind}
+                    onValueChange={setDiscValue}
+                    locale={locale}
+                    disabled={locked}
+                  />
+                </div>
+                <div className="flex justify-between">
+                  <span>
+                    {preview.weighed
+                      ? hi
+                        ? "− छूट"
+                        : "− Discount"
+                      : hi
+                        ? "− छूट (तौल के बाद)"
+                        : "− Discount after weighment"}
+                    {preview.weighed && preview.discountMath ? (
+                      <span className="mt-0.5 block text-[10px] font-semibold text-[var(--ink-muted)]">
+                        {preview.discountMath}
+                      </span>
+                    ) : null}
+                    {preview.weighed &&
+                    preview.schemeBest?.scheme.name &&
+                    preview.schemeDiscount > 0 ? (
+                      <span className="block text-[10px] font-normal text-[var(--ink-muted)]">
+                        {preview.schemeBest.scheme.name[locale] ||
+                          preview.schemeBest.scheme.name.en}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="tabular-nums">
+                    {formatInr(preview.schemeDiscount, locale)}
+                  </span>
+                </div>
                 <div className="flex justify-between">
                   <span>
                     {hi ? "+ शिपिंग" : "+ Shipping"}
@@ -1155,19 +1390,6 @@ export default function AdminPackingSlipPage() {
                     {formatInr(preview.shippingAmount, locale)}
                   </span>
                 </div>
-                {preview.schemeDiscount > 0 ? (
-                  <div className="flex justify-between">
-                    <span>
-                      {hi ? "− स्कीम छूट" : "− Scheme discount"}
-                      {order.schemeDiscountLabel
-                        ? ` · ${order.schemeDiscountLabel}`
-                        : ""}
-                    </span>
-                    <span className="tabular-nums">
-                      {formatInr(preview.schemeDiscount, locale)}
-                    </span>
-                  </div>
-                ) : null}
                 {preview.walletUsed > 0 ? (
                   <div className="flex justify-between">
                     <span>{hi ? "− वॉलेट" : "− Wallet"}</span>

@@ -8,7 +8,7 @@ import { GlobalSearch } from "@/components/GlobalSearch";
 import { checkCapability, isStaff, logout } from "@/lib/store/db";
 
 function BrandLockup({ light = false }: { light?: boolean }) {
-  const locale = useLocale();
+  const t = useTranslations();
   const { db } = useDb();
   const companyName = db?.settings?.companyName || "TT Enterprises";
   return (
@@ -21,7 +21,7 @@ function BrandLockup({ light = false }: { light?: boolean }) {
       />
       <span className="tt-brand-word" aria-label={companyName}>
         <strong>{companyName}</strong>
-        <span>{locale === "hi" ? "थोक व्यापार" : "Wholesale"}</span>
+        <span>{t("shop.wholesale")}</span>
       </span>
     </span>
   );
@@ -81,9 +81,9 @@ export function SiteHeader() {
   );
 
   const canStock =
-    !!session && checkCapability(session, db?.users, "manage_accounts");
+    !!session && checkCapability(session, db, "manage_accounts");
   const canAccounts =
-    !!session && checkCapability(session, db?.users, "manage_accounts");
+    !!session && checkCapability(session, db, "manage_accounts");
   const staff = !!session && isStaff(session.role);
 
   const storeLinks = session ? (
@@ -198,13 +198,6 @@ export function SiteHeader() {
         onClick={() => setMenuOpen(false)}
       >
         {t("nav.catalog")}
-      </Link>
-      <Link
-        href="/price-list"
-        className={linkClass("/price-list")}
-        onClick={() => setMenuOpen(false)}
-      >
-        {t("nav.priceList")}
       </Link>
       <Link
         href="/help"

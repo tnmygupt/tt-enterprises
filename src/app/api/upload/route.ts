@@ -1,15 +1,7 @@
-import { randomBytes } from "crypto";
-import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
 import { readSessionCookie } from "@/lib/server/session";
-import {
-  getSupabaseKey,
-  getSupabaseServiceKey,
-  getSupabaseUrl,
-  isSupabaseConfigured,
-} from "@/lib/supabase/config";
+import { hostPublicBuffer, MEDIA_BUCKET } from "@/lib/server/host-public-file";
 
 const MAX_BYTES = 80 * 1024 * 1024; // 80 MB
 const ALLOWED =
@@ -29,35 +21,18 @@ const EXT_MIME: Record<string, string> = {
   ogg: "video/ogg",
 };
 
-const FOLDERS = new Set(["products", "bills", "lr", "proofs", "misc"]);
-
-const SUPABASE_BUCKET = "product-media";
+const FOLDERS = new Set(["products", "bills", "lr", "proofs", "misc", "hr"]);
 
 function resolveMime(file: File): string {
   const typed = (file.type || "").trim().toLowerCase();
   if (typed && typed !== "application/octet-stream" && ALLOWED.test(typed)) {
     return typed;
   }
-  const ext = path.extname(file.name || "").toLowerCase().replace(".", "");
+  const ext = path
+    .extname(file.name || "")
+    .toLowerCase()
+    .replace(".", "");
   return EXT_MIME[ext] || typed || "";
-}
-
-function extFromFile(file: File, mime?: string): string {
-  const map: Record<string, string> = {
-    "image/jpeg": "jpg",
-    "image/jpg": "jpg",
-    "image/png": "png",
-    "image/webp": "webp",
-    "image/gif": "gif",
-    "image/avif": "avif",
-    "video/mp4": "mp4",
-    "video/webm": "webm",
-    "video/quicktime": "mov",
-    "video/ogg": "ogg",
-    "application/pdf": "pdf",
-  };
-  // Never trust client filename extension (blocks xss.html / shell.php)
-  return map[mime || file.type] || "bin";
 }
 
 function authorizeUpload(req: NextRequest): {
@@ -67,12 +42,13 @@ function authorizeUpload(req: NextRequest): {
   const session = readSessionCookie(req);
   if (!session) return { ok: false, session: null };
 
+  // Staff session is enough. Hostinger builds often lack NEXT_PUBLIC_UPLOAD_KEY,
+  // which used to 401 PDF uploads so packing-slip WhatsApp had no file to attach.
+  if (session.role !== "customer") return { ok: true, session };
+
   const required = (process.env.UPLOAD_KEY || "").trim();
   if (!required) {
-    return {
-      ok: process.env.NODE_ENV !== "production",
-      session,
-    };
+    return { ok: true, session };
   }
   const key = req.headers.get("x-upload-key") || "";
   const dbKey = (
@@ -84,57 +60,12 @@ function authorizeUpload(req: NextRequest): {
   return { ok, session };
 }
 
-async function uploadToSupabase(
-  file: File,
-  folder: string,
-  mime: string
-): Promise<{ url: string; type: string; name: string; size: number } | null> {
-  if (!isSupabaseConfigured()) return null;
-  // Prefer service role so Storage RLS can deny anon writes
-  const key = getSupabaseServiceKey() || getSupabaseKey();
-  const supabase = createClient(getSupabaseUrl(), key, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const kind = mime.startsWith("video/")
-    ? "video"
-    : mime === "application/pdf"
-      ? "pdf"
-      : "image";
-  const ext = extFromFile(file, mime);
-  const name = `${Date.now()}_${randomBytes(4).toString("hex")}.${ext}`;
-  const objectPath = `${folder}/${name}`;
-  const buffer = Buffer.from(await file.arrayBuffer());
-
-  const { error } = await supabase.storage
-    .from(SUPABASE_BUCKET)
-    .upload(objectPath, buffer, {
-      contentType: mime || "application/octet-stream",
-      upsert: false,
-    });
-  if (error) {
-    console.warn("[upload] supabase storage failed", error.message);
-    return null;
-  }
-
-  const { data } = supabase.storage
-    .from(SUPABASE_BUCKET)
-    .getPublicUrl(objectPath);
-  if (!data?.publicUrl) return null;
-
-  return {
-    url: data.publicUrl,
-    type: kind,
-    name: file.name,
-    size: file.size,
-  };
-}
-
 export async function POST(req: NextRequest) {
   const auth = authorizeUpload(req);
   if (!auth.ok || !auth.session) {
     return NextResponse.json(
       { error: "Login required to upload" },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
@@ -151,13 +82,13 @@ export async function POST(req: NextRequest) {
           error:
             "Only JPG, PNG, WebP, GIF, PDF, or video files are allowed. On iPhone use JPG/PNG (not HEIC).",
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
     if (file.size <= 0 || file.size > MAX_BYTES) {
       return NextResponse.json(
         { error: "File must be under 80 MB" },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -168,45 +99,29 @@ export async function POST(req: NextRequest) {
       if (folder !== "proofs") {
         return NextResponse.json(
           { error: "Dealers may only upload payment proofs" },
-          { status: 403 }
+          { status: 403 },
         );
       }
       folder = "proofs";
     }
 
-    const cloud = await uploadToSupabase(file, folder, mime);
-    if (cloud) {
-      return NextResponse.json({
-        ...cloud,
-        folder,
-        storage: "supabase",
-      });
+    const hosted = await hostPublicBuffer({
+      buffer: Buffer.from(await file.arrayBuffer()),
+      mime,
+      folder,
+      originalName: file.name,
+    });
+    if (!hosted) {
+      return NextResponse.json({ error: "Upload failed" }, { status: 502 });
     }
-
-    // Local disk fallback when Storage rejects anon / service role missing
-    if (process.env.NODE_ENV === "production" && !getSupabaseServiceKey()) {
-      // Still allow local so proofs don't hard-fail on Hostinger without service role
-    }
-
-    const kind = mime.startsWith("video/")
-      ? "video"
-      : mime === "application/pdf"
-        ? "pdf"
-        : "image";
-    const ext = extFromFile(file, mime);
-    const name = `${Date.now()}_${randomBytes(4).toString("hex")}.${ext}`;
-    const dir = path.join(process.cwd(), "public", "uploads", folder);
-    await mkdir(dir, { recursive: true });
-    const buffer = Buffer.from(await file.arrayBuffer());
-    await writeFile(path.join(dir, name), buffer);
 
     return NextResponse.json({
-      url: `/uploads/${folder}/${name}`,
-      type: kind,
-      name: file.name,
-      size: file.size,
+      url: hosted.url,
+      type: hosted.kind,
+      name: hosted.name,
+      size: hosted.size,
       folder,
-      storage: "local",
+      storage: hosted.storage,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Upload failed";
@@ -221,8 +136,8 @@ export async function GET() {
     folders: [...FOLDERS],
     authRequired: true,
     sessionRequired: true,
-    supabaseStorage: isSupabaseConfigured(),
-    serviceRole: Boolean(getSupabaseServiceKey()),
-    bucket: SUPABASE_BUCKET,
+    supabaseStorage: false,
+    serviceRole: false,
+    bucket: MEDIA_BUCKET,
   });
 }

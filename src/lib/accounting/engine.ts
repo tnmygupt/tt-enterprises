@@ -132,8 +132,8 @@ export function buildLedgerEntries(voucher: Voucher): LedgerEntry[] {
           ...base,
           accountId,
           partyId: voucher.partyId,
-          debit: 0,
-          credit,
+          debit: credit < 0 ? roundMoney(-credit) : 0,
+          credit: credit > 0 ? credit : 0,
         })
       );
     }

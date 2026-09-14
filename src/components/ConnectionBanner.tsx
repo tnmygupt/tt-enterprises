@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
+import { Link } from "@/i18n/routing";
 
 type BannerState =
   | { kind: "none" }
   | { kind: "offline" }
-  | { kind: "sync"; detail: string };
+  | { kind: "sync"; detail: string }
+  | { kind: "session"; detail: string };
 
 /**
  * Tells the user when the app is running on local data only — either the
@@ -23,10 +25,22 @@ export function ConnectionBanner() {
       setState((s) => (s.kind === "offline" ? { kind: "none" } : s));
     const onSyncError = (e: Event) => {
       const detail = (e as CustomEvent<string>).detail;
-      setState({ kind: "sync", detail: typeof detail === "string" ? detail : "" });
+      const text = typeof detail === "string" ? detail : "";
+      if (/log in again|login required|session invalid|account removed/i.test(text)) {
+        setState({ kind: "session", detail: text });
+        return;
+      }
+      setState({ kind: "sync", detail: text });
+    };
+    const onSessionExpired = (e: Event) => {
+      const detail = (e as CustomEvent<string>).detail;
+      setState({
+        kind: "session",
+        detail: typeof detail === "string" ? detail : "",
+      });
     };
     const onSyncOk = () =>
-      setState((s) => (s.kind === "sync" ? { kind: "none" } : s));
+      setState((s) => (s.kind === "sync" || s.kind === "session" ? { kind: "none" } : s));
 
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
       goOffline();
@@ -34,11 +48,13 @@ export function ConnectionBanner() {
     window.addEventListener("offline", goOffline);
     window.addEventListener("online", goOnline);
     window.addEventListener("tt-sync-error", onSyncError);
+    window.addEventListener("tt-session-expired", onSessionExpired);
     window.addEventListener("tt-sync-ok", onSyncOk);
     return () => {
       window.removeEventListener("offline", goOffline);
       window.removeEventListener("online", goOnline);
       window.removeEventListener("tt-sync-error", onSyncError);
+      window.removeEventListener("tt-session-expired", onSessionExpired);
       window.removeEventListener("tt-sync-ok", onSyncOk);
     };
   }, []);
@@ -62,14 +78,19 @@ export function ConnectionBanner() {
   if (state.kind === "none") return null;
 
   const offline = state.kind === "offline";
+  const sessionExpired = state.kind === "session";
   const message = offline
     ? t("connection.offline")
-    : state.detail || t("connection.syncFailed");
+    : sessionExpired
+      ? t("connection.sessionExpired")
+      : /unauthorized/i.test(state.detail)
+        ? t("connection.syncFailed")
+        : state.detail || t("connection.syncFailed");
 
   return (
     <div
       role="status"
-      className="fixed bottom-[max(0.75rem,env(safe-area-inset-bottom))] left-3 right-3 z-[55] mx-auto max-w-md rounded-xl border border-[var(--line)] bg-white px-4 py-3 shadow-lg print:hidden"
+      className="tt-bottom-toast mx-auto max-w-md rounded-xl border border-[var(--line)] bg-white px-4 py-3 shadow-lg print:hidden"
     >
       <p className="text-sm font-semibold text-[var(--ink)]">
         <span
@@ -81,7 +102,18 @@ export function ConnectionBanner() {
         {message}
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
-        {!offline ? (
+        {sessionExpired ? (
+          <Link
+            href="/"
+            className="tt-btn tt-btn-dark min-h-10 px-3 py-1 text-xs"
+            onClick={() => {
+              void import("@/lib/store/db").then((m) => m.logout());
+              setState({ kind: "none" });
+            }}
+          >
+            {t("connection.logInAgain")}
+          </Link>
+        ) : !offline ? (
           <button
             type="button"
             className="tt-btn tt-btn-outline min-h-10 px-3 py-1 text-xs"

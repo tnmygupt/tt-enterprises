@@ -1,26 +1,63 @@
 import type { AppDatabase } from "@/lib/store/db";
 import type {
   AccessPlace,
+  Account,
   AppSettings,
   Capability,
+  LedgerEntry,
   Order,
   OrderLine,
+  Party,
   Product,
+  PurchaseOrder,
   ShippingRule,
+  StatementMatch,
+  SupplierContract,
   UserProfile,
   UserRole,
+  Voucher,
   WalletDeposit,
 } from "@/lib/types";
+import { OWNER_SENSITIVE_ACCOUNTS } from "@/lib/accounting/seed";
+import { isPurchaseCostVoucherType } from "@/lib/owner-sensitive";
 import { trimAccessPlaces } from "@/lib/server/access-log";
-import { userHasCapability } from "@/lib/capabilities";
+import {
+  capabilityContextFrom,
+  sanitizeRolePresets,
+  sanitizeStaffJobs,
+  userHasCapability,
+} from "@/lib/capabilities";
 import { isSchemeActiveNow } from "@/lib/schemes";
+import { omitWaInbox } from "@/lib/whatsapp-inbox";
+import {
+  canGpsPunch,
+  canManageHr,
+  mergeHrAdvancesForStaff,
+  mergeHrLeavesForStaff,
+  mergeHrPunchesForStaff,
+  staffSafeHrPayslips,
+  staffSafeHrTerms,
+} from "@/lib/hr";
+import {
+  canEnterPhysicalCount,
+  mergeCashCountsForStaff,
+  mergeStockCountsForStaff,
+  restoreStockCountRates,
+  stripStockCountRates,
+} from "@/lib/stock-count";
 import type { ServerSession } from "@/lib/server/session";
 import { isStaffRole } from "@/lib/server/session";
 import { calcShippingAmount } from "@/lib/shipping";
 import { roundOffRupees } from "@/lib/pricing";
 import { applyOrderEstimateStock } from "@/lib/inventory";
+import { clampMergedOrders } from "@/lib/order-stages";
+import {
+  attachDealerStatement,
+  dealerPartyStatement,
+} from "@/lib/dealer-statement";
 import {
   mergePasswordHashes,
+  mergePasswordResetRequests,
   sanitizeDbForCloud,
   sanitizeDbForClient,
 } from "@/lib/supabase/sanitize";
@@ -60,10 +97,17 @@ const MIN_DEPOSIT = 1;
 const MAX_DEPOSIT = 5_000_000;
 
 function hasCap(
-  actor: Pick<UserProfile, "role" | "extraCapabilities" | "deniedCapabilities">,
-  cap: Capability
+  actor: Pick<
+    UserProfile,
+    "role" | "extraCapabilities" | "deniedCapabilities" | "jobId"
+  >,
+  cap: Capability,
+  db?: {
+    rolePresets?: AppDatabase["rolePresets"];
+    staffJobs?: AppDatabase["staffJobs"];
+  }
 ): boolean {
-  return userHasCapability(actor, cap);
+  return userHasCapability(actor, cap, capabilityContextFrom(db));
 }
 
 function stripPaymentSettings<T extends AppDatabase["settings"]>(
@@ -84,6 +128,225 @@ function stripPaymentSettings<T extends AppDatabase["settings"]>(
     },
     bankAccounts: [],
   };
+}
+
+function mapById<T extends { id: string }>(rows: T[] | undefined): Map<string, T> {
+  return new Map((rows ?? []).map((row) => [row.id, row] as const));
+}
+
+function restorePoCost(incoming: PurchaseOrder, cloud: PurchaseOrder): PurchaseOrder {
+  const cloudLines = mapById(cloud.lines);
+  return {
+    ...incoming,
+    total: cloud.total,
+    lines: incoming.lines.map((line) => {
+      const prev = cloudLines.get(line.id);
+      if (!prev) return line;
+      return {
+        ...line,
+        rate: prev.rate,
+        amount: prev.amount,
+        contractId: prev.contractId ?? line.contractId,
+      };
+    }),
+  };
+}
+
+function restoreContractCost(
+  incoming: SupplierContract,
+  cloud: SupplierContract
+): SupplierContract {
+  return {
+    ...incoming,
+    rate: cloud.rate,
+    contractedValue: cloud.contractedValue,
+    usedValue: Math.max(incoming.usedValue || 0, cloud.usedValue || 0),
+  };
+}
+
+function restoreVoucherCost(incoming: Voucher, cloud: Voucher): Voucher {
+  const next: Voucher = {
+    ...incoming,
+    cogsAmount: cloud.cogsAmount,
+  };
+  if (!isPurchaseCostVoucherType(incoming.type)) return next;
+  const cloudLines = mapById(cloud.lines);
+  return {
+    ...next,
+    subtotal: cloud.subtotal,
+    taxAmount: cloud.taxAmount,
+    roundOff: cloud.roundOff,
+    total: cloud.total,
+    outstanding: cloud.outstanding,
+    lines: incoming.lines.map((line) => {
+      const prev = cloudLines.get(line.id);
+      if (!prev) return line;
+      return { ...line, rate: prev.rate, amount: prev.amount };
+    }),
+  };
+}
+
+function restoreLedgerCost(
+  incoming: LedgerEntry,
+  cloud: LedgerEntry
+): LedgerEntry {
+  const sensitive =
+    OWNER_SENSITIVE_ACCOUNTS.has(incoming.accountId) ||
+    isPurchaseCostVoucherType(incoming.voucherType);
+  if (!sensitive) return incoming;
+  return { ...incoming, debit: cloud.debit, credit: cloud.credit };
+}
+
+function restorePartyCost(incoming: Party, cloud: Party): Party {
+  if (incoming.type !== "supplier") return incoming;
+  return { ...incoming, openingBalance: cloud.openingBalance };
+}
+
+function restoreAccountCost(incoming: Account, cloud: Account): Account {
+  if (!OWNER_SENSITIVE_ACCOUNTS.has(incoming.id)) return incoming;
+  return { ...incoming, openingBalance: cloud.openingBalance };
+}
+
+function restoreStatementMatchCost(
+  incoming: StatementMatch,
+  cloud: StatementMatch,
+  partyType: Party["type"] | undefined
+): StatementMatch {
+  if (partyType !== "supplier") return incoming;
+  return {
+    ...incoming,
+    theirClosingBalance: cloud.theirClosingBalance,
+    theirExtraRows: cloud.theirExtraRows,
+  };
+}
+
+/**
+ * Zero purchase/cost figures in a staff GET clone. Catalog selling rates,
+ * dealer bills, wallets, and cash/bank stay. Must be paired with restore on PUT
+ * so a staff save cannot wipe cloud mill rates.
+ */
+function scrubOwnerSensitiveFinancials(db: AppDatabase): void {
+  db.stockBatches = [];
+  db.batchConsumptions = [];
+  db.supplierContracts = (db.supplierContracts ?? []).map((c) => ({
+    ...c,
+    rate: 0,
+    contractedValue: 0,
+    usedValue: 0,
+  }));
+  db.purchaseOrders = (db.purchaseOrders ?? []).map((po) => ({
+    ...po,
+    total: 0,
+    lines: po.lines.map((l) => ({ ...l, rate: 0, amount: 0 })),
+  }));
+  const voucherById = mapById(db.vouchers);
+  db.vouchers = (db.vouchers ?? []).map((v) => {
+    const next: Voucher = { ...v, cogsAmount: undefined };
+    if (!isPurchaseCostVoucherType(v.type)) return next;
+    return {
+      ...next,
+      subtotal: 0,
+      taxAmount: 0,
+      roundOff: 0,
+      total: 0,
+      outstanding: v.outstanding != null ? 0 : undefined,
+      lines: (v.lines ?? []).map((l) => ({ ...l, rate: 0, amount: 0 })),
+    };
+  });
+  db.ledgerEntries = (db.ledgerEntries ?? []).map((e) => {
+    if (
+      OWNER_SENSITIVE_ACCOUNTS.has(e.accountId) ||
+      isPurchaseCostVoucherType(e.voucherType)
+    ) {
+      return { ...e, debit: 0, credit: 0 };
+    }
+    return e;
+  });
+  db.parties = (db.parties ?? []).map((p) =>
+    p.type === "supplier" ? { ...p, openingBalance: 0 } : p
+  );
+  db.accounts = (db.accounts ?? []).map((a) =>
+    OWNER_SENSITIVE_ACCOUNTS.has(a.id) ? { ...a, openingBalance: 0 } : a
+  );
+  db.billAllocations = (db.billAllocations ?? []).map((a) => {
+    const invoice = voucherById.get(a.invoiceVoucherId);
+    if (invoice && isPurchaseCostVoucherType(invoice.type)) {
+      return { ...a, amount: 0 };
+    }
+    return a;
+  });
+  const partyById = mapById(db.parties);
+  db.statementMatches = (db.statementMatches ?? []).map((m) => {
+    const party = partyById.get(m.partyId);
+    if (party?.type !== "supplier") return m;
+    return {
+      ...m,
+      theirClosingBalance: 0,
+      theirExtraRows: (m.theirExtraRows ?? []).map((row) => ({
+        ...row,
+        amount: 0,
+      })),
+    };
+  });
+}
+
+/** Put owner cost figures back after a staff overlay so zeroed GET clones cannot wipe cloud. */
+function restoreOwnerSensitiveFinancials(
+  merged: AppDatabase,
+  cloud: AppDatabase
+): void {
+  const cloudPos = mapById(cloud.purchaseOrders);
+  merged.purchaseOrders = (merged.purchaseOrders ?? []).map((po) => {
+    const prev = cloudPos.get(po.id);
+    return prev ? restorePoCost(po, prev) : po;
+  });
+  const cloudContracts = mapById(cloud.supplierContracts);
+  merged.supplierContracts = (merged.supplierContracts ?? []).map((c) => {
+    const prev = cloudContracts.get(c.id);
+    return prev ? restoreContractCost(c, prev) : c;
+  });
+  const cloudVouchers = mapById(cloud.vouchers);
+  merged.vouchers = (merged.vouchers ?? []).map((v) => {
+    const prev = cloudVouchers.get(v.id);
+    return prev ? restoreVoucherCost(v, prev) : v;
+  });
+  const cloudLedger = mapById(cloud.ledgerEntries);
+  merged.ledgerEntries = (merged.ledgerEntries ?? []).map((e) => {
+    const prev = cloudLedger.get(e.id);
+    return prev ? restoreLedgerCost(e, prev) : e;
+  });
+  const cloudParties = mapById(cloud.parties);
+  merged.parties = (merged.parties ?? []).map((p) => {
+    const prev = cloudParties.get(p.id);
+    return prev ? restorePartyCost(p, prev) : p;
+  });
+  const cloudAccounts = mapById(cloud.accounts);
+  merged.accounts = (merged.accounts ?? []).map((a) => {
+    const prev = cloudAccounts.get(a.id);
+    return prev ? restoreAccountCost(a, prev) : a;
+  });
+  const cloudAlloc = mapById(cloud.billAllocations);
+  merged.billAllocations = (merged.billAllocations ?? []).map((a) => {
+    const invoice = cloudVouchers.get(a.invoiceVoucherId);
+    if (!invoice || !isPurchaseCostVoucherType(invoice.type)) return a;
+    const prev = cloudAlloc.get(a.id);
+    return prev ? { ...a, amount: prev.amount } : a;
+  });
+  const mergedPartyById = mapById(merged.parties);
+  const cloudMatches = mapById(cloud.statementMatches);
+  merged.statementMatches = (merged.statementMatches ?? []).map((m) => {
+    const prev = cloudMatches.get(m.id);
+    if (!prev) return m;
+    return restoreStatementMatchCost(
+      m,
+      prev,
+      mergedPartyById.get(m.partyId)?.type
+    );
+  });
+  merged.stockCounts = restoreStockCountRates(
+    merged.stockCounts,
+    cloud.stockCounts
+  );
 }
 
 function withPaymentSettings(
@@ -130,16 +393,28 @@ export function publicCatalogProjection(db: AppDatabase): AppDatabase {
     tallyPosts: [] as AppDatabase["tallyPosts"],
     statementMatches: [] as AppDatabase["statementMatches"],
     accessPlaces: [] as AppDatabase["accessPlaces"],
+    rolePresets: {},
+    staffJobs: [],
+    hrTerms: [],
+    hrShifts: [],
+    hrSites: [],
+    hrPunches: [],
+    hrLeaves: [],
+    hrAdvances: [],
+    hrPayslips: [],
+    stockCounts: [],
+    cashCounts: [],
+    monthlyAudits: [],
   };
 
-  return {
+  return omitWaInbox({
     ...empty,
     products: (db.products ?? []).filter((p) => p.active),
     schemes: (db.schemes ?? []).filter((s) => isSchemeActiveNow(s)),
     categories: db.categories ?? [],
     shippingRules: db.shippingRules ?? [],
     settings: stripPaymentSettings(db.settings),
-  };
+  });
 }
 
 /** Dealer-scoped view: catalog + payment details + self + own commerce. */
@@ -159,7 +434,7 @@ export function dealerScopedProjection(
       ]
     : [];
 
-  return sanitizeDbForClient({
+  const projected = sanitizeDbForClient({
     ...base,
     settings: withPaymentSettings(base.settings, db.settings),
     users: users as AppDatabase["users"],
@@ -184,7 +459,22 @@ export function dealerScopedProjection(
     tallyPosts: [],
     statementMatches: [],
     accessPlaces: [],
+    hrTerms: [],
+    hrShifts: [],
+    hrSites: [],
+    hrPunches: [],
+    hrLeaves: [],
+    hrAdvances: [],
+    hrPayslips: [],
+    stockCounts: [],
+    cashCounts: [],
+    monthlyAudits: [],
   });
+  projected.parties = attachDealerStatement(
+    projected.parties,
+    dealerPartyStatement(db, session.id)
+  );
+  return omitWaInbox(projected);
 }
 
 /** Staff GET projection — strip owner financials for non-owner roles. */
@@ -192,38 +482,50 @@ export function staffScopedProjection(
   db: AppDatabase,
   actor: Pick<
     UserProfile,
-    "role" | "extraCapabilities" | "deniedCapabilities"
-  >
+    "role" | "extraCapabilities" | "deniedCapabilities" | "jobId"
+  > & { id?: string }
 ): AppDatabase {
   const full = sanitizeDbForClient(db);
   const role = actor.role;
-  if (role === "super_admin" || hasCap(actor, "view_financials")) {
-    return full;
+  const cap = (c: Capability) => hasCap(actor, c, db);
+  if (role === "super_admin" || cap("view_financials")) {
+    return omitWaInbox(full);
   }
 
   const out = { ...full };
-  if (!hasCap(actor, "manage_accounts")) {
+  if (!cap("manage_accounts")) {
     out.accounts = [];
     out.vouchers = [];
     out.ledgerEntries = [];
     // Keep stock movements for order staff — emptying them caused manage_orders
     // pushes to wipe cloud estimate_reserve rows and undo stock deductions.
-    if (!hasCap(actor, "manage_orders")) {
+    // Plant reorder desk also needs movements for stock alerts.
+    if (!cap("manage_orders") && !cap("manage_reorder")) {
       out.stockMovements = [];
     }
     out.billAllocations = [];
-    out.purchaseOrders = [];
+    if (!cap("manage_reorder")) {
+      out.purchaseOrders = [];
+      out.supplierContracts = [];
+    }
     out.goodsReceipts = [];
-    out.supplierContracts = [];
     out.statementMatches = [];
+    out.bankRecons = [];
+    if (
+      cap("manage_reorder") &&
+      !cap("manage_orders")
+    ) {
+      out.parties = (out.parties ?? []).filter(
+        (p) =>
+          p.type === "supplier" ||
+          (cap("approve_dealers") && p.type === "customer")
+      );
+    }
   }
-  if (!hasCap(actor, "manage_tally")) {
-    out.tallyPosts = [];
-  }
-  // Cost layers are owner-only (purchase rates / COGS)
-  if (!hasCap(actor, "view_financials")) {
-    out.stockBatches = [];
-    out.batchConsumptions = [];
+  out.tallyPosts = [];
+  if (!cap("manage_wallet") && !cap("view_financials")) {
+    out.walletTransactions = [];
+    out.walletDeposits = [];
   }
   // Viewers: catalog + queues only
   if (role === "viewer") {
@@ -256,20 +558,51 @@ export function staffScopedProjection(
     ) as AppDatabase["users"];
     out.settings = stripPaymentSettings(out.settings);
   } else if (
-    !hasCap(actor, "verify_payment") &&
-    !hasCap(actor, "manage_orders") &&
-    !hasCap(actor, "manage_wallet")
+    !cap("verify_payment") &&
+    !cap("manage_orders") &&
+    !cap("manage_wallet")
   ) {
     out.settings = stripPaymentSettings(out.settings);
   }
   if (
     role !== "viewer" &&
-    !hasCap(actor, "manage_orders") &&
-    !hasCap(actor, "manage_users")
+    !cap("manage_orders") &&
+    !cap("manage_users")
   ) {
     out.accessPlaces = [];
   }
-  return out;
+  if (!cap("view_financials")) {
+    scrubOwnerSensitiveFinancials(out);
+  }
+  if (!cap("manage_users")) {
+    out.peopleActivity = [];
+  }
+  const manageHr = canManageHr(actor, db);
+  if (!manageHr) {
+    const uid = actor.id;
+    out.hrTerms = staffSafeHrTerms(
+      (out.hrTerms ?? []).filter((t) => t.userId === uid)
+    );
+    out.hrPunches = (out.hrPunches ?? []).filter((p) => p.userId === uid);
+    out.hrLeaves = (out.hrLeaves ?? []).filter((l) => l.userId === uid);
+    out.hrAdvances = (out.hrAdvances ?? []).filter((a) => a.userId === uid);
+    out.hrPayslips = staffSafeHrPayslips(
+      (out.hrPayslips ?? []).filter((p) => p.userId === uid)
+    );
+    out.monthlyAudits = [];
+  }
+  if (!canEnterPhysicalCount(actor, db) && !manageHr) {
+    out.stockCounts = [];
+    out.cashCounts = [];
+  } else if (!cap("view_financials")) {
+    out.stockCounts = stripStockCountRates(out.stockCounts);
+  }
+  if (!canGpsPunch(role)) {
+    out.hrPunches = [];
+    out.hrSites = [];
+    out.hrShifts = [];
+  }
+  return omitWaInbox(out);
 }
 
 function scrubCustomerProof(
@@ -520,6 +853,8 @@ function sanitizeCustomerOrder(
       schemeApplied: false,
       // Never accept a customer-forged finalized slip / staff fields
       packingSlip: scrubCustomerPackingSlip(incoming.packingSlip),
+      manualDiscountKind: undefined,
+      manualDiscountValue: undefined,
       timeline: Array.isArray(incoming.timeline)
         ? incoming.timeline.slice(0, 20).map((t) => ({
             status: CUSTOMER_ORDER_PROOF_STATUSES.has(t.status)
@@ -695,12 +1030,15 @@ function mergeUsersForStaff(
       continue;
     }
 
+    if (!existing && u.role === "customer") continue;
+
     const keptHash = existing?.passwordHash || u.passwordHash || "";
     const role =
       u.role === "customer" ||
       u.role === "sales" ||
       u.role === "accounts" ||
       u.role === "dispatch" ||
+      u.role === "plant_manager" ||
       u.role === "viewer"
         ? u.role
         : "customer";
@@ -710,9 +1048,11 @@ function mergeUsersForStaff(
       role,
       passwordHash: keptHash,
       passwordVisible: undefined,
+      passwordResetRequestedAt: existing?.passwordResetRequestedAt,
       // Only owners (full push) may change capability overrides
       extraCapabilities: existing?.extraCapabilities,
       deniedCapabilities: existing?.deniedCapabilities,
+      jobId: existing?.jobId,
     });
   }
 
@@ -752,6 +1092,30 @@ function mergeByIdUnion<T extends { id: string }>(
   const byId = new Map((cloudItems ?? []).map((x) => [x.id, x] as const));
   for (const item of incomingItems ?? []) {
     byId.set(item.id, item);
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Keep rows that exist on only one side (dealer estimate on cloud, punch on
+ * this device). For the same id, keep the newer `updatedAt`; ties prefer the
+ * incoming writer so staff status changes still apply.
+ */
+export function mergeByUpdatedAtKeepBoth<
+  T extends { id: string; updatedAt?: string; createdAt?: string },
+>(incoming: T[] | undefined, cloud: T[] | undefined): T[] {
+  const byId = new Map((cloud ?? []).map((x) => [x.id, x] as const));
+  for (const item of incoming ?? []) {
+    const existing = byId.get(item.id);
+    if (!existing) {
+      byId.set(item.id, item);
+      continue;
+    }
+    const incomingAt = item.updatedAt || item.createdAt || "";
+    const cloudAt = existing.updatedAt || existing.createdAt || "";
+    if (!cloudAt || incomingAt >= cloudAt) {
+      byId.set(item.id, item);
+    }
   }
   return [...byId.values()];
 }
@@ -814,36 +1178,129 @@ function mergeStaffLimitedPush(
   actorId: string
 ): AppDatabase {
   const role = actor.role;
-  if (role === "viewer" || !isStaffRole(role)) {
+  const out = JSON.parse(JSON.stringify(cloud)) as AppDatabase;
+  let touched = false;
+  const can = (c: Capability) => hasCap(actor, c, cloud);
+  const manageHr = canManageHr(actor, cloud);
+  const canCount = canEnterPhysicalCount(actor, cloud);
+  const ownerReview = can("view_financials");
+
+  out.hrPunches = mergeHrPunchesForStaff(
+    incoming.hrPunches,
+    out.hrPunches,
+    actorId,
+    manageHr
+  );
+  out.hrLeaves = mergeHrLeavesForStaff(
+    incoming.hrLeaves,
+    out.hrLeaves,
+    actorId,
+    manageHr
+  );
+  out.hrAdvances = mergeHrAdvancesForStaff(
+    incoming.hrAdvances,
+    out.hrAdvances,
+    actorId,
+    manageHr
+  );
+  if (
+    (incoming.hrPunches?.length || 0) !== (cloud.hrPunches?.length || 0) ||
+    (incoming.hrLeaves?.length || 0) !== (cloud.hrLeaves?.length || 0) ||
+    (incoming.hrAdvances?.length || 0) !== (cloud.hrAdvances?.length || 0)
+  ) {
+    touched = true;
+  } else if (
+    (incoming.hrPunches ?? []).some(
+      (p) => p.userId === actorId && !(cloud.hrPunches ?? []).some((c) => c.id === p.id)
+    )
+  ) {
+    touched = true;
+  }
+
+  if (manageHr) {
+    out.hrTerms = mergeByIdUnion(out.hrTerms ?? [], incoming.hrTerms ?? []);
+    out.hrShifts = mergeByIdUnion(out.hrShifts ?? [], incoming.hrShifts ?? []);
+    out.hrSites = mergeByIdUnion(out.hrSites ?? [], incoming.hrSites ?? []);
+    out.hrAdvances = mergeByIdUnion(out.hrAdvances ?? [], incoming.hrAdvances ?? []);
+    out.hrPayslips = mergeByIdUnion(out.hrPayslips ?? [], incoming.hrPayslips ?? []);
+    touched = true;
+  } else {
+    out.hrTerms = cloud.hrTerms ?? [];
+    out.hrShifts = cloud.hrShifts ?? [];
+    out.hrSites = cloud.hrSites ?? [];
+    out.hrPayslips = cloud.hrPayslips ?? [];
+  }
+
+  if (canCount || manageHr) {
+    out.stockCounts = mergeStockCountsForStaff(
+      incoming.stockCounts,
+      cloud.stockCounts,
+      ownerReview
+    );
+    out.cashCounts = mergeCashCountsForStaff(
+      incoming.cashCounts,
+      cloud.cashCounts,
+      ownerReview
+    );
+    touched = true;
+  } else {
+    out.stockCounts = cloud.stockCounts ?? [];
+    out.cashCounts = cloud.cashCounts ?? [];
+  }
+
+  if (ownerReview) {
+    out.monthlyAudits = mergeByIdUnion(
+      cloud.monthlyAudits ?? [],
+      incoming.monthlyAudits ?? []
+    );
+  } else {
+    out.monthlyAudits = cloud.monthlyAudits ?? [];
+  }
+
+  if (role === "viewer") {
+    if (!touched) {
+      throw new Error("Read-only role cannot sync changes");
+    }
+    if (!can("view_financials")) {
+      restoreOwnerSensitiveFinancials(out, cloud);
+    }
+    return mergePasswordResetRequests(mergePasswordHashes(out, cloud), cloud);
+  }
+
+  if (!isStaffRole(role)) {
     throw new Error("Read-only role cannot sync changes");
   }
 
-  const out = JSON.parse(JSON.stringify(cloud)) as AppDatabase;
-  let touched = false;
-
-  if (hasCap(actor, "manage_products")) {
-    out.products = incoming.products ?? out.products;
+  if (can("manage_products")) {
+    out.products = mergeByUpdatedAtKeepBoth(incoming.products, out.products);
     out.categories = incoming.categories ?? out.categories;
     touched = true;
   }
-  if (hasCap(actor, "manage_schemes")) {
-    out.schemes = incoming.schemes ?? out.schemes;
+  if (can("manage_schemes")) {
+    out.schemes = mergeByUpdatedAtKeepBoth(incoming.schemes, out.schemes);
     touched = true;
   }
-  if (hasCap(actor, "manage_shipping")) {
-    out.shippingRules = incoming.shippingRules ?? out.shippingRules;
+  if (can("manage_shipping")) {
+    out.shippingRules = mergeByIdUnion(out.shippingRules, incoming.shippingRules);
     touched = true;
   }
-  if (hasCap(actor, "manage_orders")) {
-    out.orders = incoming.orders ?? out.orders;
-    // Bill / verify enqueue Tally posts alongside order updates
-    out.tallyPosts = incoming.tallyPosts ?? out.tallyPosts;
+  if (can("manage_orders")) {
+    // Never replace the full order list — a stale admin tab was wiping
+    // dealer estimates that another device had just saved to cloud.
+    out.orders = clampMergedOrders(
+      mergeByUpdatedAtKeepBoth(incoming.orders, out.orders),
+      out.orders
+    );
 
-    // Union movements — never let an empty staff local wipe cloud reserves
     const priorMoveIds = new Set(
       (out.stockMovements ?? []).map((m) => m.id)
     );
-    const incomingMoves = incoming.stockMovements ?? [];
+    const incomingMoves = (incoming.stockMovements ?? []).filter((m) => {
+      if (ownerReview) return true;
+      if (m.type !== "adjustment") return true;
+      if (!/^Month count /.test(m.note || "")) return true;
+      return priorMoveIds.has(m.id);
+    });
     const hasNewStockMoves = incomingMoves.some(
       (m) =>
         !priorMoveIds.has(m.id) &&
@@ -854,15 +1311,14 @@ function mergeStaffLimitedPush(
     );
     out.stockMovements = mergeByIdUnion(out.stockMovements, incomingMoves);
 
-    // Only replace products when staff actually has new stock moves, or they
-    // manage catalog — otherwise stale local stock undoes customer reserves.
-    if (hasNewStockMoves || hasCap(actor, "manage_products")) {
-      out.products = incoming.products ?? out.products;
+    if (hasNewStockMoves || can("manage_products")) {
+      out.products = mergeByUpdatedAtKeepBoth(incoming.products, out.products);
     }
 
-    // Punch-with-wallet / estimate wallet debit must sync dealer balances
-    out.walletTransactions =
-      incoming.walletTransactions ?? out.walletTransactions;
+    out.walletTransactions = mergeByIdUnion(
+      out.walletTransactions,
+      incoming.walletTransactions
+    );
     out.users = mergeWalletBalances(incoming.users ?? [], out.users);
     touched = true;
   }
@@ -871,19 +1327,21 @@ function mergeStaffLimitedPush(
     incoming.accessPlaces,
     cloud.accessPlaces
   );
-  if (hasCap(actor, "manage_wallet")) {
-    out.walletTransactions =
-      incoming.walletTransactions ?? out.walletTransactions;
-    out.walletDeposits = incoming.walletDeposits ?? out.walletDeposits;
+  if (can("manage_wallet")) {
+    out.walletTransactions = mergeByIdUnion(
+      out.walletTransactions,
+      incoming.walletTransactions
+    );
+    out.walletDeposits = mergeByUpdatedAtKeepBoth(
+      incoming.walletDeposits,
+      out.walletDeposits
+    );
     out.users = mergeWalletBalances(incoming.users ?? [], out.users);
     touched = true;
   }
-  if (hasCap(actor, "manage_users")) {
+  if (can("manage_users")) {
     let tombs = mergeTombMaps(tombsFromDb(out), tombsFromDb(incoming));
-    tombs = clearTombsBeatenByUsers(tombs, [
-      ...(incoming.users ?? []),
-      ...(out.users ?? []),
-    ]);
+    tombs = clearTombsBeatenByUsers(tombs, incoming.users ?? []);
     const tombFields = syncTombFields(tombs);
     out.deletedUserIds = tombFields.deletedUserIds;
     out.deletedUserAt = tombFields.deletedUserAt;
@@ -893,35 +1351,52 @@ function mergeStaffLimitedPush(
       actorId,
       tombs
     );
-    out.parties = incoming.parties ?? out.parties;
+    out.parties = mergeByUpdatedAtKeepBoth(incoming.parties, out.parties);
     touched = true;
   }
-  if (hasCap(actor, "manage_accounts")) {
-    out.accounts = incoming.accounts ?? out.accounts;
-    out.parties = incoming.parties ?? out.parties;
-    out.vouchers = incoming.vouchers ?? out.vouchers;
-    out.ledgerEntries = incoming.ledgerEntries ?? out.ledgerEntries;
+  if (can("manage_accounts")) {
+    out.accounts = mergeByIdUnion(out.accounts, incoming.accounts);
+    out.parties = mergeByUpdatedAtKeepBoth(incoming.parties, out.parties);
+    out.vouchers = mergeByUpdatedAtKeepBoth(incoming.vouchers, out.vouchers);
+    out.ledgerEntries = mergeByIdUnion(
+      out.ledgerEntries,
+      incoming.ledgerEntries
+    );
+    out.stockMovements = mergeByIdUnion(
+      out.stockMovements,
+      (incoming.stockMovements ?? []).filter((m) => {
+        if (ownerReview) return true;
+        if (m.type !== "adjustment") return true;
+        if (!/^Month count /.test(m.note || "")) return true;
+        return (cloud.stockMovements ?? []).some((c) => c.id === m.id);
+      })
+    );
+    out.billAllocations = mergeByIdUnion(
+      out.billAllocations,
+      incoming.billAllocations
+    );
+    out.purchaseOrders = mergeByUpdatedAtKeepBoth(
+      incoming.purchaseOrders,
+      out.purchaseOrders
+    );
+    out.goodsReceipts = mergeByUpdatedAtKeepBoth(
+      incoming.goodsReceipts,
+      out.goodsReceipts
+    );
+    out.supplierContracts = mergeByIdUnion(
+      out.supplierContracts,
+      incoming.supplierContracts
+    );
+    touched = true;
+  } else if (can("manage_reorder")) {
+    out.purchaseOrders = mergeByUpdatedAtKeepBoth(
+      incoming.purchaseOrders,
+      out.purchaseOrders
+    );
     out.stockMovements = mergeByIdUnion(
       out.stockMovements,
       incoming.stockMovements
     );
-    out.billAllocations = incoming.billAllocations ?? out.billAllocations;
-    out.purchaseOrders = incoming.purchaseOrders ?? out.purchaseOrders;
-    out.goodsReceipts = incoming.goodsReceipts ?? out.goodsReceipts;
-    out.supplierContracts =
-      incoming.supplierContracts ?? out.supplierContracts;
-    touched = true;
-  }
-  if (hasCap(actor, "manage_tally")) {
-    if (incoming.settings && out.settings) {
-      out.settings = {
-        ...out.settings,
-        tallySyncStatus: incoming.settings.tallySyncStatus,
-        tallySyncMessage: incoming.settings.tallySyncMessage,
-        tallyLastSyncAt: incoming.settings.tallyLastSyncAt,
-      };
-    }
-    out.tallyPosts = incoming.tallyPosts ?? out.tallyPosts;
     touched = true;
   }
 
@@ -929,8 +1404,24 @@ function mergeStaffLimitedPush(
     throw new Error("Your role cannot sync database changes");
   }
 
+  // Jobs and role defaults are owner-only — staff cannot overwrite them.
+  out.rolePresets = cloud.rolePresets;
+  out.staffJobs = cloud.staffJobs;
+  if (!can("manage_users")) {
+    out.peopleActivity = cloud.peopleActivity ?? [];
+  } else {
+    out.peopleActivity = mergeByIdUnion(
+      incoming.peopleActivity ?? [],
+      cloud.peopleActivity ?? []
+    );
+  }
+
+  if (!can("view_financials")) {
+    restoreOwnerSensitiveFinancials(out, cloud);
+  }
+
   // Always restore password hashes from cloud for any blank client hashes
-  return mergePasswordHashes(out, cloud);
+  return mergePasswordResetRequests(mergePasswordHashes(out, cloud), cloud);
 }
 
 /**
@@ -1003,7 +1494,9 @@ function lockOpsCollectionsToCloud(
     supplierContracts: cloud.supplierContracts ?? [],
     tallyPosts: cloud.tallyPosts ?? [],
     statementMatches: cloud.statementMatches ?? [],
+    bankRecons: cloud.bankRecons ?? [],
     accessPlaces: cloud.accessPlaces ?? [],
+    waInbox: cloud.waInbox,
     parties: cloud.parties ?? [],
     settings: target.settings
       ? {
@@ -1044,27 +1537,30 @@ function mergeOwnerPushKeepCloudUsers(
   cloud: AppDatabase
 ): AppDatabase {
   let tombs = mergeTombMaps(tombsFromDb(cloud), tombsFromDb(incoming));
-  tombs = clearTombsBeatenByUsers(tombs, [
-    ...(incoming.users ?? []),
-    ...(cloud.users ?? []),
-  ]);
+  // Only an incoming recreate (newer createdAt) may clear a tomb — never
+  // a stale row that is still sitting on cloud.
+  tombs = clearTombsBeatenByUsers(tombs, incoming.users ?? []);
   const tombFields = syncTombFields(tombs);
 
+  // Cloud is source of truth for who exists. Start there so a stale admin
+  // localStorage cannot put a deleted dealer back.
   const byId = new Map(
-    applyTombsToUsers(incoming.users ?? [], tombs).map(
+    applyTombsToUsers(cloud.users ?? [], tombs).map(
       (u) => [u.id, { ...u }] as const
     )
   );
-  for (const u of applyTombsToUsers(cloud.users ?? [], tombs)) {
-    const local = byId.get(u.id);
-    if (!local) {
-      // Created on another device (e.g. admin-create-user API) — keep it
+  for (const u of applyTombsToUsers(incoming.users ?? [], tombs)) {
+    const cloudUser = byId.get(u.id);
+    if (!cloudUser) {
+      // Dealers are created via register / admin-create-user APIs. A leftover
+      // customer row on one phone must not resurrect a cloud delete.
+      if (u.role === "customer") continue;
       byId.set(u.id, { ...u });
       continue;
     }
     byId.set(u.id, {
-      ...local,
-      passwordHash: local.passwordHash || u.passwordHash,
+      ...u,
+      passwordHash: u.passwordHash || cloudUser.passwordHash,
     });
   }
 
@@ -1091,6 +1587,24 @@ function mergeOwnerPushKeepCloudUsers(
       incoming.accessPlaces,
       cloud.accessPlaces
     ),
+    orders: clampMergedOrders(
+      mergeByUpdatedAtKeepBoth(incoming.orders, cloud.orders),
+      cloud.orders
+    ),
+    products: mergeByUpdatedAtKeepBoth(incoming.products, cloud.products),
+    stockMovements: mergeByIdUnion(
+      cloud.stockMovements,
+      incoming.stockMovements
+    ),
+    walletTransactions: mergeByIdUnion(
+      cloud.walletTransactions,
+      incoming.walletTransactions
+    ),
+    walletDeposits: mergeByUpdatedAtKeepBoth(
+      incoming.walletDeposits,
+      cloud.walletDeposits
+    ),
+    tallyPosts: cloud.tallyPosts ?? [],
   };
 }
 
@@ -1148,8 +1662,8 @@ export function mergeAuthorizedPush(
   existing: AppDatabase | null,
   session: ServerSession | null
 ): MergePushResult {
-  const incoming = mergePasswordHashes(
-    sanitizeDbForCloud(incomingRaw),
+  const incoming = mergePasswordResetRequests(
+    mergePasswordHashes(sanitizeDbForCloud(incomingRaw), existing),
     existing
   );
 
@@ -1162,6 +1676,8 @@ export function mergeAuthorizedPush(
       throw new Error("Owner login required to initialize cloud database");
     }
     const boot = ensureUniqueOrderNumbers(incoming);
+    boot.rolePresets = sanitizeRolePresets(boot.rolePresets);
+    boot.staffJobs = sanitizeStaffJobs(boot.staffJobs);
     reconcileEstimateStockReserves(boot);
     return { db: boot };
   }
@@ -1180,8 +1696,11 @@ export function mergeAuthorizedPush(
       merged = lockOpsCollectionsToCloud(merged, existing);
     }
     merged = preferNewestOpsPurge(merged, incoming, existing);
+    merged.rolePresets = sanitizeRolePresets(merged.rolePresets);
+    merged.staffJobs = sanitizeStaffJobs(merged.staffJobs);
     const out = stripPrePurgeOps(ensureUniqueOrderNumbers(merged));
     reconcileEstimateStockReserves(out);
+    out.waInbox = existing.waInbox;
     return { db: out };
   }
 
@@ -1193,6 +1712,7 @@ export function mergeAuthorizedPush(
     merged = preferNewestOpsPurge(merged, incoming, existing);
     const out = stripPrePurgeOps(ensureUniqueOrderNumbers(merged));
     reconcileEstimateStockReserves(out);
+    out.waInbox = existing.waInbox;
     return { db: out };
   }
 
@@ -1370,6 +1890,7 @@ export function mergeAuthorizedPush(
 
   const out = stripPrePurgeOps(ensureUniqueOrderNumbers(cloud));
   reconcileEstimateStockReserves(out);
+  out.waInbox = existing.waInbox;
   return {
     db: out,
     rejectedOrders: rejectedOrders.length ? rejectedOrders : undefined,

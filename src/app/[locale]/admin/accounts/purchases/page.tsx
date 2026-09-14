@@ -1,11 +1,15 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, Suspense, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
+import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
 import { SearchSelect } from "@/components/SearchSelect";
 import {
@@ -13,16 +17,32 @@ import {
   deriveSecondaryQty,
   inventoryRows,
   parseCatalogRowValue,
+  voucherLineAmount,
 } from "@/lib/inventory";
 import { ExportButtons } from "@/components/ExportButtons";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
-import { formatInr, roundMoney } from "@/lib/pricing";
+import {
+  formatInr,
+  isSqftUnit,
+  ratePerPacket,
+  ratePerPiece,
+  resolveSqftPack,
+} from "@/lib/pricing";
+import { listOpenPurchaseOrders, poRemainingQty } from "@/lib/purchase-orders";
 import {
   canViewFinancials,
-  createVoucher,
+  checkAnyCapability,
   checkCapability,
+  createVoucher,
+  markPurchaseOrderOrdered,
 } from "@/lib/store/db";
-import type { VoucherLine } from "@/lib/types";
+import type { PurchaseOrder, VoucherLine } from "@/lib/types";
+import {
+  sendWhatsAppMessage,
+  supplierPoWhatsAppText,
+  whatsappCountryCode,
+  whatsappResultCopy,
+} from "@/lib/whatsapp";
 
 function blankLine(): VoucherLine {
   return {
@@ -36,14 +56,38 @@ function blankLine(): VoucherLine {
 }
 
 export default function PurchasesPage() {
+  return (
+    <Suspense
+      fallback={
+        <AccountsShell>
+          <p>Loading…</p>
+        </AccountsShell>
+      }
+    >
+      <PurchasesInner />
+    </Suspense>
+  );
+}
+
+function PurchasesInner() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
+  const search = useSearchParams();
   const { session } = useSession();
   const { db, refresh } = useDb();
   const showRates = session ? canViewFinancials(session.role) : false;
+  const canBooks =
+    !!session && checkCapability(session, db, "manage_accounts");
+  const canReorder =
+    !!session && checkCapability(session, db, "manage_reorder");
+  const plantOnly = canReorder && !canBooks;
+  const tab =
+    plantOnly || search.get("tab") === "orders" ? "orders" : "bills";
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [poBusyId, setPoBusyId] = useState<string | null>(null);
   const [packingFile, setPackingFile] = useState<File | null>(null);
   const [form, setForm] = useState({
     supplierId: "",
@@ -61,6 +105,10 @@ export default function PurchasesPage() {
       .filter((v) => v.type === "purchase" && !v.voided)
       .sort((a, b) => b.date.localeCompare(a.date) || b.number.localeCompare(a.number));
   }, [db]);
+  const openPos = useMemo(
+    () => listOpenPurchaseOrders(db?.purchaseOrders),
+    [db]
+  );
 
   const exportOptions = useMemo(
     () => ({
@@ -80,7 +128,7 @@ export default function PurchasesPage() {
     [db, locale, purchases, showRates, t]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkAnyCapability(session, db, ["manage_accounts", "manage_reorder"])) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -92,15 +140,21 @@ export default function PurchasesPage() {
     e.preventDefault();
     setError("");
     setMsg("");
+    setSaving(true);
     try {
       if (!showRates) {
         throw new Error("Only the owner can enter purchase rates");
       }
       const lines = form.lines
-        .map((l) => ({
-          ...l,
-          amount: roundMoney((l.secondaryQty ?? l.qty) * l.rate),
-        }))
+        .map((l) => {
+          const product = l.productId
+            ? db?.products.find((p) => p.id === l.productId)
+            : undefined;
+          return {
+            ...l,
+            amount: voucherLineAmount(l, product),
+          };
+        })
         .filter((l) => l.itemLabel.trim() && l.amount > 0);
       if (!form.supplierId) throw new Error("Select supplier");
       if (!lines.length) throw new Error("Add purchase lines");
@@ -132,6 +186,45 @@ export default function PurchasesPage() {
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const onConfirmPo = async (po: PurchaseOrder) => {
+    if (!session || poBusyId) return;
+    setPoBusyId(po.id);
+    setError("");
+    setMsg("");
+    try {
+      markPurchaseOrderOrdered(po.id, session.id);
+      refresh();
+      const sup = db?.parties.find((p) => p.id === po.supplierId);
+      const wa = await sendWhatsAppMessage(
+        sup?.phone || "",
+        supplierPoWhatsAppText({
+          po,
+          companyName: db?.settings.companyName || "TT Enterprises",
+          locale,
+        }),
+        whatsappCountryCode(db?.settings),
+        { outboxLabel: sup?.name }
+      );
+      setMsg(
+        `${t("accounts.poMarkedOrdered", { number: po.number })} · ${whatsappResultCopy(
+          wa,
+          {
+            sent: t("common.whatsappSent"),
+            opened: t("common.whatsappOpened"),
+            fail: t("common.whatsappSendFailed"),
+            noPhone: t("common.whatsappNoPhone"),
+          }
+        )}`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    } finally {
+      setPoBusyId(null);
     }
   };
 
@@ -139,22 +232,32 @@ export default function PurchasesPage() {
     <AccountsShell focusMode={showForm}>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold text-[var(--ink)]">
-            {t("accounts.purchases")}
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            Owner direct bills. Day-to-day: staff use{" "}
-            <Link
-              href="/admin/accounts/goods-received"
-              className="font-semibold text-[var(--brand-deep)] underline"
-            >
-              Goods received
-            </Link>
-            , then you price them.
-          </p>
+          <AccountsPageHeader
+            title={t("accounts.purchases")}
+            hint={t("accounts.purchasesHint")}
+          />
         </div>
         <div className="flex flex-wrap gap-2">
-          <ExportButtons options={exportOptions} />
+          {canBooks || canReorder ? (
+            <>
+              {canBooks ? (
+              <Link
+                href="/admin/accounts/purchases"
+                className={`tt-btn ${tab === "bills" ? "tt-btn-dark" : "tt-btn-outline"}`}
+              >
+                {t("accounts.tabBills")}
+              </Link>
+              ) : null}
+              <Link
+                href="/admin/accounts/purchases?tab=orders"
+                className={`tt-btn ${tab === "orders" ? "tt-btn-dark" : "tt-btn-outline"}`}
+              >
+                {t("accounts.tabOrders")}
+                {openPos.length ? ` · ${openPos.length}` : ""}
+              </Link>
+            </>
+          ) : null}
+          {plantOnly ? null : <ExportButtons options={exportOptions} />}
           {showRates ? (
             <button
               type="button"
@@ -167,7 +270,11 @@ export default function PurchasesPage() {
         </div>
       </div>
 
-      {!showRates ? (
+      {plantOnly ? (
+        <p className="mt-3 text-sm text-[var(--ink-muted)]">
+          {t("accounts.plantPoHint")}
+        </p>
+      ) : canBooks && !showRates ? (
         <p className="mt-3 text-sm text-[var(--ink-muted)]">
           Purchase rates are owner-only. Use Goods received to enter stock;
           the owner sets rates on Needs pricing.
@@ -216,15 +323,12 @@ export default function PurchasesPage() {
               }
             />
           </div>
-          <div>
-            <label className="tt-label">Packing slip (photo or PDF)</label>
-            <input
-              type="file"
-              accept="image/*,.pdf"
-              className="tt-input"
-              onChange={(e) => setPackingFile(e.target.files?.[0] ?? null)}
-            />
-          </div>
+          <FilePick
+            kind="photoOrPdf"
+            value={packingFile}
+            onChange={(files) => setPackingFile(files[0] ?? null)}
+            label="Packing slip (photo or PDF)"
+          />
 
           {form.lines.map((l, i) => (
             <div key={l.id} className="grid gap-2 md:grid-cols-5">
@@ -269,22 +373,28 @@ export default function PurchasesPage() {
                   const variation = product?.variations.find(
                     (v) => v.id === variationId
                   );
-                  const rate = variation?.rate ?? product?.baseRate ?? l.rate;
+                  const rate =
+                    product && isSqftUnit(product.unit)
+                      ? resolveSqftPack(product, variation).ratePerSqft
+                      : variation?.rate ?? product?.baseRate ?? l.rate;
                   const qty = l.qty || 1;
                   const secondaryQty = product
                     ? deriveSecondaryQty(product, qty, variationId || undefined)
                     : qty;
-                  next[i] = {
+                  const updated: VoucherLine = {
                     ...l,
                     productId,
                     variationId: variationId || undefined,
                     colorId: colorId || undefined,
                     itemLabel: item?.name || l.itemLabel,
                     unit: product?.unit,
+                    qty,
                     rate,
                     secondaryQty,
-                    amount: roundMoney(secondaryQty * rate),
+                    amount: 0,
                   };
+                  updated.amount = voucherLineAmount(updated, product);
+                  next[i] = updated;
                   setForm({ ...form, lines: next });
                 }}
                 placeholder="Search catalog…"
@@ -305,12 +415,14 @@ export default function PurchasesPage() {
                     ? deriveSecondaryQty(product, qty, l.variationId)
                     : l.secondaryQty ?? qty;
                   const next = [...form.lines];
-                  next[i] = {
+                  const updated = {
                     ...l,
                     qty,
                     secondaryQty,
-                    amount: roundMoney(secondaryQty * l.rate),
+                    amount: 0,
                   };
+                  updated.amount = voucherLineAmount(updated, product);
+                  next[i] = updated;
                   setForm({ ...form, lines: next });
                 }}
               />
@@ -322,31 +434,82 @@ export default function PurchasesPage() {
                 onValueChange={(v) => {
                   const secondaryQty = typeof v === "number" ? v : 0;
                   const next = [...form.lines];
-                  next[i] = {
+                  const product = l.productId
+                    ? db?.products.find((p) => p.id === l.productId)
+                    : undefined;
+                  const updated = {
                     ...l,
                     secondaryQty,
-                    amount: roundMoney(secondaryQty * l.rate),
+                    amount: 0,
                   };
+                  updated.amount = voucherLineAmount(updated, product);
+                  next[i] = updated;
                   setForm({ ...form, lines: next });
                 }}
               />
               {showRates ? (
-                <NumberField
-                  className="tt-input"
-                  placeholder="Rate"
-                  emptyAs={null}
-                  value={l.rate}
-                  onValueChange={(v) => {
-                    const rate = typeof v === "number" ? v : 0;
-                    const next = [...form.lines];
-                    next[i] = {
-                      ...l,
-                      rate,
-                      amount: roundMoney((l.secondaryQty ?? l.qty) * rate),
-                    };
-                    setForm({ ...form, lines: next });
-                  }}
-                />
+                <div>
+                  <NumberField
+                    className="tt-input"
+                    placeholder={
+                      isSqftUnit(l.unit) ? "₹ / sqft" : "Rate"
+                    }
+                    emptyAs={null}
+                    value={l.rate}
+                    onValueChange={(v) => {
+                      const rate = typeof v === "number" ? v : 0;
+                      const next = [...form.lines];
+                      const product = l.productId
+                        ? db?.products.find((p) => p.id === l.productId)
+                        : undefined;
+                      const updated = {
+                        ...l,
+                        rate,
+                        amount: 0,
+                      };
+                      updated.amount = voucherLineAmount(updated, product);
+                      next[i] = updated;
+                      setForm({ ...form, lines: next });
+                    }}
+                  />
+                  {isSqftUnit(l.unit) && l.productId && l.rate > 0
+                    ? (() => {
+                        const product = db?.products.find(
+                          (p) => p.id === l.productId
+                        );
+                        if (!product) return null;
+                        const spec = resolveSqftPack(
+                          product,
+                          l.variationId
+                            ? product.variations.find(
+                                (v) => v.id === l.variationId
+                              )
+                            : undefined
+                        );
+                        return (
+                          <p className="mt-0.5 text-[10px] text-[var(--ink-muted)]">
+                            {formatInr(
+                              ratePerPiece(
+                                l.rate,
+                                spec.lengthFt,
+                                spec.widthFt
+                              )
+                            )}
+                            /pc ·{" "}
+                            {formatInr(
+                              ratePerPacket(
+                                l.rate,
+                                spec.lengthFt,
+                                spec.widthFt,
+                                spec.pcsPerPacket
+                              )
+                            )}
+                            /pkt
+                          </p>
+                        );
+                      })()
+                    : null}
+                </div>
               ) : (
                 <span className="self-center text-xs text-[var(--ink-muted)]">
                   ••••
@@ -364,12 +527,72 @@ export default function PurchasesPage() {
           >
             + {locale === "hi" ? "लाइन" : "Line"}
           </button>
-          <button type="submit" className="tt-btn tt-btn-dark block">
-            {t("common.save")}
+          <button type="submit" className="tt-btn tt-btn-dark block" disabled={saving}>
+            {saving ? t("accounts.saving") : t("common.save")}
           </button>
         </form>
       ) : null}
 
+      {tab === "orders" ? (
+        <div className="tt-panel mt-6 overflow-x-auto">
+          <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
+            {t("accounts.openPos")}
+          </p>
+          <table className="tt-table min-w-[640px]">
+            <thead>
+              <tr>
+                <th>No.</th>
+                <th>Date</th>
+                <th>{t("accounts.suppliers")}</th>
+                <th>Status</th>
+                <th>{t("accounts.remainingQty")}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {openPos.map((po) => {
+                const sup = db?.parties.find((p) => p.id === po.supplierId);
+                return (
+                  <tr key={po.id}>
+                    <td className="font-mono text-sm">{po.number}</td>
+                    <td>{po.date}</td>
+                    <td>{sup?.name || "—"}</td>
+                    <td className="capitalize">{po.status}</td>
+                    <td className="tabular-nums">{poRemainingQty(po)}</td>
+                    <td>
+                      <div className="flex flex-wrap gap-x-3">
+                        {po.status === "draft" ? (
+                          <button
+                            type="button"
+                            className="text-sm font-semibold text-[var(--brand-deep)] underline"
+                            disabled={poBusyId === po.id}
+                            onClick={() => void onConfirmPo(po)}
+                          >
+                            {poBusyId === po.id
+                              ? "…"
+                              : t("accounts.confirmPoWhatsApp")}
+                          </button>
+                        ) : null}
+                        {canBooks ? (
+                          <Link
+                            href="/admin/accounts/goods-received"
+                            className="text-sm font-semibold text-[var(--brand-deep)] underline"
+                          >
+                            {t("accounts.receiveAgainstPo")}
+                          </Link>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!openPos.length ? (
+            <AccountsEmpty message={t("common.empty")} />
+          ) : null}
+        </div>
+      ) : (
       <div className="tt-panel mt-6 overflow-x-auto">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
           {t("accounts.purchaseBills")}
@@ -404,11 +627,10 @@ export default function PurchasesPage() {
           </tbody>
         </table>
         {!purchases.length ? (
-          <p className="p-4 text-sm text-[var(--ink-muted)]">
-            {t("common.empty")}
-          </p>
+          <AccountsEmpty message={t("common.empty")} />
         ) : null}
       </div>
+      )}
     </AccountsShell>
   );
 }

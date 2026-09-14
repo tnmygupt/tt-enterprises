@@ -228,11 +228,11 @@ export default function OwnerTrackingPage() {
           <button type="button" className="tt-btn tt-btn-dark" onClick={exportPdf}>
             {locale === "hi" ? "PDF निर्यात" : "Export PDF"}
           </button>
+          <Link href="/admin/owner/monthly-audit" className="tt-btn tt-btn-outline">
+            {locale === "hi" ? "मासिक ऑडिट" : "Monthly audit"}
+          </Link>
           <Link href="/admin/accounts" className="tt-btn tt-btn-outline">
             {locale === "hi" ? "अकाउंट्स" : "Accounts"}
-          </Link>
-          <Link href="/admin/tally" className="tt-btn tt-btn-outline">
-            {locale === "hi" ? "टैली (बुक्स)" : "Tally (books)"}
           </Link>
         </div>
       </div>

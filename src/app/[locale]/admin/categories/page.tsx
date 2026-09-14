@@ -25,7 +25,7 @@ export default function AdminCategoriesPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
-  if (!session || !checkCapability(session, db?.users, "manage_products")) {
+  if (!session || !checkCapability(session, db, "manage_products")) {
     return (
       <AdminShell>
         <AdminAccessDenied />

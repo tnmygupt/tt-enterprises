@@ -4,7 +4,9 @@ import { FormEvent, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
 import { ExportButtons } from "@/components/ExportButtons";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { NumberField } from "@/components/NumberField";
 import { partyBalance } from "@/lib/accounting";
@@ -63,7 +65,7 @@ export default function AccountsPartiesPage() {
     [db, isOwner, locale, t]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -109,26 +111,27 @@ export default function AccountsPartiesPage() {
 
   return (
     <AccountsShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-          {t("accounts.parties")}
-        </h1>
-        {isOwner ? (
-          <Link
-            href="/admin/accounts/openings"
-            className="tt-btn tt-btn-outline"
-          >
-            Opening balances
-          </Link>
-        ) : null}
-      </div>
+      <AccountsPageHeader
+        title={t("accounts.parties")}
+        actions={
+          isOwner ? (
+            <Link
+              href="/admin/accounts/openings"
+              className="tt-btn tt-btn-outline"
+            >
+              {t("accounts.openingBalancesLink")}
+            </Link>
+          ) : null
+        }
+      />
 
       <form
+        id="new-party"
         onSubmit={onCreate}
         className="mt-6 grid max-w-2xl gap-3 rounded-2xl border border-[var(--line)] bg-white p-5 sm:grid-cols-2"
       >
         <p className="sm:col-span-2 text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-          {locale === "hi" ? "नई पार्टी" : "New party"}
+          {t("accounts.newParty")}
         </p>
         <div>
           <label className="tt-label">{t("common.name")}</label>
@@ -303,6 +306,13 @@ export default function AccountsPartiesPage() {
               ))}
           </tbody>
         </table>
+        {!(db?.parties ?? []).some((p) => p.active) ? (
+          <AccountsEmpty
+            message={t("accounts.emptyParties")}
+            href="#new-party"
+            cta={t("accounts.emptyPartiesCta")}
+          />
+        ) : null}
       </div>
     </AccountsShell>
   );

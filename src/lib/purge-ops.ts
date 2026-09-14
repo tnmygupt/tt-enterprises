@@ -1,4 +1,5 @@
 import type { AppDatabase } from "@/lib/store/db";
+import type { UserProfile } from "@/lib/types";
 import { normalizePhone, phonesMatch } from "@/lib/phone";
 import {
   mergeTombMaps,
@@ -11,23 +12,43 @@ export type PurgeOpsResult = {
   error?: string;
   keptUserPhone?: string;
   keptUserId?: string;
+  keptUsers: number;
   removedUsers: number;
   removedOrders: number;
   keptProducts: number;
 };
 
+export type PurgeOpsOpts = {
+  /** Default false — keep catalog/stock. Set true only for a full catalog reset. */
+  clearCatalog?: boolean;
+  /** Default true — keep every super_admin, plus keepPhone. */
+  keepAllOwners?: boolean;
+};
+
+function resetKeptOwner(user: UserProfile): UserProfile {
+  return {
+    ...user,
+    role: "super_admin",
+    active: true,
+    approved: true,
+    walletBalance: 0,
+    liftingProgressKg: 0,
+    schemeProgress: {},
+  };
+}
+
 /**
- * Launch wipe: keep only keepPhone as owner.
- * Clears orders, other users, wallets, books history, catalog products/schemes,
- * POs/GRNs/contracts, and customer parties.
+ * Launch wipe: keep owner login(s), catalog items, and product stock fields.
+ * Clears orders, other users, wallets, books history, parties, POs/GRNs.
  * Keeps: company settings, chart of accounts, categories, shipping rules.
  */
 export function purgeOpsDataKeepCatalog(
   db: AppDatabase,
   keepPhone: string,
-  opts?: { clearCatalog?: boolean }
+  opts?: PurgeOpsOpts
 ): { db: AppDatabase; result: PurgeOpsResult } {
-  const clearCatalog = opts?.clearCatalog !== false;
+  const clearCatalog = opts?.clearCatalog === true;
+  const keepAllOwners = opts?.keepAllOwners !== false;
   const want = normalizePhone(keepPhone);
   if (want.length !== 10) {
     return {
@@ -35,6 +56,7 @@ export function purgeOpsDataKeepCatalog(
       result: {
         ok: false,
         error: "keepPhone must be a 10-digit mobile number",
+        keptUsers: 0,
         removedUsers: 0,
         removedOrders: 0,
         keptProducts: 0,
@@ -42,13 +64,14 @@ export function purgeOpsDataKeepCatalog(
     };
   }
 
-  const kept = (db.users ?? []).filter((u) => phonesMatch(u.phone, want));
-  if (!kept.length) {
+  const confirmed = (db.users ?? []).filter((u) => phonesMatch(u.phone, want));
+  if (!confirmed.length) {
     return {
       db,
       result: {
         ok: false,
         error: `No user found with phone ${want}`,
+        keptUsers: 0,
         removedUsers: 0,
         removedOrders: 0,
         keptProducts: (db.products ?? []).length,
@@ -56,17 +79,26 @@ export function purgeOpsDataKeepCatalog(
     };
   }
 
-  const preferred =
-    kept.find((u) => u.role === "super_admin") ||
-    kept.find((u) => u.role !== "customer") ||
-    kept[0];
-  const keepUser = {
-    ...preferred,
-    role: "super_admin" as const,
-    active: true,
-    approved: true,
-    walletBalance: 0,
+  const keepIds = new Set<string>();
+  const keepUsers: UserProfile[] = [];
+
+  const addKeep = (u: UserProfile) => {
+    if (keepIds.has(u.id)) return;
+    keepIds.add(u.id);
+    keepUsers.push(resetKeptOwner(u));
   };
+
+  const preferred =
+    confirmed.find((u) => u.role === "super_admin") ||
+    confirmed.find((u) => u.role !== "customer") ||
+    confirmed[0];
+  addKeep(preferred);
+
+  if (keepAllOwners) {
+    for (const u of db.users ?? []) {
+      if (u.role === "super_admin") addKeep(u);
+    }
+  }
 
   const beforeUsers = (db.users ?? []).length;
   const beforeOrders = (db.orders ?? []).length;
@@ -76,19 +108,19 @@ export function purgeOpsDataKeepCatalog(
 
   const purgeAt = new Date().toISOString();
   const removedIds = (db.users ?? [])
-    .filter((u) => u.id !== keepUser.id)
+    .filter((u) => !keepIds.has(u.id))
     .map((u) => u.id);
   const tombs = mergeTombMaps(
     tombsFromDb(db),
     Object.fromEntries(removedIds.map((id) => [id, purgeAt]))
   );
-  // Never tombstone the kept owner
-  delete tombs[keepUser.id];
+  for (const id of keepIds) delete tombs[id];
   const tombFields = syncTombFields(tombs);
+  const primary = keepUsers[0];
 
   const next: AppDatabase = {
     ...db,
-    users: [keepUser],
+    users: keepUsers,
     deletedUserIds: tombFields.deletedUserIds,
     deletedUserAt: tombFields.deletedUserAt,
     products,
@@ -98,6 +130,8 @@ export function purgeOpsDataKeepCatalog(
     vouchers: [],
     ledgerEntries: [],
     billAllocations: [],
+    // Product.stock / stockMatrix stay on catalog rows. Drop movement
+    // history so wiped test orders cannot keep stock reserved.
     stockMovements: [],
     stockBatches: [],
     batchConsumptions: [],
@@ -106,12 +140,33 @@ export function purgeOpsDataKeepCatalog(
     supplierContracts: [],
     tallyPosts: [],
     statementMatches: [],
+    bankRecons: [],
+    accessPlaces: [],
+    peopleActivity: [],
+    hrTerms: [],
+    hrShifts: [],
+    hrSites: [],
+    hrPunches: [],
+    hrLeaves: [],
+    hrAdvances: [],
+    hrPayslips: [],
+    stockCounts: [],
+    cashCounts: [],
+    monthlyAudits: [],
+    waInbox: { messages: [], reads: [] },
     schemes: clearCatalog ? [] : db.schemes ?? [],
     parties: [],
     categories: db.categories ?? [],
     shippingRules: db.shippingRules ?? [],
     settings: db.settings
-      ? { ...db.settings, opsPurgeAt: purgeAt }
+      ? {
+          ...db.settings,
+          opsPurgeAt: purgeAt,
+          whatsappDigest: {},
+          tallyLastSyncAt: undefined,
+          tallySyncStatus: "idle",
+          tallySyncMessage: undefined,
+        }
       : db.settings,
     accounts: db.accounts ?? [],
   };
@@ -120,9 +175,10 @@ export function purgeOpsDataKeepCatalog(
     db: next,
     result: {
       ok: true,
-      keptUserPhone: normalizePhone(keepUser.phone),
-      keptUserId: keepUser.id,
-      removedUsers: Math.max(0, beforeUsers - 1),
+      keptUserPhone: normalizePhone(primary.phone),
+      keptUserId: primary.id,
+      keptUsers: keepUsers.length,
+      removedUsers: Math.max(0, beforeUsers - keepUsers.length),
       removedOrders: beforeOrders,
       keptProducts: products.length,
     },
@@ -155,6 +211,7 @@ export function clearOrderHistoryKeepUsers(db: AppDatabase): {
     db: next,
     result: {
       ok: true,
+      keptUsers: (db.users ?? []).length,
       removedUsers: 0,
       removedOrders: beforeOrders,
       keptProducts: (db.products ?? []).length,

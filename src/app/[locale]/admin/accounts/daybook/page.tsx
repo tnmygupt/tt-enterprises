@@ -1,10 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AccountsShell } from "@/components/AccountsShell";
+import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { ExportButtons } from "@/components/ExportButtons";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
@@ -18,20 +21,22 @@ export default function AccountsDaybookPage() {
   const showPurchaseAmounts = session
     ? canViewFinancials(session.role)
     : false;
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [range, setRange] = useAdminDateRange("mtd");
 
   const rows = useMemo(() => {
     if (!db) return [];
     return db.vouchers
-      .filter((v) => !v.voided && v.date === date)
-      .sort((a, b) => a.number.localeCompare(b.number));
-  }, [db, date]);
+      .filter(
+        (v) => !v.voided && v.date >= range.from && v.date <= range.to
+      )
+      .sort((a, b) => a.date.localeCompare(b.date) || a.number.localeCompare(b.number));
+  }, [db, range.from, range.to]);
 
   const exportOptions = useMemo(
     () => ({
       title: t("accounts.daybook"),
-      subtitle: date,
-      filename: `daybook-${date}.pdf`,
+      subtitle: `${range.from} → ${range.to}`,
+      filename: `daybook-${range.from}-${range.to}.pdf`,
       columns: ["No.", "Type", "Party", "Narration", "Total"],
       rows: rows.map((v) => [
         v.number,
@@ -44,10 +49,10 @@ export default function AccountsDaybookPage() {
           : formatInr(v.total, locale),
       ]),
     }),
-    [date, db, locale, rows, showPurchaseAmounts, t]
+    [db, locale, range.from, range.to, rows, showPurchaseAmounts, t]
   );
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -57,30 +62,45 @@ export default function AccountsDaybookPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {t("accounts.daybook")}
-      </h1>
-      <div className="mt-4 flex flex-wrap items-end gap-3">
-        <div className="max-w-xs">
-          <label className="tt-label">Date</label>
-          <input
-            type="date"
-            className="tt-input"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-          />
-        </div>
-        <ExportButtons options={exportOptions} />
+      <AccountsPageHeader
+        title={t("accounts.daybook")}
+        extra={
+          <div className="flex flex-wrap items-end gap-3">
+            <DateRangeBar value={range} onChange={setRange} />
+            <ExportButtons options={exportOptions} />
+          </div>
+        }
+      />
+      <div className="tt-acct-cards mt-6 sm:hidden">
+        {rows.map((v) => (
+          <div key={v.id} className="tt-panel tt-acct-card">
+            <p className="font-mono text-sm font-semibold text-[var(--brand-deep)]">
+              <VoucherNumberLink id={v.id} number={v.number} />
+            </p>
+            <p className="text-xs capitalize text-[var(--ink-muted)]">
+              {v.date} · {v.type}
+              {db?.parties.find((p) => p.id === v.partyId)
+                ? ` · ${db.parties.find((p) => p.id === v.partyId)?.name}`
+                : ""}
+            </p>
+            <p className="mt-1 text-sm font-semibold tabular-nums">
+              {(v.type === "purchase" || v.type === "debit_note") &&
+              !showPurchaseAmounts
+                ? "••••"
+                : formatInr(v.total, locale)}
+            </p>
+          </div>
+        ))}
       </div>
-      <div className="tt-panel mt-6 overflow-x-auto">
+      <div className="tt-panel tt-acct-table-wrap mt-6 hidden sm:block">
         <table className="tt-table min-w-[700px]">
           <thead>
             <tr>
-              <th>No.</th>
-              <th>Type</th>
-              <th>Party</th>
-              <th>Narration</th>
-              <th>Total</th>
+              <th>{t("accounts.colNo")}</th>
+              <th>{t("accounts.colType")}</th>
+              <th>{t("accounts.colParty")}</th>
+              <th>{t("accounts.colNarration")}</th>
+              <th>{t("accounts.colTotal")}</th>
             </tr>
           </thead>
           <tbody>
@@ -94,7 +114,7 @@ export default function AccountsDaybookPage() {
                 <td className="text-sm text-[var(--ink-muted)]">
                   {v.narration || "—"}
                 </td>
-                <td>
+                <td className="tabular-nums">
                   {(v.type === "purchase" || v.type === "debit_note") &&
                   !showPurchaseAmounts
                     ? "••••"
@@ -104,10 +124,14 @@ export default function AccountsDaybookPage() {
             ))}
           </tbody>
         </table>
-        {!rows.length ? (
-          <p className="p-4 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
-        ) : null}
       </div>
+      {!rows.length ? (
+        <AccountsEmpty
+          message={t("accounts.emptyDaybook")}
+          href="/admin/accounts/vouchers?new=receipt"
+          cta={t("accounts.recordReceipt")}
+        />
+      ) : null}
     </AccountsShell>
   );
 }

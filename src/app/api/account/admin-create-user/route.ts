@@ -1,17 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  cloudGetAppDb,
-  cloudPutAppDb,
-  createServerSupabase,
-} from "@/lib/server/app-db";
-import {
-  hashPasswordSecure,
-  readSessionCookie,
-} from "@/lib/server/session";
+import { cloudGetAppDb, cloudPutAppDb } from "@/lib/server/app-db";
+import { hashPasswordSecure, readSessionCookie } from "@/lib/server/session";
 import { resolveCloudActor } from "@/lib/server/authorize-db";
-import { userHasCapability } from "@/lib/capabilities";
+import { capabilityContextFrom, userHasCapability } from "@/lib/capabilities";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { sanitizeDbForCloud } from "@/lib/supabase/sanitize";
+import { tombsFromDb, userBeatsTomb } from "@/lib/user-tombs";
+import { notifyDealerReviewServer } from "@/lib/server/whatsapp-notify";
 import type { Capability, UserProfile, UserRole } from "@/lib/types";
 
 function normalizePhone(phone: string): string {
@@ -28,6 +23,7 @@ const STAFF_ROLES: UserRole[] = [
   "sales",
   "accounts",
   "dispatch",
+  "plant_manager",
   "viewer",
   "super_admin",
 ];
@@ -35,7 +31,7 @@ const STAFF_ROLES: UserRole[] = [
 function sanitizeCapabilityOverrides(
   role: UserRole,
   extra?: Capability[],
-  denied?: Capability[]
+  denied?: Capability[],
 ): { extraCapabilities?: Capability[]; deniedCapabilities?: Capability[] } {
   if (role === "super_admin" || role === "customer") {
     return {};
@@ -57,25 +53,16 @@ export async function POST(req: NextRequest) {
   if (!session) {
     return NextResponse.json(
       { error: "Login required — please log in again" },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
   if (!isSupabaseConfigured()) {
     return NextResponse.json(
       { error: "Cloud database not configured — cannot create shared users" },
-      { status: 503 }
+      { status: 503 },
     );
   }
-
-  const supabase = createServerSupabase();
-  if (!supabase) {
-    return NextResponse.json(
-      { error: "Cloud database unavailable" },
-      { status: 503 }
-    );
-  }
-
   let body: {
     kind?: "staff" | "dealer";
     name?: string;
@@ -108,13 +95,13 @@ export async function POST(req: NextRequest) {
   if (phone.length !== 10) {
     return NextResponse.json(
       { error: "Enter a valid 10-digit mobile number" },
-      { status: 400 }
+      { status: 400 },
     );
   }
   if (password.length < 6) {
     return NextResponse.json(
       { error: "Password must be at least 6 characters" },
-      { status: 400 }
+      { status: 400 },
     );
   }
 
@@ -125,23 +112,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Invalid staff role — use sales, accounts, dispatch, viewer, or super_admin",
+            "Invalid staff role — use sales, accounts, dispatch, plant_manager, viewer, or super_admin",
         },
-        { status: 400 }
+        { status: 400 },
       );
     }
   }
 
   // Retry once on optimistic-lock conflict
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { db, updatedAt, error } = await cloudGetAppDb(supabase);
+    const { db, updatedAt, error } = await cloudGetAppDb();
     if (error) {
       return NextResponse.json({ error }, { status: 500 });
     }
     if (!db) {
       return NextResponse.json(
         { error: "Cloud database is empty" },
-        { status: 503 }
+        { status: 503 },
       );
     }
 
@@ -156,30 +143,35 @@ export async function POST(req: NextRequest) {
               ? err.message
               : "Your session is invalid — log in again",
         },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
     const { actor } = resolved;
 
-    if (!userHasCapability(actor, "manage_users")) {
+    if (!userHasCapability(actor, "manage_users", capabilityContextFrom(db))) {
       return NextResponse.json(
         { error: "Only admins can create users" },
-        { status: 403 }
+        { status: 403 },
       );
     }
 
     if (role === "super_admin" && actor.role !== "super_admin") {
       return NextResponse.json(
         { error: "Only an owner can create another super admin" },
-        { status: 403 }
+        { status: 403 },
       );
     }
 
-    if (db.users.some((u) => phonesMatch(u.phone, phone))) {
+    const tombs = tombsFromDb(db);
+    if (
+      db.users.some(
+        (u) => phonesMatch(u.phone, phone) && userBeatsTomb(u, tombs),
+      )
+    ) {
       return NextResponse.json(
         { error: "This phone number already exists" },
-        { status: 409 }
+        { status: 409 },
       );
     }
 
@@ -188,7 +180,7 @@ export async function POST(req: NextRequest) {
         ? sanitizeCapabilityOverrides(
             role,
             body.extraCapabilities,
-            body.deniedCapabilities
+            body.deniedCapabilities,
           )
         : {};
 
@@ -251,23 +243,29 @@ export async function POST(req: NextRequest) {
       delete (u as { passwordVisible?: string }).passwordVisible;
     }
 
-    const result = await cloudPutAppDb(
-      supabase,
-      cleaned,
-      updatedAt ?? null
-    );
+    const result = await cloudPutAppDb(cleaned, updatedAt ?? null);
     if (result.conflict) {
       continue;
     }
     if (!result.ok) {
       return NextResponse.json(
         { error: result.error || "Failed to save user to cloud" },
-        { status: 500 }
+        { status: 500 },
       );
+    }
+
+    let waSent = false;
+    if (kind === "dealer") {
+      waSent = await notifyDealerReviewServer({
+        user,
+        action: "approve",
+        settings: cleaned.settings,
+      });
     }
 
     return NextResponse.json({
       ok: true,
+      waSent,
       user: {
         ...user,
         passwordHash: "",
@@ -282,9 +280,8 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json(
     {
-      error:
-        "Could not save — another device updated the database. Try again.",
+      error: "Could not save — another device updated the database. Try again.",
     },
-    { status: 409 }
+    { status: 409 },
   );
 }

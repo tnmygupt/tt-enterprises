@@ -61,6 +61,8 @@ import type {
   BatchConsumption,
   StatementMatch,
   StatementMatchExtra,
+  BankRecon,
+  BankReconExtra,
   SupplierContract,
   UserProfile,
   UserRole,
@@ -72,10 +74,32 @@ import type {
   TallyPost,
   UnitOfSale,
   AccessPlace,
+  PeopleActivity,
+  RolePresets,
+  StaffJob,
+  HrTerms,
+  HrShift,
+  HrSite,
+  HrPunch,
+  HrLeave,
+  HrAdvance,
+  HrPayslip,
+  StockCount,
+  CashCount,
+  MonthlyAudit,
 } from "../types";
+import type { WaInbox } from "../whatsapp-inbox";
 import { ROLE_CAPABILITIES, type Capability } from "../types";
-import { userHasCapability } from "../capabilities";
+import {
+  capabilityContextFrom,
+  isSalesDeskOnly,
+  sanitizeRolePresets,
+  sanitizeStaffJob,
+  sanitizeStaffJobs,
+  userHasCapability,
+} from "../capabilities";
 import { dedupeProductVariations } from "../media";
+import { fallbackNewProducts, toggleId } from "../home-merch";
 import {
   applyContractUsage,
   reverseContractUsage,
@@ -84,18 +108,30 @@ import {
 import {
   buildOrderLine,
   calcLineTotal,
+  isPackCountUnit,
   roundMoney,
   roundOffRupees,
 } from "../pricing";
 import { calcShippingAmount } from "@/lib/shipping";
 import { buildDraftPosFromAlerts } from "@/lib/reorder-po";
-import { stockAlerts } from "@/lib/accounting/analysis";
+import { confirmDraftPurchaseOrder } from "@/lib/purchase-orders";
+import { placeEstimateOnDatabase } from "@/lib/place-estimate";
+import { stockAlertsFromDb } from "@/lib/accounting/analysis";
 import { normalizeProductLocalized } from "@/lib/localized";
+import { buildHrPunch, ensureHrAuditCollections } from "@/lib/hr";
+import {
+  adjustmentsFromApprovedLines,
+  canEnterPhysicalCount,
+  ensureCountCollections,
+  startCashCountSession,
+  startStockCountSession,
+} from "@/lib/stock-count";
 export {
   calcWeightSlabShipping,
   calcShippingAmount,
 } from "@/lib/shipping";
 import { normalizePhone, phonesMatch } from "../phone";
+import { applyDealerFileActions } from "../dealer-file";
 import { canTransitionOrderStatus } from "../order-stages";
 import {
   applyGrnStock,
@@ -122,6 +158,10 @@ import {
   isSchemeEnded,
   netSchemeSettlement,
   pickBestOrderDiscount,
+  applyBillDiscounts,
+  billDiscountReceiptLabel,
+  orderDiscountMathLabel,
+  orderDiscountMathQty,
   progressForScheme,
   schemeLevelLabel,
   schemeTierPercent,
@@ -143,6 +183,7 @@ import {
   syncBundlesFromCells,
 } from "../packing-slip";
 import type { PackingSlip } from "../types";
+import { stampUserTomb, tombsFromDb, userBeatsTomb } from "../user-tombs";
 
 const DB_KEY = "tt_enterprises_db_v12";
 const SESSION_KEY = "tt_enterprises_session_v1";
@@ -178,8 +219,28 @@ export interface AppDatabase {
   supplierContracts: SupplierContract[];
   tallyPosts: TallyPost[];
   statementMatches: StatementMatch[];
+  /** Bank reconciliation sessions (Tally BRS). */
+  bankRecons?: BankRecon[];
   /** Login + page access events for admin Tracking (staff-only in projections). */
   accessPlaces: AccessPlace[];
+  /** Owner overlay of built-in staff role defaults. */
+  rolePresets?: RolePresets;
+  /** Named staff jobs (permission templates). */
+  staffJobs?: StaffJob[];
+  /** Owner-visible dealer approve / revoke / file-edit trail. */
+  peopleActivity?: PeopleActivity[];
+  /** Unused cloud leftover — stripped from browser GET, restored on PUT. */
+  waInbox?: WaInbox;
+  hrTerms?: HrTerms[];
+  hrShifts?: HrShift[];
+  hrSites?: HrSite[];
+  hrPunches?: HrPunch[];
+  hrLeaves?: HrLeave[];
+  hrAdvances?: HrAdvance[];
+  hrPayslips?: HrPayslip[];
+  stockCounts?: StockCount[];
+  cashCounts?: CashCount[];
+  monthlyAudits?: MonthlyAudit[];
 }
 
 function emptyDb(): AppDatabase {
@@ -205,11 +266,26 @@ function emptyDb(): AppDatabase {
     batchConsumptions: [],
     billAllocations: [],
     statementMatches: [],
+    bankRecons: [],
     purchaseOrders: [],
     goodsReceipts: [],
     supplierContracts: [],
     tallyPosts: [],
     accessPlaces: [],
+    rolePresets: {},
+    staffJobs: [],
+    peopleActivity: [],
+    waInbox: { messages: [], reads: [] },
+    hrTerms: [],
+    hrShifts: [],
+    hrSites: [],
+    hrPunches: [],
+    hrLeaves: [],
+    hrAdvances: [],
+    hrPayslips: [],
+    stockCounts: [],
+    cashCounts: [],
+    monthlyAudits: [],
   };
 }
 
@@ -219,6 +295,15 @@ function canUseStorage(): boolean {
   } catch {
     return false;
   }
+}
+
+/** Dealers stay pending unless approved is explicitly true. */
+function dealerApprovedFlag(u: {
+  role: string;
+  approved?: unknown;
+}): boolean {
+  if (u.role !== "customer") return u.approved !== false;
+  return u.approved === true || u.approved === "true";
 }
 
 export function loadDb(): AppDatabase {
@@ -270,7 +355,13 @@ export function loadDb(): AppDatabase {
     if (!parsed.stockBatches) parsed.stockBatches = [];
     if (!parsed.batchConsumptions) parsed.batchConsumptions = [];
     if (!parsed.statementMatches) parsed.statementMatches = [];
+    if (!parsed.bankRecons) parsed.bankRecons = [];
     if (!parsed.accessPlaces) parsed.accessPlaces = [];
+    if (!parsed.waInbox) parsed.waInbox = { messages: [], reads: [] };
+    if (!parsed.waInbox.messages) parsed.waInbox.messages = [];
+    if (!parsed.waInbox.reads) parsed.waInbox.reads = [];
+    ensureHrAuditCollections(parsed);
+    ensureCountCollections(parsed);
 
     // Ensure perpetual accounting setup + FIFO migration
     const accountingMigrated = ensurePerpetualAccounting(parsed);
@@ -294,11 +385,10 @@ export function loadDb(): AppDatabase {
       email: u.email,
       schemeProgress: u.schemeProgress || {},
       schemeValueProgress: u.schemeValueProgress || {},
-      approved:
-        typeof u.approved === "boolean"
-          ? u.approved
-          : u.role !== "customer" || u.active,
+      approved: dealerApprovedFlag(u),
     }));
+    parsed.rolePresets = sanitizeRolePresets(parsed.rolePresets);
+    parsed.staffJobs = sanitizeStaffJobs(parsed.staffJobs);
     // Normalize scheme tiers (ratePerUnit) from legacy creditAmount if needed
     parsed.schemes = (parsed.schemes ?? []).map((s) => {
       const levels = (s.levels || []).map((l, i) => ({
@@ -323,7 +413,11 @@ export function loadDb(): AppDatabase {
               ? "order_percent"
               : s.rewardType === "order_flat"
                 ? "order_flat"
-                : "per_kg_rate",
+                : s.rewardType === "order_rate"
+                  ? "order_rate"
+                  : s.rewardType === "order_per_kg"
+                    ? "order_per_kg"
+                    : "per_kg_rate",
         levels:
           levels.length > 0
             ? levels
@@ -711,7 +805,10 @@ function ensureCostLayersForDemand(
   }
 }
 
-export function saveDb(db: AppDatabase): void {
+export function saveDb(
+  db: AppDatabase,
+  opts?: { skipCloudPush?: boolean }
+): void {
   if (!canUseStorage()) return;
   // Never persist plaintext passwords that admins briefly reveal in the UI.
   for (const u of db.users ?? []) {
@@ -737,6 +834,7 @@ export function saveDb(db: AppDatabase): void {
     // Still attempt cloud push so the write is not lost.
   }
   window.dispatchEvent(new Event("tt-db-updated"));
+  if (opts?.skipCloudPush) return;
   // Prefer Supabase shared sync; never fall back to Firebase when Supabase is on
   // (Firebase anon full-doc write bypasses hardened /api/db).
   void import("@/lib/supabase/sync")
@@ -757,13 +855,34 @@ export function saveDb(db: AppDatabase): void {
 /** Replace local DB from cloud snapshot (Supabase / Firebase live sync). */
 export function replaceDbFromCloud(db: AppDatabase): void {
   if (!canUseStorage()) return;
-  const json = JSON.stringify(db);
+  let next = db;
+  try {
+    const raw = localStorage.getItem(DB_KEY);
+    if (raw) {
+      const current = JSON.parse(raw) as AppDatabase;
+      const incomingN = (next.products ?? []).length;
+      const currentN = (current.products ?? []).length;
+      // A dealer login / stale public pull must not wipe the live catalog.
+      if (incomingN === 0 && currentN > 0) {
+        next = {
+          ...next,
+          products: current.products,
+          categories: next.categories?.length
+            ? next.categories
+            : current.categories,
+        };
+      }
+    }
+  } catch {
+    /* keep incoming */
+  }
+  const json = JSON.stringify(next);
   // Skip identical writes — avoids full-app re-render flash on every poll
   if (localStorage.getItem(DB_KEY) === json) return;
   localStorage.setItem(DB_KEY, json);
   window.dispatchEvent(new Event("tt-db-updated"));
   // Drop stale cart lines after catalog wipe / product delete
-  pruneCartAgainstDb(db);
+  pruneCartAgainstDb(next);
 }
 
 export function resetDb(): AppDatabase {
@@ -788,7 +907,10 @@ export async function purgeOpsDataAndSync(
 }> {
   const { purgeOpsDataKeepCatalog } = await import("@/lib/purge-ops");
   const current = loadDb();
-  const { db: next, result } = purgeOpsDataKeepCatalog(current, keepPhone);
+  const { db: next, result } = purgeOpsDataKeepCatalog(current, keepPhone, {
+    clearCatalog: false,
+    keepAllOwners: true,
+  });
   if (!result.ok) {
     return { ok: false, error: result.error };
   }
@@ -895,6 +1017,54 @@ export function setSession(user: SessionUser | null): void {
   window.dispatchEvent(new Event("tt-session-updated"));
 }
 
+/** Ignore an in-flight session GET that finished after login/logout. */
+let sessionSyncGen = 0;
+
+export function bumpSessionSync(): void {
+  sessionSyncGen += 1;
+}
+
+/**
+ * Cookie + cloud are source of truth. Clears leftover localStorage when the
+ * account was deleted so home does not stay "logged in" with an empty shop.
+ */
+export async function syncSessionFromServer(): Promise<SessionUser | null> {
+  const gen = sessionSyncGen;
+  try {
+    const res = await fetch("/api/account/login", {
+      credentials: "include",
+      cache: "no-store",
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      user?: SessionUser | null;
+      error?: string;
+    };
+    if (gen !== sessionSyncGen) return getSession();
+    if (res.ok && data.user) {
+      const cur = getSession();
+      if (
+        !cur ||
+        cur.id !== data.user.id ||
+        cur.role !== data.user.role ||
+        cur.name !== data.user.name
+      ) {
+        setSession(data.user);
+      }
+      return data.user;
+    }
+    if (res.status === 401) {
+      // Deleted / disabled account: always drop leftover local session.
+      // Missing cookie (no error): also drop leftover local session so the
+      // login form is visible — in-flight GETs after login are ignored via gen.
+      if (data.error || getSession()) setSession(null);
+      return null;
+    }
+  } catch {
+    /* keep local session if the network failed */
+  }
+  return getSession();
+}
+
 export function getCart(): CartItem[] {
   if (!canUseStorage()) return [];
   const raw = localStorage.getItem(CART_KEY);
@@ -935,8 +1105,13 @@ export function hasCapability(
   return ROLE_CAPABILITIES[role]?.includes(capability) ?? false;
 }
 
-/** Prefer this when the full user profile is available (honours extra/denied). */
-export { userHasCapability, effectiveCapabilities } from "../capabilities";
+/** Prefer this when the full user profile is available (honours extra/denied/jobs). */
+export {
+  userHasCapability,
+  effectiveCapabilities,
+  isSalesDeskOnly,
+  SALES_DESK_HREFS,
+} from "../capabilities";
 
 /**
  * Resolve capability from live user row when present; else fall back to
@@ -944,13 +1119,61 @@ export { userHasCapability, effectiveCapabilities } from "../capabilities";
  */
 export function checkCapability(
   session: { id: string; role: UserRole } | null | undefined,
-  users: UserProfile[] | null | undefined,
+  source:
+    | {
+        users?: UserProfile[] | null;
+        rolePresets?: RolePresets | null;
+        staffJobs?: StaffJob[] | null;
+      }
+    | UserProfile[]
+    | null
+    | undefined,
   capability: Capability
 ): boolean {
   if (!session) return false;
+  const users = Array.isArray(source) ? source : source?.users;
+  const ctx = Array.isArray(source)
+    ? undefined
+    : capabilityContextFrom(source);
   const actor = users?.find((u) => u.id === session.id);
-  if (actor) return userHasCapability(actor, capability);
+  if (actor) return userHasCapability(actor, capability, ctx);
   return hasCapability(session.role, capability);
+}
+
+export function isSalesDeskStaff(
+  session: { id: string; role: UserRole } | null | undefined,
+  source:
+    | {
+        users?: UserProfile[] | null;
+        rolePresets?: RolePresets | null;
+        staffJobs?: StaffJob[] | null;
+      }
+    | UserProfile[]
+    | null
+    | undefined
+): boolean {
+  if (!session || session.role !== "sales") return false;
+  const users = Array.isArray(source) ? source : source?.users;
+  const ctx = Array.isArray(source) ? undefined : capabilityContextFrom(source);
+  const actor = users?.find((u) => u.id === session.id);
+  if (actor) return isSalesDeskOnly(actor, ctx);
+  return true;
+}
+
+export function checkAnyCapability(
+  session: { id: string; role: UserRole } | null | undefined,
+  source:
+    | {
+        users?: UserProfile[] | null;
+        rolePresets?: RolePresets | null;
+        staffJobs?: StaffJob[] | null;
+      }
+    | UserProfile[]
+    | null
+    | undefined,
+  capabilities: Capability[]
+): boolean {
+  return capabilities.some((c) => checkCapability(session, source, c));
 }
 
 /** Owner-only financials (P/L, BS, purchase rates, owner panel) */
@@ -960,9 +1183,10 @@ export function canViewFinancials(role: UserRole): boolean {
 
 function actorCan(
   actor: UserProfile | undefined | null,
-  capability: Capability
+  capability: Capability,
+  db: AppDatabase
 ): boolean {
-  return userHasCapability(actor, capability);
+  return userHasCapability(actor, capability, capabilityContextFrom(db));
 }
 
 /** Create or update the Accounts party linked to a dealer/customer user. */
@@ -1001,6 +1225,20 @@ export function isStaff(role: UserRole): boolean {
   return role !== "customer";
 }
 
+async function readResponseJson<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  if (!text.trim()) {
+    throw new Error(
+      `Server returned an empty reply (${res.status}). Try again.`
+    );
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`Server error (${res.status}). Try again.`);
+  }
+}
+
 export function login(phone: string, password: string): SessionUser {
   const db = loadDb();
   const user = db.users.find((u) => phonesMatch(u.phone, phone));
@@ -1010,7 +1248,7 @@ export function login(phone: string, password: string): SessionUser {
   if (!user.active) {
     throw new Error("Account is disabled. Contact admin.");
   }
-  if (user.role === "customer" && !user.approved) {
+  if (user.role === "customer" && user.approved !== true) {
     throw new Error(
       "Awaiting admin approval. You can login after T T Enterprises approves your account."
     );
@@ -1032,6 +1270,7 @@ export async function loginAsync(
   phone: string,
   password: string
 ): Promise<SessionUser> {
+  bumpSessionSync();
   const { isSupabaseConfigured, isSupabaseBrowserConfigured } = await import(
     "@/lib/supabase/config"
   );
@@ -1041,29 +1280,35 @@ export async function loginAsync(
     isSupabaseBrowserConfigured();
 
   try {
-    const res = await fetch("/api/auth/login", {
+    const res = await fetch("/api/account/login", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ phone, password }),
     });
-    const data = (await res.json()) as {
+    const data = await readResponseJson<{
       user?: SessionUser;
       error?: string;
-    };
+    }>(res);
     if (res.ok && data.user) {
-      // Pull cloud DB BEFORE publishing session so AuthRedirect does not
-      // see a session + stale local DB and log the user out (double-click bug).
+      // Cookie from POST must be stored before /api/db, or a public/empty
+      // pull leaves a new dealer with no catalog or rate list.
+      await new Promise((r) => window.setTimeout(r, 0));
       try {
         const sb = await import("@/lib/supabase/sync");
         if (sb.supabaseSyncEnabled() || (await sb.detectSupabaseSync())) {
-          const remote = await sb.pullCloudDatabase(loadDb());
+          let remote = await sb.pullCloudDatabase(loadDb());
+          if (!remote?.products?.some((p) => p.active !== false)) {
+            await new Promise((r) => window.setTimeout(r, 150));
+            remote = await sb.pullCloudDatabase(loadDb());
+          }
           if (remote) replaceDbFromCloud(remote);
         }
       } catch {
         /* ignore — still allow login with cookie */
       }
       setSession(data.user);
+      bumpSessionSync();
       return data.user;
     }
     if (res.status === 503 && !cloudOn) {
@@ -1112,7 +1357,7 @@ export async function registerCustomer(input: {
     throw new Error("Enter a valid 6-digit pincode");
   }
 
-  const res = await fetch("/api/auth/register", {
+  const res = await fetch("/api/account/register", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -1128,43 +1373,159 @@ export async function registerCustomer(input: {
       locale: input.locale,
     }),
   });
-  const data = (await res.json()) as { error?: string; pendingApproval?: boolean };
+  const data = await readResponseJson<{
+    error?: string;
+    pendingApproval?: boolean;
+  }>(res);
   if (!res.ok) {
     throw new Error(data.error || "Registration failed");
   }
   return { pendingApproval: true };
 }
 
+export function mergeCloudCustomerDirectory(
+  rows: Array<{
+    id: string;
+    name: string;
+    phone: string;
+    company?: string;
+    address?: string;
+    pincode?: string;
+    gstOrAadhar?: string;
+    transport?: string;
+    locale?: "en" | "hi";
+    createdAt: string;
+    approved: boolean;
+    active: boolean;
+    walletBalance?: number;
+    liftingProgressKg?: number;
+    revokedAt?: string;
+    revokedBy?: string;
+    revokedReason?: string;
+  }>
+): boolean {
+  const db = loadDb();
+  const tombs = tombsFromDb(db);
+  let changed = false;
+  const cloudIds = new Set(rows.map((r) => r.id));
+  const now = Date.now();
+  const kept = (db.users ?? []).filter((u) => {
+    if (!userBeatsTomb(u, tombs)) {
+      changed = true;
+      return false;
+    }
+    if (u.role !== "customer") return true;
+    if (cloudIds.has(u.id)) return true;
+    // Cloud list is complete. Drop local leftovers unless this device just
+    // created them (in-flight admin-create before the next poll).
+    const created = Date.parse(u.createdAt || "");
+    if (
+      Number.isFinite(created) &&
+      now - created < 120_000 &&
+      u.passwordHash
+    ) {
+      return true;
+    }
+    changed = true;
+    return false;
+  });
+  if (kept.length !== (db.users ?? []).length) {
+    db.users = kept;
+    changed = true;
+  }
+  if (!rows.length) {
+    if (changed) saveDb(db, { skipCloudPush: true });
+    return changed;
+  }
+  const byId = new Map((db.users ?? []).map((u) => [u.id, u] as const));
+  for (const row of rows) {
+    if (!userBeatsTomb({ id: row.id, createdAt: row.createdAt }, tombs)) {
+      continue;
+    }
+    const cur = byId.get(row.id);
+    const approved = row.approved === true;
+    const active = row.active !== false;
+    if (cur) {
+      if (cur.role !== "customer") continue;
+      if (
+        cur.approved !== approved ||
+        cur.active !== active ||
+        cur.name !== row.name ||
+        cur.phone !== row.phone ||
+        (cur.company || "") !== (row.company || "") ||
+        (cur.address || "") !== (row.address || "") ||
+        (cur.pincode || "") !== (row.pincode || "") ||
+        (cur.gstOrAadhar || "") !== (row.gstOrAadhar || "") ||
+        (cur.transport || "") !== (row.transport || "") ||
+        (cur.revokedAt || "") !== (row.revokedAt || "") ||
+        (cur.revokedReason || "") !== (row.revokedReason || "")
+      ) {
+        cur.approved = approved;
+        cur.active = active;
+        cur.name = row.name;
+        cur.phone = row.phone;
+        cur.company = row.company;
+        cur.address = row.address;
+        cur.pincode = row.pincode;
+        cur.gstOrAadhar = row.gstOrAadhar;
+        cur.transport = row.transport;
+        cur.revokedAt = row.revokedAt;
+        cur.revokedBy = row.revokedBy;
+        cur.revokedReason = row.revokedReason;
+        changed = true;
+      }
+      continue;
+    }
+    db.users = [
+      ...(db.users ?? []),
+      {
+        id: row.id,
+        passwordHash: "",
+        name: row.name,
+        phone: row.phone,
+        company: row.company,
+        address: row.address,
+        pincode: row.pincode,
+        gstOrAadhar: row.gstOrAadhar,
+        transport: row.transport,
+        locale: row.locale === "hi" ? "hi" : "en",
+        role: "customer",
+        walletBalance: Number(row.walletBalance) || 0,
+        assignedSchemeIds: [],
+        liftingProgressKg: Number(row.liftingProgressKg) || 0,
+        schemeProgress: {},
+        active,
+        approved,
+        revokedAt: row.revokedAt,
+        revokedBy: row.revokedBy,
+        revokedReason: row.revokedReason,
+        createdAt: row.createdAt,
+      },
+    ];
+    byId.set(row.id, db.users[db.users.length - 1]);
+    changed = true;
+  }
+  if (changed) saveDb(db, { skipCloudPush: true });
+  return changed;
+}
+
 export function approveDealer(userId: string, byAdminId: string): void {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === byAdminId);
-  if (!actor || !actorCan(actor, "manage_users")) {
-    throw new Error("Only admins can approve dealers");
+  if (!actor || !actorCan(actor, "approve_dealers", db)) {
+    throw new Error("Only staff who can approve dealers may do this");
   }
-  const user = db.users.find((u) => u.id === userId);
-  if (!user) throw new Error("User not found");
-  if (user.role !== "customer") throw new Error("Only dealers need approval");
-  user.approved = true;
-  user.active = true;
-  ensureCustomerParty(db, user);
+  applyDealerFileActions(db, actor, { action: "approve", ids: [userId] });
   saveDb(db);
 }
 
 export function rejectDealer(userId: string, byAdminId: string): void {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === byAdminId);
-  if (!actor || !actorCan(actor, "manage_users")) {
-    throw new Error("Only admins can reject dealers");
+  if (!actor || !actorCan(actor, "approve_dealers", db)) {
+    throw new Error("Only staff who can approve dealers may do this");
   }
-  const user = db.users.find((u) => u.id === userId);
-  if (!user) throw new Error("User not found");
-  if (user.role !== "customer") throw new Error("Only dealers can be rejected");
-  user.approved = false;
-  user.active = false;
-  const party = db.parties.find(
-    (p) => p.linkedUserId === user.id && p.type === "customer"
-  );
-  if (party) party.active = false;
+  applyDealerFileActions(db, actor, { action: "reject", ids: [userId] });
   saveDb(db);
 }
 
@@ -1181,13 +1542,26 @@ export function revokeUserAccess(
 ): void {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === byAdminId);
-  if (!actor || !actorCan(actor, "manage_users")) {
-    throw new Error("Only admins can revoke access");
-  }
+  if (!actor) throw new Error("Only admins can revoke access");
   const user = db.users.find((u) => u.id === userId);
   if (!user) throw new Error("User not found");
   if (user.id === byAdminId) {
     throw new Error("You cannot revoke your own access");
+  }
+  if (user.role === "customer") {
+    if (!actorCan(actor, "approve_dealers", db)) {
+      throw new Error("Only staff who can manage dealers may do this");
+    }
+    applyDealerFileActions(db, actor, {
+      action: "revoke",
+      ids: [userId],
+      reason,
+    });
+    saveDb(db);
+    return;
+  }
+  if (!actorCan(actor, "manage_users", db)) {
+    throw new Error("Only admins can revoke access");
   }
   if (user.role === "super_admin") {
     const otherOwner = db.users.some(
@@ -1214,19 +1588,24 @@ export function revokeUserAccess(
 export function restoreUserAccess(userId: string, byAdminId: string): void {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === byAdminId);
-  if (!actor || !actorCan(actor, "manage_users")) {
-    throw new Error("Only admins can restore access");
-  }
+  if (!actor) throw new Error("Only admins can restore access");
   const user = db.users.find((u) => u.id === userId);
   if (!user) throw new Error("User not found");
+  if (user.role === "customer") {
+    if (!actorCan(actor, "approve_dealers", db)) {
+      throw new Error("Only staff who can manage dealers may do this");
+    }
+    applyDealerFileActions(db, actor, { action: "restore", ids: [userId] });
+    saveDb(db);
+    return;
+  }
+  if (!actorCan(actor, "manage_users", db)) {
+    throw new Error("Only admins can restore access");
+  }
   user.active = true;
   user.revokedAt = undefined;
   user.revokedBy = undefined;
   user.revokedReason = undefined;
-  const party = db.parties.find(
-    (p) => p.linkedUserId === user.id && p.type === "customer"
-  );
-  if (party) party.active = true;
   saveDb(db);
 }
 
@@ -1244,11 +1623,15 @@ export function deleteUserAccount(
 ): "deleted" | "revoked" {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === byAdminId);
-  if (!actor || !actorCan(actor, "manage_users")) {
+  if (!actor || !actorCan(actor, "manage_users", db)) {
     throw new Error("Only admins can delete users");
   }
   const user = db.users.find((u) => u.id === userId);
-  if (!user) throw new Error("User not found");
+  if (!user) {
+    stampUserTomb(db, userId);
+    saveDb(db);
+    return "deleted";
+  }
   if (user.id === byAdminId) throw new Error("You cannot delete your own account");
   if (user.role === "super_admin") {
     // Allow delete once another super_admin exists (checked by caller / UI).
@@ -1290,19 +1673,98 @@ export function deleteUserAccount(
     linkedParty.active = false;
   }
   db.users = db.users.filter((u) => u.id !== userId);
-  const deletedAt = new Date().toISOString();
-  const tombs = new Set(db.deletedUserIds ?? []);
-  tombs.add(userId);
-  db.deletedUserIds = [...tombs];
-  db.deletedUserAt = { ...(db.deletedUserAt ?? {}), [userId]: deletedAt };
+  stampUserTomb(db, userId);
   saveDb(db);
-  // Push delete immediately — debounced poll must not race before tomb lands
-  void import("@/lib/supabase/sync")
-    .then((m) => {
-      if (m.supabaseSyncEnabled()) return m.flushPushCloudDatabase(db);
-    })
-    .catch(() => {});
   return "deleted";
+}
+
+/** Cloud-first delete so Admin Users poll cannot put the login back. */
+export async function deleteUserAccountAndSync(
+  userId: string,
+  byAdminId: string,
+  opts?: { force?: boolean }
+): Promise<"deleted" | "revoked"> {
+  type DealerRow = {
+    id: string;
+    name: string;
+    phone: string;
+    company?: string;
+    address?: string;
+    pincode?: string;
+    locale?: "en" | "hi";
+    createdAt: string;
+    approved: boolean;
+    active: boolean;
+    walletBalance?: number;
+    liftingProgressKg?: number;
+  };
+  let cloudDealers: DealerRow[] | undefined;
+  try {
+    const res = await fetch("/api/account/delete-user", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    if (res.status !== 404 && res.status !== 405) {
+      if (!res.ok) {
+        let reason = "Delete failed";
+        try {
+          const data = (await res.json()) as { error?: string };
+          if (data.error) reason = data.error;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(reason);
+      }
+      try {
+        const data = (await res.json()) as { dealers?: DealerRow[] };
+        if (Array.isArray(data.dealers)) cloudDealers = data.dealers;
+      } catch {
+        /* local tomb still applied */
+      }
+    }
+  } catch (err) {
+    if (err instanceof TypeError) {
+      /* offline — local tomb still hides the row */
+    } else if (
+      err instanceof Error &&
+      (err.message === "Failed to fetch" || /network/i.test(err.message))
+    ) {
+      /* fall through to local */
+    } else if (err instanceof Error) {
+      throw err;
+    }
+  }
+  let result: "deleted" | "revoked" = "deleted";
+  try {
+    result = deleteUserAccount(userId, byAdminId, opts);
+  } catch (err) {
+    if (err instanceof Error && err.message === "User not found") {
+      const db = loadDb();
+      stampUserTomb(db, userId);
+      saveDb(db, { skipCloudPush: true });
+      result = "deleted";
+    } else {
+      throw err;
+    }
+  }
+  if (cloudDealers) {
+    mergeCloudCustomerDirectory(cloudDealers);
+  }
+  try {
+    const m = await import("@/lib/supabase/sync");
+    if (m.supabaseSyncEnabled() || (await m.detectSupabaseSync())) {
+      // Pull only — a full flush of stale localStorage was putting deleted
+      // dealers back on cloud.
+      const pulled = await m.pullCloudDatabase(loadDb());
+      if (pulled) replaceDbFromCloud(pulled);
+    }
+  } catch {
+    /* local tomb already saved */
+  }
+  return result;
 }
 
 /** Whether hard-delete is possible without force (no order / wallet / voucher links). */
@@ -1387,24 +1849,13 @@ export function updateCustomerProfile(
 }
 
 export function logout(): void {
+  bumpSessionSync();
   setSession(null);
   if (typeof window !== "undefined") {
-    void fetch("/api/auth/login", { method: "DELETE" }).catch(() => undefined);
+    void fetch("/api/account/login", { method: "DELETE" }).catch(
+      () => undefined
+    );
   }
-}
-
-function nextOrderNumber(db: AppDatabase): string {
-  // Max existing sequence + 1, plus a short unique suffix so two devices
-  // cannot mint the same number before cloud sync merges them.
-  const highest = db.orders.reduce((max, o) => {
-    const m = /TT-EST-(\d+)/i.exec(o.orderNumber || "");
-    if (!m) return max;
-    const n = Number(m[1]);
-    return Number.isFinite(n) && n > max ? n : max;
-  }, 0);
-  const seq = String(highest + 1).padStart(5, "0");
-  const uniq = crypto.randomUUID().replace(/-/g, "").slice(0, 4).toUpperCase();
-  return `TT-EST-${seq}-${uniq}`;
 }
 
 /**
@@ -1471,6 +1922,54 @@ export function canRequestFullTruck(
   );
 }
 
+function stampOrderBillDiscount(
+  order: Order,
+  db: AppDatabase,
+  goodsSubtotal: number,
+  at = new Date()
+): void {
+  const user = db.users.find((u) => u.id === order.userId);
+  const billedOnly = order.lines.some(
+    (l) => l.actualWeightKg != null && l.actualWeightKg > 0
+  );
+  const qtyOpts = billedOnly ? { billedOnly: true } : undefined;
+  const best = user
+    ? pickBestOrderDiscount(
+        db.schemes,
+        user.assignedSchemeIds,
+        order.lines,
+        db.products,
+        at,
+        qtyOpts
+      )
+    : null;
+  const applied = applyBillDiscounts({
+    goodsSubtotal,
+    schemeAmount: best?.amount ?? 0,
+    manualKind: order.manualDiscountKind,
+    manualValue: order.manualDiscountValue,
+  });
+  order.schemeDiscount = applied.total > 0 ? applied.total : undefined;
+  order.schemeDiscountId = best?.scheme.id;
+  order.schemeDiscountLabel =
+    applied.total > 0
+      ? billDiscountReceiptLabel(
+          best,
+          applied,
+          order.manualDiscountKind,
+          order.manualDiscountValue,
+          "en"
+        )
+      : undefined;
+  const billedQty = best
+    ? orderDiscountMathQty(best.scheme, order.lines, db.products, qtyOpts)
+    : 0;
+  order.schemeDiscountMath =
+    applied.schemeAmount > 0
+      ? orderDiscountMathLabel(best, billedQty, "en")
+      : undefined;
+}
+
 export function createEstimateOrder(input: {
   userId: string;
   cart: CartItem[];
@@ -1482,162 +1981,185 @@ export function createEstimateOrder(input: {
   transport?: string;
   walletToUse: number;
   fullTruckRequested: boolean;
+  manualDiscountKind?: "percent" | "flat";
+  manualDiscountValue?: number;
+  locale?: "en" | "hi";
+  punchedById?: string;
+  punchedByName?: string;
 }): Order {
   const db = loadDb();
-  const user = db.users.find((u) => u.id === input.userId);
-  if (!user) throw new Error("User not found");
   pruneCartAgainstDb(db);
-  const cart = input.cart.filter((item) => {
-    const product = db.products.find((p) => p.id === item.productId);
-    if (!product || product.active === false) return false;
-    if (item.variationId) {
-      return product.variations.some((v) => v.id === item.variationId);
-    }
-    return true;
+  const order = placeEstimateOnDatabase(db, {
+    ...input,
+    allowManualDiscount: true,
+    enforceDealerApproval: false,
+    locale: input.locale === "hi" ? "hi" : "en",
   });
-  if (!cart.length) throw new Error("Cart is empty");
-
-  const lines = cart.map((item) => {
-    const product = db.products.find((p) => p.id === item.productId);
-    if (!product) throw new Error("Product missing");
-    const variation = product.variations.find((v) => v.id === item.variationId);
-    const color = product.colors.find((c) => c.id === item.colorId);
-    return buildOrderLine({
-      product,
-      variation,
-      colorId: color?.id,
-      colorName: color?.name,
-      quantity: item.quantity,
-      // Always recompute from admin unit/bundle weight × qty (ignore stale cart kg)
-    });
-  });
-
-  // Block estimate if stock is insufficient, then reserve (reduce) stock
-  assertOrderStockAvailable(db, lines);
-
-  const subtotal = roundMoney(lines.reduce((s, l) => s + l.lineTotal, 0));
-  const totalWeightKg = shippingWeightExcludingJhal(lines, db.products);
-  const jhalQty = countOrderJhals(lines, db.products);
-  const shippingAmount = calcShipping(db, subtotal, totalWeightKg, jhalQty);
-  const bestDiscount = pickBestOrderDiscount(
-    db.schemes,
-    user.assignedSchemeIds,
-    lines,
-    db.products
-  );
-  const schemeDiscount = bestDiscount?.amount ?? 0;
-  const maxWallet = Math.min(
-    user.walletBalance,
-    Math.max(0, subtotal + shippingAmount - schemeDiscount)
-  );
-  const walletUsed = roundMoney(
-    Math.max(0, Math.min(input.walletToUse, maxWallet))
-  );
-  const estimatedTotal = roundOffRupees(
-    subtotal + shippingAmount - schemeDiscount - walletUsed
-  );
-
-  const now = new Date().toISOString();
-  const order: Order = {
-    id: `ord_${crypto.randomUUID()}`,
-    orderNumber: nextOrderNumber(db),
-    userId: user.id,
-    userName: input.checkoutName.trim() || user.name,
-    userEmail: user.email || user.phone,
-    status: "estimate",
-    lines,
-    subtotal,
-    shippingAmount,
-    walletUsed,
-    estimatedTotal,
-    schemeDiscount: schemeDiscount > 0 ? schemeDiscount : undefined,
-    schemeDiscountId: bestDiscount?.scheme.id,
-    schemeDiscountLabel:
-      schemeDiscount > 0
-        ? bestDiscount?.scheme.name?.en ||
-          bestDiscount?.scheme.name?.hi ||
-          undefined
-        : undefined,
-    estimatedWeightKg: totalWeightKg,
-    stockReserved: false,
-    fullTruckRequested:
-      input.fullTruckRequested &&
-      canRequestFullTruck(db, subtotal, totalWeightKg),
-    deliveryAddress: input.deliveryAddress,
-    customerNotes: input.customerNotes,
-    checkoutName: input.checkoutName.trim(),
-    gstOrAadhar: input.gstOrAadhar?.trim(),
-    phone: input.phone.trim(),
-    transport: input.transport?.trim(),
-    packingSlip: undefined,
-    timeline: [
-      {
-        status: "estimate",
-        at: now,
-        note: "Estimate created · stock reserved",
-      },
-    ],
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  order.packingSlip = buildPackingSlipFromOrder(order);
-  order.timeline.push({
-    status: "packing_slip",
-    at: now,
-    note: `Packing slip ${order.packingSlip.slipNo} created (draft)`,
-  });
-
-  applyOrderEstimateStock(db, order, user.id, "reserve");
-  order.stockReserved = true;
-
-  if (walletUsed > 0) {
-    user.walletBalance = roundMoney(user.walletBalance - walletUsed);
-    db.walletTransactions.push({
-      id: `wt_${crypto.randomUUID()}`,
-      userId: user.id,
-      type: "debit",
-      amount: walletUsed,
-      reason: `Used on estimate ${order.orderNumber}`,
-      orderId: order.id,
-      createdAt: now,
-      createdBy: user.id,
-    });
-  }
-
-  // Schemes + lifting use actual billed weight only (set when bill/weights saved)
-  order.schemeApplied = false;
-
-  db.orders.unshift(order);
   saveDb(db);
   saveCart([]);
   return order;
 }
 
-/** Place estimate then flush cloud sync so poll cannot wipe the new order. */
+function withPlacedOrder(db: AppDatabase, order: Order): AppDatabase {
+  if ((db.orders ?? []).some((o) => o.id === order.id)) return db;
+  return { ...db, orders: [order, ...(db.orders ?? [])] };
+}
+
+function cartSkuStock(
+  db: AppDatabase,
+  cart: { productId: string; variationId?: string; colorId?: string; quantity?: number }[]
+) {
+  return (cart ?? []).slice(0, 4).map((item) => {
+    const p = db.products.find((x) => x.id === item.productId);
+    const key = `${item.variationId || ""}__${item.colorId || ""}`;
+    return {
+      pid: item.productId,
+      key,
+      qty: item.quantity ?? 0,
+      stock: p?.stock ?? null,
+      cell: p?.stockMatrix ? p.stockMatrix[key] ?? null : null,
+    };
+  });
+}
+
+/** Place estimate on cloud first so admin localStorage cannot wipe it. */
 export async function createEstimateOrderAndSync(
   input: Parameters<typeof createEstimateOrder>[0] & { locale?: "en" | "hi" }
 ): Promise<Order> {
+  const stockBefore = cartSkuStock(loadDb(), input.cart);
+  try {
+    const res = await fetch("/api/orders/estimate", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: input.userId,
+        cart: input.cart,
+        deliveryAddress: input.deliveryAddress,
+        customerNotes: input.customerNotes,
+        checkoutName: input.checkoutName,
+        gstOrAadhar: input.gstOrAadhar,
+        phone: input.phone,
+        transport: input.transport,
+        walletToUse: input.walletToUse,
+        fullTruckRequested: input.fullTruckRequested,
+        locale: input.locale || "en",
+        manualDiscountKind: input.manualDiscountKind,
+        manualDiscountValue: input.manualDiscountValue,
+        punchedById: input.punchedById,
+        punchedByName: input.punchedByName,
+      }),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { order?: Order; waSent?: boolean };
+      if (data.order?.id) {
+        saveCart([]);
+        let next = withPlacedOrder(loadDb(), data.order);
+        try {
+          const m = await import("@/lib/supabase/sync");
+          if (m.supabaseSyncEnabled() || (await m.detectSupabaseSync())) {
+            const pulled = await m.pullCloudDatabase(next);
+            if (pulled) next = withPlacedOrder(pulled, data.order);
+          }
+        } catch {
+          /* keep the order the API just created */
+        }
+        replaceDbFromCloud(next);
+        if (data.order.stockReserved) {
+          const afterPull = cartSkuStock(loadDb(), input.cart);
+          const dropped = stockBefore.some((b, i) => {
+            const a = afterPull[i];
+            if (!a) return false;
+            if (b.cell != null && a.cell != null) return a.cell < b.cell;
+            if (b.stock != null && a.stock != null) return a.stock < b.stock;
+            return false;
+          });
+          if (!dropped) {
+            try {
+              const db = loadDb();
+              applyOrderEstimateStock(db, data.order, input.userId, "reserve");
+              replaceDbFromCloud(db);
+            } catch {
+              /* cloud still holds the reserve; next pull will match */
+            }
+          }
+        }
+        return data.order;
+      }
+    }
+    if (res.status === 404 || res.status === 405) {
+      /* old deploy without this route — fall through */
+    } else {
+      let reason = "Could not place order";
+      try {
+        const errBody = (await res.json()) as { error?: string };
+        if (errBody.error) reason = errBody.error;
+      } catch {
+        /* ignore */
+      }
+      if (res.status === 401 || res.status === 403) {
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(
+            new CustomEvent("tt-session-expired", { detail: reason })
+          );
+        }
+      }
+      throw new Error(reason);
+    }
+  } catch (err) {
+    if (err instanceof TypeError) {
+      /* network — fall through to local + push */
+    } else if (
+      err instanceof Error &&
+      (err.message === "Failed to fetch" || /network/i.test(err.message))
+    ) {
+      /* fall through */
+    } else {
+      throw err;
+    }
+  }
+
   const order = createEstimateOrder(input);
+  let pushed = false;
   try {
     const m = await import("@/lib/supabase/sync");
     if (m.supabaseSyncEnabled() || (await m.detectSupabaseSync())) {
-      await m.flushPushCloudDatabase(loadDb());
+      pushed = await m.flushPushCloudDatabase(loadDb());
     }
   } catch {
     /* local order still exists */
   }
-  try {
-    const wa = await import("@/lib/whatsapp");
-    const db = loadDb();
-    await wa.notifyStaffNewOrder({
-      order,
-      settings: db.settings,
-      users: db.users,
-      locale: input.locale || "en",
-    });
-  } catch {
-    /* notify is best-effort */
+  if (!pushed) {
+    try {
+      const wa = await import("@/lib/whatsapp");
+      const db = loadDb();
+        await wa.notifyStaffNewOrder({
+        order,
+        settings: db.settings,
+        users: db.users,
+        locale: input.locale || "en",
+      });
+      await pingStaffCreditLimitWhatsApp(order, input.locale || "en");
+      if (input.punchedById) {
+        try {
+          await fetch("/api/whatsapp/notify-order", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              orderId: order.id,
+              status: "estimate",
+              locale: input.locale || "en",
+            }),
+          });
+        } catch {
+          /* dealer WhatsApp is best-effort on offline punch */
+        }
+      }
+    } catch {
+      /* notify is best-effort */
+    }
   }
   return order;
 }
@@ -1661,6 +2183,8 @@ export function adminPunchOrder(input: {
   transport?: string;
   walletToUse?: number;
   fullTruckRequested?: boolean;
+  manualDiscountKind?: "percent" | "flat";
+  manualDiscountValue?: number;
   /** If provided, the order is billed in the same step. */
   billNow?: {
     actualBillAmount: number;
@@ -1670,7 +2194,7 @@ export function adminPunchOrder(input: {
 }): Order {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === input.adminId);
-  if (!actor || !actorCan(actor, "manage_orders")) {
+  if (!actor || !actorCan(actor, "manage_orders", db)) {
     throw new Error("Only staff can punch orders on behalf of a dealer");
   }
   const dealer = db.users.find((u) => u.id === input.dealerId);
@@ -1681,7 +2205,7 @@ export function adminPunchOrder(input: {
   if (!dealer.active) {
     throw new Error("Dealer's access is revoked — restore access before punching");
   }
-  if (!dealer.approved) {
+  if (dealer.approved !== true) {
     throw new Error("Dealer is not yet approved — approve before punching orders");
   }
 
@@ -1696,12 +2220,17 @@ export function adminPunchOrder(input: {
     transport: input.transport?.trim() || dealer.transport,
     walletToUse: Math.max(0, input.walletToUse || 0),
     fullTruckRequested: !!input.fullTruckRequested,
+    manualDiscountKind: input.manualDiscountKind,
+    manualDiscountValue: input.manualDiscountValue,
+    punchedById: actor.id,
+    punchedByName: actor.name,
   });
 
-  // Attribute punch in timeline
   const punchDb = loadDb();
   const punchOrder = punchDb.orders.find((o) => o.id === order.id);
-  if (punchOrder) {
+  if (punchOrder && !punchOrder.punchedBy) {
+    punchOrder.source = "staff";
+    punchOrder.punchedBy = actor.id;
     punchOrder.timeline.push({
       status: punchOrder.status,
       at: new Date().toISOString(),
@@ -1723,32 +2252,95 @@ export function adminPunchOrder(input: {
   return loadDb().orders.find((o) => o.id === order.id) || order;
 }
 
-/** Punch order then flush cloud so the order detail page does not go blank. */
+/** Punch order via the same cloud path as dealer checkout, then optional bill. */
 export async function adminPunchOrderAndSync(
   input: Parameters<typeof adminPunchOrder>[0] & { locale?: "en" | "hi" }
 ): Promise<Order> {
-  const order = adminPunchOrder(input);
+  const db0 = loadDb();
+  const actor = db0.users.find((u) => u.id === input.adminId);
+  const dealer = db0.users.find((u) => u.id === input.dealerId);
+  const estimateInput = {
+    userId: input.dealerId,
+    cart: input.cart,
+    deliveryAddress:
+      input.deliveryAddress?.trim() || dealer?.address || "",
+    customerNotes: input.customerNotes,
+    checkoutName: (input.checkoutName?.trim() || dealer?.name || "").trim(),
+    gstOrAadhar: input.gstOrAadhar?.trim() || dealer?.gstOrAadhar,
+    phone: (input.phone?.trim() || dealer?.phone || "").trim(),
+    transport: input.transport?.trim() || dealer?.transport,
+    walletToUse: Math.max(0, input.walletToUse || 0),
+    fullTruckRequested: !!input.fullTruckRequested,
+    manualDiscountKind: input.manualDiscountKind,
+    manualDiscountValue: input.manualDiscountValue,
+    locale: input.locale,
+    punchedById: actor?.id,
+    punchedByName: actor?.name,
+  };
+
+  let order: Order;
   try {
-    const m = await import("@/lib/supabase/sync");
-    if (m.supabaseSyncEnabled() || (await m.detectSupabaseSync())) {
-      await m.flushPushCloudDatabase(loadDb());
+    order = await createEstimateOrderAndSync(estimateInput);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "";
+    if (
+      msg &&
+      !/failed to fetch|network|cloud unavailable/i.test(msg)
+    ) {
+      throw err;
     }
-  } catch {
-    /* local order still exists */
+    order = adminPunchOrder(input);
   }
-  try {
-    const wa = await import("@/lib/whatsapp");
-    const db = loadDb();
-    await wa.notifyStaffNewOrder({
-      order,
-      settings: db.settings,
-      users: db.users,
-      locale: input.locale || "en",
-    });
-  } catch {
-    /* notify is best-effort */
+
+  if (input.billNow) {
+    const billed = uploadBill(
+      order.id,
+      input.billNow.actualBillAmount,
+      input.billNow.billFileDataUrl,
+      input.billNow.lineActualWeights,
+      input.adminId
+    );
+    try {
+      const m = await import("@/lib/supabase/sync");
+      if (m.supabaseSyncEnabled() || (await m.detectSupabaseSync())) {
+        await m.flushPushCloudDatabase(loadDb());
+      }
+    } catch {
+      /* billed locally */
+    }
+    return billed;
   }
-  return order;
+  return loadDb().orders.find((o) => o.id === order.id) || order;
+}
+
+async function pingStaffCreditLimitWhatsApp(
+  order: Order,
+  locale: "en" | "hi",
+  skipUserIds?: string[]
+): Promise<void> {
+  const wa = await import("@/lib/whatsapp");
+  const db = loadDb();
+  const party = db.parties.find(
+    (p) => p.linkedUserId === order.userId && p.type === "customer"
+  );
+  if (!party?.creditLimit) return;
+  const recv = partyBalance(party, db.ledgerEntries);
+  const billed =
+    order.actualBillAmount != null && order.status !== "estimate";
+  const add = billed ? 0 : order.estimatedTotal || 0;
+  const check = creditLimitBreach(party, recv, add);
+  if (check.ok) return;
+  await wa.notifyStaffCreditLimit({
+    settings: db.settings,
+    users: db.users,
+    locale,
+    partyName: party.name,
+    creditLimit: party.creditLimit,
+    receivable: billed ? recv : recv + add,
+    overBy: check.overBy,
+    orderNumber: order.orderNumber,
+    skipUserIds,
+  });
 }
 
 type SettleResult = { credited: number; changed: boolean };
@@ -2010,20 +2602,7 @@ export function setOrderLineActualWeights(
     order.lines.reduce((s, l) => s + (l.lineTotal || 0), 0)
   );
   if (user) {
-    const best = pickBestOrderDiscount(
-      db.schemes,
-      user.assignedSchemeIds,
-      order.lines,
-      db.products,
-      new Date(now)
-    );
-    const disc = best?.amount ?? 0;
-    order.schemeDiscount = disc > 0 ? disc : undefined;
-    order.schemeDiscountId = best?.scheme.id;
-    order.schemeDiscountLabel =
-      disc > 0
-        ? best?.scheme.name?.en || best?.scheme.name?.hi || undefined
-        : undefined;
+    stampOrderBillDiscount(order, db, order.subtotal, new Date(now));
   }
   order.updatedAt = now;
 
@@ -2065,6 +2644,9 @@ export function updateOrderStatus(
   const order = db.orders.find((o) => o.id === orderId);
   if (!order) throw new Error("Order not found");
   if (!canTransitionOrderStatus(order.status, status)) {
+    if (status === "dispatched" || status === "delivered") {
+      throw new Error("Verify payment before dispatch or delivery");
+    }
     throw new Error(
       `Cannot move order from ${order.status.replaceAll("_", " ")} to ${status.replaceAll("_", " ")}`
     );
@@ -2096,7 +2678,7 @@ export function cancelOrder(
 ): Order {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === byUserId);
-  if (!actor || !actorCan(actor, "manage_orders")) {
+  if (!actor || !actorCan(actor, "manage_orders", db)) {
     throw new Error("Only admin can cancel orders");
   }
   const order = db.orders.find((o) => o.id === orderId);
@@ -2189,7 +2771,11 @@ export function ensurePackingSlip(orderId: string): Order {
 /** Save draft edits (header + grid). */
 export function savePackingSlipDraft(
   orderId: string,
-  slip: PackingSlip
+  slip: PackingSlip,
+  extras?: {
+    manualDiscountKind?: "percent" | "flat";
+    manualDiscountValue?: number;
+  }
 ): Order {
   const db = loadDb();
   const order = db.orders.find((o) => o.id === orderId);
@@ -2220,6 +2806,18 @@ export function savePackingSlipDraft(
   }
   if (order.packingSlip.partyName?.trim()) {
     order.checkoutName = order.packingSlip.partyName.trim();
+  }
+  if (extras) {
+    if (extras.manualDiscountKind === "percent" || extras.manualDiscountKind === "flat") {
+      order.manualDiscountKind = extras.manualDiscountKind;
+      order.manualDiscountValue =
+        (extras.manualDiscountValue || 0) > 0
+          ? extras.manualDiscountValue
+          : undefined;
+    } else {
+      order.manualDiscountKind = undefined;
+      order.manualDiscountValue = undefined;
+    }
   }
   order.updatedAt = new Date().toISOString();
   saveDb(db);
@@ -2284,7 +2882,7 @@ export function editOrderBeforeBill(
 ): Order {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === staffId);
-  if (!actor || !actorCan(actor, "manage_orders")) {
+  if (!actor || !actorCan(actor, "manage_orders", db)) {
     throw new Error("Only staff can edit orders");
   }
   const order = db.orders.find((o) => o.id === orderId);
@@ -2386,7 +2984,13 @@ export function editOrderBeforeBill(
     db.products,
     new Date(now)
   );
-  const schemeDiscount = bestDiscount?.amount ?? 0;
+  const applied = applyBillDiscounts({
+    goodsSubtotal: subtotal,
+    schemeAmount: bestDiscount?.amount ?? 0,
+    manualKind: order.manualDiscountKind,
+    manualValue: order.manualDiscountValue,
+  });
+  const schemeDiscount = applied.total;
   const maxWallet = Math.min(
     user.walletBalance || 0,
     Math.max(0, subtotal + shippingAmount - schemeDiscount)
@@ -2414,9 +3018,23 @@ export function editOrderBeforeBill(
   order.schemeDiscountId = bestDiscount?.scheme.id;
   order.schemeDiscountLabel =
     schemeDiscount > 0
-      ? bestDiscount?.scheme.name?.en ||
-        bestDiscount?.scheme.name?.hi ||
-        undefined
+      ? billDiscountReceiptLabel(
+          bestDiscount,
+          applied,
+          order.manualDiscountKind,
+          order.manualDiscountValue,
+          "en"
+        )
+      : undefined;
+  order.schemeDiscountMath =
+    applied.schemeAmount > 0
+      ? orderDiscountMathLabel(
+          bestDiscount,
+          bestDiscount
+            ? orderDiscountMathQty(bestDiscount.scheme, lines, db.products)
+            : 0,
+          "en"
+        )
       : undefined;
   order.estimatedTotal = roundOffRupees(
     subtotal + shippingAmount - schemeDiscount - walletUsed
@@ -2470,7 +3088,12 @@ export function editOrderBeforeBill(
 export function finalizePackingSlip(
   orderId: string,
   staffId: string,
-  opts?: { preparedBy?: string; checkedBy?: string }
+  opts?: {
+    preparedBy?: string;
+    checkedBy?: string;
+    manualDiscountKind?: "percent" | "flat";
+    manualDiscountValue?: number;
+  }
 ): Order {
   const db = loadDb();
   const order = db.orders.find((o) => o.id === orderId);
@@ -2500,7 +3123,7 @@ export function finalizePackingSlip(
       db.products.find((p) => p.id === line.productId)?.unit ||
       "";
     return (
-      (unit === "pkt" || unit === "pcs" || line.pricingMode === "pcs") &&
+      (isPackCountUnit(unit) || line.pricingMode === "pcs") &&
       (Number(line.quantity) || 0) > 0
     );
   });
@@ -2525,11 +3148,11 @@ export function finalizePackingSlip(
       if (!(b > 0)) {
         throw new Error("Every jhal line needs quantity / bundles greater than 0");
       }
-    } else if (unit === "pkt" || unit === "pcs" || line.pricingMode === "pcs") {
-      // Bill = qty × rate per pc
+    } else if (isPackCountUnit(unit) || line.pricingMode === "pcs") {
+      // Bill = qty × rate per pc / packet
       const b = slipBundles[i] || line.quantity || 0;
       if (!(b > 0)) {
-        throw new Error("Every pkt/pc column needs quantity / bundles greater than 0");
+        throw new Error("Every pkt/pc/sqft column needs quantity / bundles greater than 0");
       }
       // Store admin pack weight for schemes/shipping reference (bill uses pcs mode)
       if (!(weights[i] > 0)) {
@@ -2563,6 +3186,14 @@ export function finalizePackingSlip(
   }
   slip.shippingAmount = ship;
   order.shippingAmount = ship;
+  if (opts?.manualDiscountKind === "percent" || opts?.manualDiscountKind === "flat") {
+    order.manualDiscountKind = opts.manualDiscountKind;
+    order.manualDiscountValue =
+      (opts.manualDiscountValue || 0) > 0 ? opts.manualDiscountValue : undefined;
+  } else if (opts && "manualDiscountKind" in opts) {
+    order.manualDiscountKind = undefined;
+    order.manualDiscountValue = undefined;
+  }
 
   // Persist slip draft fields first
   order.packingSlip = slip;
@@ -2593,22 +3224,19 @@ export function finalizePackingSlip(
     }
   });
   billed.subtotal = preview.subtotal;
-  const dealer = afterWeights.users.find((u) => u.id === billed.userId);
-  if (dealer) {
-    const best = pickBestOrderDiscount(
-      afterWeights.schemes,
-      dealer.assignedSchemeIds,
-      billed.lines,
-      afterWeights.products
-    );
-    const disc = best?.amount ?? 0;
-    billed.schemeDiscount = disc > 0 ? disc : undefined;
-    billed.schemeDiscountId = best?.scheme.id;
-    billed.schemeDiscountLabel =
-      disc > 0
-        ? best?.scheme.name?.en || best?.scheme.name?.hi || undefined
-        : undefined;
+  if (opts?.manualDiscountKind === "percent" || opts?.manualDiscountKind === "flat") {
+    billed.manualDiscountKind = opts.manualDiscountKind;
+    billed.manualDiscountValue =
+      (opts.manualDiscountValue || 0) > 0 ? opts.manualDiscountValue : undefined;
+  } else if (opts && "manualDiscountKind" in opts) {
+    billed.manualDiscountKind = undefined;
+    billed.manualDiscountValue = undefined;
   }
+  stampOrderBillDiscount(
+    billed,
+    afterWeights,
+    billed.subtotal
+  );
   if (!(preview.billAmount > 0) && !(preview.subtotal > 0)) {
     throw new Error("Computed bill amount is zero");
   }
@@ -2778,11 +3406,6 @@ export function uploadBill(
       saveDb(fresh);
     }
   }
-  try {
-    enqueueTallySaleFromOrder(orderId);
-  } catch {
-    /* ignore */
-  }
   return loadDb().orders.find((o) => o.id === orderId)!;
 }
 
@@ -2930,7 +3553,7 @@ export function removePaymentProofItem(
   if (!proof) throw new Error("No payment proof to remove");
 
   const actor = db.users.find((u) => u.id === byUserId);
-  const isStaff = !!actor && actorCan(actor, "manage_orders");
+  const isStaff = !!actor && actorCan(actor, "manage_orders", db);
   const isOwner = order.userId === byUserId;
   if (!isStaff) {
     if (!isOwner) throw new Error("Not allowed");
@@ -2976,7 +3599,7 @@ export function verifyPayment(
   const order = db.orders.find((o) => o.id === orderId);
   if (!order || !order.paymentProof) throw new Error("No payment proof");
   const actor = db.users.find((u) => u.id === adminId);
-  if (!actor || !actorCan(actor, "verify_payment")) {
+  if (!actor || !actorCan(actor, "verify_payment", db)) {
     throw new Error("Not allowed to verify payment");
   }
   const due = paymentAmountDue(order);
@@ -3020,19 +3643,21 @@ export function verifyPayment(
       err instanceof Error ? err.message : err
     );
   }
-  try {
-    enqueueTallyReceiptFromOrder(orderId);
-  } catch {
-    /* ok */
-  }
   return loadDb().orders.find((o) => o.id === orderId)!;
 }
 
-/** Mark order dispatched (separate from LR upload). */
+/** Mark order dispatched (separate from LR upload). Payment must be verified. */
 export function markOrderDispatched(
   orderId: string,
   note?: string
 ): Order {
+  const db = loadDb();
+  const order = db.orders.find((o) => o.id === orderId);
+  if (!order) throw new Error("Order not found");
+  if (order.status === "dispatched") return order;
+  if (order.status !== "payment_verified") {
+    throw new Error("Verify payment before dispatch");
+  }
   return updateOrderStatus(
     orderId,
     "dispatched",
@@ -3107,9 +3732,61 @@ export function upsertProduct(product: Product): void {
   saveDb(db);
 }
 
+export function markTallyError(message: string): void {
+  const db = loadDb();
+  db.settings.tallySyncStatus = "error";
+  db.settings.tallySyncMessage = message;
+  saveDb(db);
+}
+
+export function applyTallyStockSync(
+  items: {
+    productId: string;
+    variationId?: string;
+    tallyItemId: string;
+    stock: number;
+  }[]
+): void {
+  const db = loadDb();
+  const now = new Date().toISOString();
+  let applied = 0;
+  for (const item of items) {
+    const product = db.products.find((p) => p.id === item.productId);
+    if (!product) continue;
+    const stock = Number(item.stock);
+    if (!Number.isFinite(stock)) continue;
+    if (item.variationId) {
+      const variation = product.variations.find((v) => v.id === item.variationId);
+      if (!variation) continue;
+      variation.stock = stock;
+      variation.tallyItemId = item.tallyItemId;
+    } else {
+      product.stock = stock;
+      product.tallyItemId = item.tallyItemId;
+    }
+    normalizeProductStock(product);
+    product.updatedAt = now;
+    applied += 1;
+  }
+  db.settings.tallyLastSyncAt = now;
+  db.settings.tallySyncStatus = "ok";
+  db.settings.tallySyncMessage = `Synced ${applied} item(s) from Tally`;
+  saveDb(db);
+}
+
 export function deleteProduct(productId: string): void {
   const db = loadDb();
   db.products = db.products.filter((p) => p.id !== productId);
+  if (db.settings.homeNewProductIds?.length) {
+    db.settings.homeNewProductIds = db.settings.homeNewProductIds.filter(
+      (id) => id !== productId
+    );
+  }
+  if (db.settings.homePromoProductIds?.length) {
+    db.settings.homePromoProductIds = db.settings.homePromoProductIds.filter(
+      (id) => id !== productId
+    );
+  }
   saveDb(db);
 }
 
@@ -3138,6 +3815,7 @@ export function upsertUser(user: UserProfile): void {
           ...user,
           extraCapabilities: undefined,
           deniedCapabilities: undefined,
+          jobId: undefined,
         }
       : user;
   const hadTomb =
@@ -3159,6 +3837,118 @@ export function upsertUser(user: UserProfile): void {
     db.deletedUserAt = rest;
   }
   if (next.role === "customer") ensureCustomerParty(db, next);
+  saveDb(db);
+}
+
+function assertOwner(db: AppDatabase, actorId: string): UserProfile {
+  const actor = db.users.find((u) => u.id === actorId);
+  if (!actor || actor.role !== "super_admin" || !actor.active) {
+    throw new Error("Only a super admin can edit jobs and role defaults");
+  }
+  return actor;
+}
+
+export function saveRolePresets(presets: RolePresets, actorId: string): void {
+  const db = loadDb();
+  assertOwner(db, actorId);
+  db.rolePresets = sanitizeRolePresets(presets);
+  saveDb(db);
+}
+
+export function upsertStaffJob(job: StaffJob, actorId: string): void {
+  const db = loadDb();
+  assertOwner(db, actorId);
+  const next = sanitizeStaffJob(job);
+  if (!next) throw new Error("Enter a job name and pick a base role");
+  const list = sanitizeStaffJobs(db.staffJobs);
+  const idx = list.findIndex((j) => j.id === next.id);
+  if (idx >= 0) list[idx] = next;
+  else list.push(next);
+  db.staffJobs = list;
+  saveDb(db);
+}
+
+export function deleteStaffJob(jobId: string, actorId: string): void {
+  const db = loadDb();
+  assertOwner(db, actorId);
+  db.staffJobs = sanitizeStaffJobs(db.staffJobs).filter((j) => j.id !== jobId);
+  db.users = db.users.map((u) =>
+    u.jobId === jobId ? { ...u, jobId: undefined } : u
+  );
+  saveDb(db);
+}
+
+export function assignStaffJob(
+  userId: string,
+  jobId: string | null,
+  actorId: string
+): void {
+  const db = loadDb();
+  const actor = db.users.find((u) => u.id === actorId);
+  if (!actor || !actorCan(actor, "manage_users", db)) {
+    throw new Error("You do not have permission to manage users");
+  }
+  if (actor.role !== "super_admin") {
+    throw new Error("Only a super admin can assign jobs");
+  }
+  const user = db.users.find((u) => u.id === userId);
+  if (!user || user.role === "customer") {
+    throw new Error("Pick a staff login");
+  }
+  if (user.role === "super_admin") {
+    throw new Error("Owners keep the full permission set");
+  }
+  if (!jobId) {
+    upsertUser({
+      ...user,
+      jobId: undefined,
+      extraCapabilities: undefined,
+      deniedCapabilities: undefined,
+    });
+    return;
+  }
+  const job = sanitizeStaffJobs(db.staffJobs).find((j) => j.id === jobId);
+  if (!job) throw new Error("Job not found");
+  upsertUser({
+    ...user,
+    role: job.baseRole,
+    jobId: job.id,
+    extraCapabilities: undefined,
+    deniedCapabilities: undefined,
+  });
+}
+
+export function updateDealerFile(input: {
+  userId: string;
+  actorId: string;
+  name: string;
+  phone: string;
+  company?: string;
+  address?: string;
+  pincode?: string;
+  gstOrAadhar?: string;
+  transport?: string;
+  creditLimit?: number | null;
+}): void {
+  const db = loadDb();
+  const actor = db.users.find((u) => u.id === input.actorId);
+  if (!actor || !actorCan(actor, "approve_dealers", db)) {
+    throw new Error("You do not have permission to edit dealers");
+  }
+  applyDealerFileActions(db, actor, {
+    action: "update",
+    ids: [input.userId],
+    patch: {
+      name: input.name,
+      phone: input.phone,
+      company: input.company,
+      address: input.address,
+      pincode: input.pincode,
+      gstOrAadhar: input.gstOrAadhar,
+      transport: input.transport,
+      creditLimit: input.creditLimit,
+    },
+  });
   saveDb(db);
 }
 
@@ -3236,17 +4026,17 @@ export async function createStaffUserAsync(input: {
   extraCapabilities?: Capability[];
   deniedCapabilities?: Capability[];
 }): Promise<UserProfile> {
-  const res = await fetch("/api/auth/admin-create-user", {
+  const res = await fetch("/api/account/admin-create-user", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind: "staff", ...input }),
   });
-  const data = (await res.json()) as {
+  const data = await readResponseJson<{
     user?: UserProfile;
     error?: string;
     message?: string;
-  };
+  }>(res);
   if (res.status === 503) {
     // Offline / no cloud — local create + best-effort push
     const local = createStaffUser(input);
@@ -3303,7 +4093,7 @@ export async function createDealerUserAsync(input: {
   transport?: string;
   byAdminId: string;
 }): Promise<UserProfile> {
-  const res = await fetch("/api/auth/admin-create-user", {
+  const res = await fetch("/api/account/admin-create-user", {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
@@ -3319,10 +4109,10 @@ export async function createDealerUserAsync(input: {
       transport: input.transport,
     }),
   });
-  const data = (await res.json()) as {
+  const data = await readResponseJson<{
     user?: UserProfile;
     error?: string;
-  };
+  }>(res);
   if (res.status === 503) {
     const local = createDealerUser(input);
     try {
@@ -3384,7 +4174,7 @@ export function createDealerUser(input: {
 }): UserProfile {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === input.byAdminId);
-  if (!actor || !actorCan(actor, "manage_users")) {
+  if (!actor || !actorCan(actor, "manage_users", db)) {
     throw new Error("Only admins can create dealer accounts");
   }
   const phone = normalizePhone(input.phone);
@@ -3437,7 +4227,7 @@ export function setUserPassword(
 ): void {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === byAdminId);
-  if (!actor || !actorCan(actor, "manage_users")) {
+  if (!actor || !actorCan(actor, "manage_users", db)) {
     throw new Error("Only admins can reset passwords");
   }
   const user = db.users.find((u) => u.id === userId);
@@ -3445,7 +4235,126 @@ export function setUserPassword(
   const pw = assertMinPassword(newPassword);
   user.passwordHash = hashPassword(pw);
   user.passwordVisible = pw;
+  delete user.passwordResetRequestedAt;
   saveDb(db);
+}
+
+async function refreshCloudAfterAccountWrite(overlay?: {
+  userId: string;
+  passwordVisible?: string;
+}): Promise<void> {
+  try {
+    const sb = await import("@/lib/supabase/sync");
+    if (sb.supabaseSyncEnabled() || (await sb.detectSupabaseSync())) {
+      const remote = await sb.pullCloudDatabase(loadDb());
+      if (!remote) return;
+      if (overlay?.passwordVisible) {
+        const idx = remote.users.findIndex((u) => u.id === overlay.userId);
+        if (idx >= 0) {
+          remote.users[idx] = {
+            ...remote.users[idx],
+            passwordVisible: overlay.passwordVisible,
+            passwordResetRequestedAt: undefined,
+          };
+        }
+      }
+      replaceDbFromCloud(remote);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+export async function changeOwnPasswordAsync(
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const pw = assertMinPassword(newPassword);
+  const res = await fetch("/api/account/change-password", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentPassword, newPassword: pw }),
+  });
+  const data = await readResponseJson<{ error?: string }>(res);
+  if (res.status === 503) {
+    const session = getSession();
+    if (!session) throw new Error("Login required");
+    const db = loadDb();
+    const user = db.users.find((u) => u.id === session.id);
+    if (!user) throw new Error("User not found");
+    if (user.passwordHash.startsWith("scrypt$")) {
+      throw new Error("Cloud required to change this password. Try again.");
+    }
+    if (user.passwordHash !== hashPassword(currentPassword)) {
+      throw new Error("Current password is incorrect");
+    }
+    user.passwordHash = hashPassword(pw);
+    delete user.passwordVisible;
+    delete user.passwordResetRequestedAt;
+    saveDb(db);
+    return;
+  }
+  if (!res.ok) {
+    throw new Error(data.error || "Could not change password");
+  }
+  await refreshCloudAfterAccountWrite();
+}
+
+export async function requestPasswordResetAsync(
+  phone: string,
+  locale?: "en" | "hi"
+): Promise<void> {
+  const res = await fetch("/api/account/forgot-password", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone, locale }),
+  });
+  const data = await readResponseJson<{ error?: string }>(res);
+  if (res.status === 503) {
+    const db = loadDb();
+    const user = db.users.find((u) => phonesMatch(u.phone, phone));
+    if (user) {
+      user.passwordResetRequestedAt = new Date().toISOString();
+      saveDb(db);
+    }
+    return;
+  }
+  if (!res.ok) {
+    throw new Error(data.error || "Could not send request");
+  }
+}
+
+export async function setUserPasswordAsync(
+  userId: string,
+  newPassword: string,
+  byAdminId: string
+): Promise<string> {
+  const pw = assertMinPassword(newPassword);
+  const res = await fetch("/api/account/reset-password", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId, newPassword: pw }),
+  });
+  const data = await readResponseJson<{
+    error?: string;
+    user?: { passwordVisible?: string };
+  }>(res);
+  if (res.status === 503) {
+    setUserPassword(userId, pw, byAdminId);
+    return pw;
+  }
+  if (!res.ok) {
+    throw new Error(data.error || "Reset failed");
+  }
+  const visible = data.user?.passwordVisible || pw;
+  await refreshCloudAfterAccountWrite({
+    userId,
+    passwordVisible: visible,
+  });
+  return visible;
 }
 
 export function upsertScheme(scheme: Scheme): void {
@@ -3502,7 +4411,7 @@ export function creditWallet(input: {
 }): void {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === input.adminId);
-  if (!actor || !actorCan(actor, "manage_wallet")) {
+  if (!actor || !actorCan(actor, "manage_wallet", db)) {
     throw new Error("Only admin can adjust wallet balance");
   }
   const user = db.users.find((u) => u.id === input.userId);
@@ -3546,7 +4455,7 @@ export function createWalletDeposit(input: {
   const db = loadDb();
   const user = db.users.find((u) => u.id === input.userId);
   if (!user) throw new Error("User not found");
-  if (!user.active || !user.approved) {
+  if (!user.active || user.approved !== true) {
     throw new Error("Account not active");
   }
   if (user.role !== "customer") {
@@ -3652,7 +4561,7 @@ export function cancelWalletDeposit(
   const deposit = (db.walletDeposits ?? []).find((d) => d.id === depositId);
   if (!deposit) throw new Error("Deposit not found");
   const actor = db.users.find((u) => u.id === byUserId);
-  const isStaff = !!actor && actorCan(actor, "manage_wallet");
+  const isStaff = !!actor && actorCan(actor, "manage_wallet", db);
   if (!isStaff && deposit.userId !== byUserId) throw new Error("Not allowed");
   if (deposit.status === "verified") {
     throw new Error("Verified deposits cannot be cancelled");
@@ -3669,7 +4578,7 @@ export function verifyWalletDeposit(
 ): WalletDeposit {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === adminId);
-  if (!actor || !actorCan(actor, "manage_wallet")) {
+  if (!actor || !actorCan(actor, "manage_wallet", db)) {
     throw new Error("Only admin can verify deposits");
   }
   const deposit = (db.walletDeposits ?? []).find((d) => d.id === depositId);
@@ -3712,7 +4621,7 @@ export function rejectWalletDeposit(
 ): WalletDeposit {
   const db = loadDb();
   const actor = db.users.find((u) => u.id === adminId);
-  if (!actor || !actorCan(actor, "manage_wallet")) {
+  if (!actor || !actorCan(actor, "manage_wallet", db)) {
     throw new Error("Only admin can reject deposits");
   }
   const deposit = (db.walletDeposits ?? []).find((d) => d.id === depositId);
@@ -3746,6 +4655,44 @@ export function saveShippingRules(rules: ShippingRule[]): void {
 export function saveSettings(settings: AppSettings): void {
   const db = loadDb();
   db.settings = settings;
+  saveDb(db);
+}
+
+export function saveHomeMerchLists(input: {
+  homeNewProductIds?: string[];
+  homePromoProductIds?: string[];
+}): void {
+  const db = loadDb();
+  if (input.homeNewProductIds !== undefined) {
+    db.settings.homeNewProductIds = input.homeNewProductIds;
+  }
+  if (input.homePromoProductIds !== undefined) {
+    db.settings.homePromoProductIds = input.homePromoProductIds;
+  }
+  saveDb(db);
+}
+
+/** Add/remove a product from home New / Promo lists. */
+export function setProductHomePlacement(
+  productId: string,
+  flags: { homeNew: boolean; homePromo: boolean }
+): void {
+  const db = loadDb();
+  let news = [...(db.settings.homeNewProductIds ?? [])];
+  if (flags.homeNew) {
+    if (!news.length) {
+      news = fallbackNewProducts(db.products).map((p) => p.id);
+    }
+    news = toggleId(news, productId, true);
+  } else {
+    news = news.filter((id) => id !== productId);
+  }
+  db.settings.homeNewProductIds = news;
+  db.settings.homePromoProductIds = toggleId(
+    db.settings.homePromoProductIds ?? [],
+    productId,
+    flags.homePromo
+  );
   saveDb(db);
 }
 
@@ -3810,49 +4757,6 @@ export function deleteCategory(categoryId: string): void {
   const inUse = db.products.some((p) => p.category === categoryId);
   if (inUse) throw new Error("Category is used by products");
   db.categories = db.categories.filter((c) => c.id !== categoryId);
-  saveDb(db);
-}
-
-export function applyTallyStockSync(
-  mappings: {
-    productId: string;
-    variationId?: string;
-    stock: number;
-    stockSecondary?: number;
-    tallyItemId: string;
-  }[]
-): void {
-  const db = loadDb();
-  const now = new Date().toISOString();
-  for (const m of mappings) {
-    const product = db.products.find((p) => p.id === m.productId);
-    if (!product) continue;
-    product.tallyItemId = m.tallyItemId;
-    if (m.variationId) {
-      const v = product.variations.find((x) => x.id === m.variationId);
-      if (v) {
-        // stock = bundles = Tally Alt Qty
-        v.stock = m.stock;
-        if (m.stockSecondary != null) v.stockSecondary = m.stockSecondary;
-        v.tallyItemId = m.tallyItemId;
-      }
-    } else {
-      product.stock = m.stock;
-      if (m.stockSecondary != null) product.stockSecondary = m.stockSecondary;
-    }
-    product.updatedAt = now;
-  }
-  db.settings.tallyLastSyncAt = now;
-  db.settings.tallySyncStatus = "ok";
-  db.settings.tallySyncMessage = `Synced ${mappings.length} item(s) from TallyPrime (bundles = Alt Qty)`;
-  saveDb(db);
-}
-
-export function markTallyError(message: string): void {
-  const db = loadDb();
-  db.settings.tallySyncStatus = "error";
-  db.settings.tallySyncMessage = message;
-  db.settings.tallyLastSyncAt = new Date().toISOString();
   saveDb(db);
 }
 
@@ -4344,6 +5248,51 @@ export function saveStatementMatch(input: {
   return row;
 }
 
+export function saveBankRecon(input: {
+  id?: string;
+  accountId: string;
+  asOf: string;
+  statementBalance: number;
+  clearedEntryIds: string[];
+  extras: BankReconExtra[];
+  status?: BankRecon["status"];
+  updatedBy: string;
+}): BankRecon {
+  const db = loadDb();
+  if (!db.bankRecons) db.bankRecons = [];
+  const now = new Date().toISOString();
+  const asOf = input.asOf.slice(0, 10);
+  const existing = input.id
+    ? db.bankRecons.find((m) => m.id === input.id)
+    : db.bankRecons.find(
+        (m) => m.accountId === input.accountId && m.asOf === asOf
+      );
+  if (existing) {
+    existing.statementBalance = roundMoney(input.statementBalance);
+    existing.clearedEntryIds = [...input.clearedEntryIds];
+    existing.extras = structuredClone(input.extras);
+    existing.status = input.status || existing.status;
+    existing.updatedAt = now;
+    existing.updatedBy = input.updatedBy;
+    saveDb(db);
+    return existing;
+  }
+  const row: BankRecon = {
+    id: `brs_${crypto.randomUUID()}`,
+    accountId: input.accountId,
+    asOf,
+    statementBalance: roundMoney(input.statementBalance),
+    clearedEntryIds: [...input.clearedEntryIds],
+    extras: structuredClone(input.extras),
+    status: input.status || "open",
+    updatedAt: now,
+    updatedBy: input.updatedBy,
+  };
+  db.bankRecons.unshift(row);
+  saveDb(db);
+  return row;
+}
+
 export function createVoucher(input: {
   type: VoucherType;
   date: string;
@@ -4712,6 +5661,85 @@ export function createVoucher(input: {
   return voucher;
 }
 
+/**
+ * Apply leftover (on-account) of an existing receipt to other open sale bills.
+ * Does not create a new voucher. Leftover not listed stays on-account.
+ */
+export function applyReceiptAllocations(
+  receiptId: string,
+  allocations: { invoiceVoucherId: string; amount: number }[],
+  _byUserId: string
+): void {
+  const db = loadDb();
+  const receipt = db.vouchers.find((v) => v.id === receiptId);
+  if (!receipt || receipt.voided) throw new Error("Receipt not found");
+  if (receipt.type !== "receipt") throw new Error("Not a receipt");
+  if (!receipt.partyId) throw new Error("Receipt has no party");
+
+  const merged = new Map<string, number>();
+  for (const a of allocations) {
+    const amt = roundMoney(a.amount);
+    if (amt <= 0.009) continue;
+    merged.set(
+      a.invoiceVoucherId,
+      roundMoney((merged.get(a.invoiceVoucherId) || 0) + amt)
+    );
+  }
+  if (!merged.size) throw new Error("Nothing to apply");
+
+  const existing = db.billAllocations.filter(
+    (a) => a.receiptOrPaymentVoucherId === receiptId
+  );
+  const existingSum = roundMoney(existing.reduce((s, a) => s + a.amount, 0));
+  const addSum = roundMoney(
+    [...merged.values()].reduce((s, a) => s + a, 0)
+  );
+  if (existingSum + addSum > receipt.total + 0.02) {
+    throw new Error("Allocations exceed receipt amount");
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const touched = new Set<string>();
+
+  for (const [invoiceVoucherId, amount] of merged) {
+    const inv = db.vouchers.find((v) => v.id === invoiceVoucherId);
+    if (!inv || inv.voided) throw new Error("Invalid invoice for allocation");
+    if (inv.type !== "sale") throw new Error("Can only apply to sale invoices");
+    if (inv.partyId !== receipt.partyId) {
+      throw new Error("Invoice is for a different party");
+    }
+    const open = refreshInvoiceOutstanding(
+      inv,
+      db.vouchers,
+      db.billAllocations
+    );
+    if (amount > open + 0.02) {
+      throw new Error(
+        `Allocation for ${inv.number} exceeds outstanding ₹${open}`
+      );
+    }
+    const row = existing.find((x) => x.invoiceVoucherId === invoiceVoucherId);
+    if (row) {
+      row.amount = roundMoney(row.amount + amount);
+    } else {
+      db.billAllocations.push({
+        id: `ba_${crypto.randomUUID()}`,
+        receiptOrPaymentVoucherId: receiptId,
+        invoiceVoucherId,
+        amount,
+        date: receipt.date || today,
+      });
+    }
+    touched.add(inv.id);
+  }
+
+  for (const id of touched) {
+    const inv = db.vouchers.find((v) => v.id === id);
+    if (inv) refreshInvoiceOutstanding(inv, db.vouchers, db.billAllocations);
+  }
+  saveDb(db);
+}
+
 export function voidVoucher(voucherId: string, voidedBy = "system"): void {
   const db = loadDb();
   const v = db.vouchers.find((x) => x.id === voucherId);
@@ -4968,6 +5996,124 @@ export function adjustStockBatch(inputs: StockAdjustInput[]): number {
   return inputs.length;
 }
 
+export function clockStaffPunch(input: {
+  userId: string;
+  kind: HrPunch["kind"];
+  lat?: number;
+  lng?: number;
+  accuracyM?: number;
+  photoUrl?: string;
+  userAgent?: string;
+}): HrPunch {
+  const db = loadDb();
+  ensureHrAuditCollections(db);
+  const terms = (db.hrTerms ?? []).find((t) => t.userId === input.userId);
+  const punch = buildHrPunch({
+    ...input,
+    sites: db.hrSites ?? [],
+    siteIds: terms?.siteIds,
+  });
+  if (terms?.requireSelfie && input.kind === "in" && !input.photoUrl) {
+    throw new Error("Selfie required to clock in");
+  }
+  db.hrPunches = [punch, ...(db.hrPunches ?? [])];
+  saveDb(db);
+  return punch;
+}
+
+export function startMonthCounts(month: string, startedBy: string): void {
+  const db = loadDb();
+  ensureCountCollections(db);
+  const hasStock = (db.stockCounts ?? []).some(
+    (c) => c.month === month && c.status === "draft"
+  );
+  if (!hasStock) {
+    db.stockCounts = [
+      startStockCountSession({
+        month,
+        startedBy,
+        products: db.products ?? [],
+      }),
+      ...(db.stockCounts ?? []),
+    ];
+  }
+  const hasCash = (db.cashCounts ?? []).some(
+    (c) => c.month === month && c.status === "draft"
+  );
+  if (!hasCash) {
+    db.cashCounts = [
+      startCashCountSession({
+        month,
+        startedBy,
+        accounts: db.accounts ?? [],
+        ledgerEntries: db.ledgerEntries ?? [],
+      }),
+      ...(db.cashCounts ?? []),
+    ];
+  }
+  saveDb(db);
+}
+
+export function approveStockCountLines(input: {
+  countId: string;
+  lineIds: string[];
+  actor: UserProfile;
+  ctx?: Parameters<typeof canEnterPhysicalCount>[1];
+}): number {
+  const db = loadDb();
+  if (!userHasCapability(input.actor, "view_financials", input.ctx)) {
+    throw new Error("Only the owner can post count shortages to stock");
+  }
+  const session = (db.stockCounts ?? []).find((c) => c.id === input.countId);
+  if (!session) throw new Error("Count session not found");
+  const adjs = adjustmentsFromApprovedLines(
+    session,
+    input.lineIds,
+    input.actor.id
+  );
+  assertPeriodOpen(new Date().toISOString().slice(0, 10), db.settings);
+  const posted = new Map<string, string>();
+  for (const adj of adjs) {
+    applyStockAdjust(db, {
+      productId: adj.productId,
+      variationId: adj.variationId,
+      colorId: adj.colorId,
+      qty: adj.qty,
+      direction: adj.direction,
+      note: adj.note,
+      createdBy: adj.createdBy,
+    });
+    const mov = db.stockMovements[0];
+    if (mov) posted.set(adj.lineId, mov.id);
+  }
+  const want = new Set(input.lineIds);
+  session.lines = session.lines.map((l) =>
+    want.has(l.id)
+      ? {
+          ...l,
+          ownerDecision: posted.has(l.id) ? "approved" : l.ownerDecision,
+          postedMovementId: posted.get(l.id) || l.postedMovementId,
+        }
+      : l
+  );
+  session.status = "owner_reviewed";
+  session.updatedAt = new Date().toISOString();
+  saveDb(db);
+  return adjs.length;
+}
+
+export function canEnterPhysicalCountNow(
+  session: { id: string; role: UserRole } | null | undefined,
+  db: AppDatabase | null
+): boolean {
+  if (!session || !db) return false;
+  const actor = db.users.find((u) => u.id === session.id);
+  return canEnterPhysicalCount(actor || { role: session.role }, {
+    rolePresets: db.rolePresets,
+    staffJobs: db.staffJobs,
+  });
+}
+
 export function createSaleVoucherFromOrder(
   orderId: string,
   createdBy: string,
@@ -5085,162 +6231,6 @@ export function createSaleVoucherFromOrder(
     skipInventory,
     allowOverCredit: true,
   });
-}
-
-function tallyPartyNameForOrder(order: Order, db: AppDatabase): string {
-  const party = db.parties.find(
-    (p) => p.linkedUserId === order.userId && p.type === "customer"
-  );
-  const user = db.users.find((u) => u.id === order.userId);
-  return (
-    party?.name ||
-    order.checkoutName ||
-    order.userName ||
-    user?.name ||
-    `Dealer ${order.orderNumber}`
-  ).trim();
-}
-
-function receiptBankAmountForOrder(order: Order, saleTotal: number): number {
-  const paidProofs = proofPaidTotal(order.paymentProof);
-  const due = paymentAmountDue(order);
-  if (paidProofs > 0) return roundMoney(paidProofs);
-  if (due > 0) return roundMoney(due);
-  return roundMoney(
-    Math.max(0, (order.actualBillAmount ?? saleTotal) - (order.walletUsed || 0))
-  );
-}
-
-/** Idempotent enqueue for office Tally bridge (simple non-GST Sales). */
-export function enqueueTallySaleFromOrder(orderId: string): TallyPost | null {
-  const db = loadDb();
-  const order = db.orders.find((o) => o.id === orderId);
-  if (!order) return null;
-  const amount = roundMoney(order.actualBillAmount ?? 0);
-  if (!(amount > 0)) return null;
-  const remoteId = `WEB-SALE-${order.orderNumber}`;
-  const existing = (db.tallyPosts ?? []).find((p) => p.remoteId === remoteId);
-  if (existing) return existing;
-
-  const party = db.parties.find(
-    (p) => p.linkedUserId === order.userId && p.type === "customer"
-  );
-  const post: TallyPost = {
-    id: `tpost_${crypto.randomUUID()}`,
-    kind: "sale",
-    orderId: order.id,
-    orderNumber: order.orderNumber,
-    remoteId,
-    partyName: tallyPartyNameForOrder(order, db),
-    partyPhone: party?.phone || order.phone,
-    partyGstin: party?.gstin || order.gstOrAadhar,
-    amount,
-    date: new Date().toISOString().slice(0, 10),
-    narration: `Website sale ${order.orderNumber}`,
-    status: "pending",
-    attempts: 0,
-    createdAt: new Date().toISOString(),
-  };
-  if (!db.tallyPosts) db.tallyPosts = [];
-  db.tallyPosts.unshift(post);
-  saveDb(db);
-  return post;
-}
-
-/** Idempotent enqueue for office Tally bridge — one post per receipt voucher. */
-export function enqueueTallyReceiptFromOrder(orderId: string): TallyPost | null {
-  const db = loadDb();
-  const order = db.orders.find((o) => o.id === orderId);
-  if (!order) return null;
-  const receipts = (db.vouchers ?? []).filter(
-    (v) =>
-      v.linkedOrderId === orderId && v.type === "receipt" && !v.voided
-  );
-  if (!receipts.length) {
-    // Fallback: combined amount if books receipt not posted yet
-    const saleTotal = order.actualBillAmount ?? order.estimatedTotal ?? 0;
-    const amount = receiptBankAmountForOrder(order, saleTotal);
-    if (!(amount > 0)) return null;
-    const remoteId = `WEB-RCPT-${order.orderNumber}`;
-    const existing = (db.tallyPosts ?? []).find((p) => p.remoteId === remoteId);
-    if (existing) return existing;
-    const party = db.parties.find(
-      (p) => p.linkedUserId === order.userId && p.type === "customer"
-    );
-    const post: TallyPost = {
-      id: `tpost_${crypto.randomUUID()}`,
-      kind: "receipt",
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      remoteId,
-      partyName: tallyPartyNameForOrder(order, db),
-      partyPhone: party?.phone || order.phone,
-      partyGstin: party?.gstin || order.gstOrAadhar,
-      amount,
-      date: new Date().toISOString().slice(0, 10),
-      narration: `Website receipt ${order.orderNumber}`,
-      status: "pending",
-      attempts: 0,
-      createdAt: new Date().toISOString(),
-    };
-    if (!db.tallyPosts) db.tallyPosts = [];
-    db.tallyPosts.unshift(post);
-    saveDb(db);
-    return post;
-  }
-
-  let last: TallyPost | null = null;
-  const party = db.parties.find(
-    (p) => p.linkedUserId === order.userId && p.type === "customer"
-  );
-  if (!db.tallyPosts) db.tallyPosts = [];
-  for (const rcpt of receipts) {
-    const suffix = rcpt.linkedPaymentProofItemId
-      ? rcpt.linkedPaymentProofItemId.slice(0, 8)
-      : rcpt.number;
-    const remoteId = `WEB-RCPT-${order.orderNumber}-${suffix}`;
-    const existing = db.tallyPosts.find((p) => p.remoteId === remoteId);
-    if (existing) {
-      last = existing;
-      continue;
-    }
-    const post: TallyPost = {
-      id: `tpost_${crypto.randomUUID()}`,
-      kind: "receipt",
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      remoteId,
-      partyName: tallyPartyNameForOrder(order, db),
-      partyPhone: party?.phone || order.phone,
-      partyGstin: party?.gstin || order.gstOrAadhar,
-      amount: roundMoney(rcpt.total),
-      date: rcpt.date,
-      narration: `Website receipt ${order.orderNumber} · ${rcpt.number}`,
-      status: "pending",
-      attempts: 0,
-      createdAt: new Date().toISOString(),
-    };
-    db.tallyPosts.unshift(post);
-    last = post;
-  }
-  saveDb(db);
-  return last;
-}
-
-/** Staff: re-queue a failed/posted post for another bridge attempt. */
-export function retryTallyPost(postId: string): TallyPost {
-  const db = loadDb();
-  const post = (db.tallyPosts ?? []).find((p) => p.id === postId);
-  if (!post) throw new Error("Tally post not found");
-  post.status = "pending";
-  post.lastError = undefined;
-  post.postedAt = undefined;
-  saveDb(db);
-  return post;
-}
-
-export function listTallyPosts(): TallyPost[] {
-  return [...(loadDb().tallyPosts ?? [])];
 }
 
 /** Receipt when payment verified — one bank receipt per proof item (not combined). */
@@ -5601,10 +6591,10 @@ export function createDraftPosFromStockAlerts(
   opts?: { minQty?: number; rowKeys?: string[] }
 ): PurchaseOrder[] {
   const db = loadDb();
-  let rows = undefined as ReturnType<typeof stockAlerts> | undefined;
+  let rows = undefined as ReturnType<typeof stockAlertsFromDb> | undefined;
   if (opts?.rowKeys?.length) {
     const want = new Set(opts.rowKeys);
-    rows = stockAlerts(db.products, db.stockMovements ?? [])
+    rows = stockAlertsFromDb(db)
       .filter((r) => r.kind === "reorder")
       .filter((r) =>
         want.has(`${r.productId}|${r.variationId ?? ""}|${r.colorId ?? ""}`)
@@ -5616,6 +6606,26 @@ export function createDraftPosFromStockAlerts(
   });
   saveDb(db);
   return created;
+}
+
+export function markPurchaseOrderOrdered(
+  poId: string,
+  byUserId: string
+): PurchaseOrder {
+  const db = loadDb();
+  const actor = db.users.find((u) => u.id === byUserId);
+  if (
+    !actor ||
+    (!actorCan(actor, "manage_reorder", db) &&
+      !actorCan(actor, "manage_accounts", db))
+  ) {
+    throw new Error("Not allowed to confirm purchase orders");
+  }
+  const po = db.purchaseOrders.find((p) => p.id === poId);
+  if (!po) throw new Error("PO not found");
+  Object.assign(po, confirmDraftPurchaseOrder(po));
+  saveDb(db);
+  return po;
 }
 
 export function createGoodsReceipt(input: {

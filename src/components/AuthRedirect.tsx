@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { usePathname, useRouter } from "@/i18n/routing";
 import { useDb, useSession } from "@/lib/hooks";
-import { logout } from "@/lib/store/db";
+import { logout, syncSessionFromServer } from "@/lib/store/db";
 
 /** Paths guests may open without logging in (browse + auth). */
 function isPublicPath(pathname: string): boolean {
@@ -32,6 +32,10 @@ export function AuthRedirect() {
   const router = useRouter();
   const { session, ready } = useSession();
   const { db } = useDb();
+
+  useEffect(() => {
+    void syncSessionFromServer();
+  }, []);
 
   useEffect(() => {
     if (!ready) return;

@@ -1,13 +1,15 @@
 "use client";
 
 import { Suspense, useMemo } from "react";
+import { useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import { AccountsSearch } from "@/components/AccountsSearch";
 import {
-  SEARCH_KIND_LABEL,
   searchAccountsEverywhere,
   type SearchHitKind,
 } from "@/lib/accounts-search";
@@ -15,6 +17,7 @@ import { useDb, useSession } from "@/lib/hooks";
 import { canViewFinancials, checkCapability } from "@/lib/store/db";
 
 function SearchInner() {
+  const t = useTranslations("accounts");
   const search = useSearchParams();
   const q = search.get("q") || "";
   const { session } = useSession();
@@ -39,7 +42,7 @@ function SearchInner() {
     return map;
   }, [hits]);
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -49,12 +52,7 @@ function SearchInner() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        Search
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)]">
-        Find any party, bill, product, account, order or goods receipt.
-      </p>
+      <AccountsPageHeader title={t("search")} hint={t("searchFindHint")} />
 
       <div className="mt-4 max-w-xl">
         <AccountsSearch initialQuery={q} />
@@ -63,14 +61,28 @@ function SearchInner() {
       {q.trim() ? (
         <div className="mt-6 space-y-6">
           {!hits.length ? (
-            <p className="text-sm text-[var(--ink-muted)]">
-              No matches for “{q}”.
-            </p>
+            <AccountsEmpty
+              message={`${t("emptySearch")} “${q}”.`}
+              href="/admin/orders/new"
+              cta={t("emptySearchCta")}
+            />
           ) : (
             [...groups.entries()].map(([kind, rows]) => (
               <div key={kind} className="tt-panel overflow-hidden">
                 <p className="border-b border-[var(--line)] px-4 py-2 text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-                  {SEARCH_KIND_LABEL[kind]} · {rows.length}
+                  {t(
+                    (
+                      {
+                        party: "kindParty",
+                        voucher: "kindVoucher",
+                        product: "kindProduct",
+                        account: "kindAccount",
+                        order: "kindOrder",
+                        grn: "kindGrn",
+                      } as const
+                    )[kind]
+                  )}{" "}
+                  · {rows.length}
                 </p>
                 <ul className="divide-y divide-[var(--line)]">
                   {rows.map((h) => (
@@ -94,23 +106,24 @@ function SearchInner() {
           )}
         </div>
       ) : (
-        <p className="mt-6 text-sm text-[var(--ink-muted)]">
-          Tip: press Ctrl+K from any Accounts page.
-        </p>
+        <p className="mt-6 text-sm text-[var(--ink-muted)]">{t("searchHint")}</p>
       )}
+    </AccountsShell>
+  );
+}
+
+function SearchFallback() {
+  const t = useTranslations("accounts");
+  return (
+    <AccountsShell>
+      <p className="p-4 text-sm">{t("loadingBooks")}</p>
     </AccountsShell>
   );
 }
 
 export default function AccountsSearchPage() {
   return (
-    <Suspense
-      fallback={
-        <AccountsShell>
-          <p className="p-4 text-sm">Loading…</p>
-        </AccountsShell>
-      }
-    >
+    <Suspense fallback={<SearchFallback />}>
       <SearchInner />
     </Suspense>
   );

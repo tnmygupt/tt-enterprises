@@ -14,7 +14,6 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Plain Node.js scripts / bridges — not part of the Next.js app.
     "scripts/**",
-    "tally-bridge/**",
   ]),
 ]);
 

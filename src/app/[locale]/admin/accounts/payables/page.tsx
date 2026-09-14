@@ -5,6 +5,8 @@ import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AccountsEmpty } from "@/components/AccountsEmpty";
+import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import {
   allOpenPayables,
@@ -146,7 +148,7 @@ export default function PayablesPage() {
     return empty;
   }, [db, partyId, asOf]);
 
-  if (!session || !checkCapability(session, db?.users, "manage_accounts")) {
+  if (!session || !checkCapability(session, db, "manage_accounts")) {
     return (
       <AccountsShell>
         <AdminAccessDenied />
@@ -162,12 +164,10 @@ export default function PayablesPage() {
 
   return (
     <AccountsShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {t("accounts.payables")}
-      </h1>
-      <p className="mt-1 text-sm text-[var(--ink-muted)]">
-        {t("accounts.payablesHint")}
-      </p>
+      <AccountsPageHeader
+        title={t("accounts.payables")}
+        hint={t("accounts.payablesHint")}
+      />
 
       <div className="mt-4 flex flex-wrap gap-2">
         <button
@@ -182,14 +182,14 @@ export default function PayablesPage() {
           className={`tt-btn ${tab === "outstanding" ? "tt-btn-dark" : "tt-btn-outline"}`}
           onClick={() => setTab("outstanding")}
         >
-          Bills payable
+          {t("accounts.billsPayable")}
         </button>
         <button
           type="button"
           className={`tt-btn ${tab === "creditors" ? "tt-btn-dark" : "tt-btn-outline"}`}
           onClick={() => setTab("creditors")}
         >
-          Creditors closing
+          {t("accounts.creditorsClosing")}
         </button>
       </div>
 
@@ -202,7 +202,7 @@ export default function PayablesPage() {
             onChange={(e) => setPartyId(e.target.value)}
           >
             <option value="">
-              {locale === "hi" ? "सभी सप्लायर" : "All suppliers"}
+              {t("accounts.allSuppliers")}
             </option>
             {suppliers.map((p) => (
               <option key={p.id} value={p.id}>
@@ -226,7 +226,7 @@ export default function PayablesPage() {
       <div className="mt-4 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {(
           [
-            ["current", locale === "hi" ? "चालू" : "Current"],
+            ["current", t("accounts.agingCurrent")],
             ["d1_30", "1–30"],
             ["d31_60", "31–60"],
             ["d61_90", "61–90"],
@@ -340,24 +340,62 @@ export default function PayablesPage() {
               </tbody>
             </table>
             {!creditors.length ? (
-              <p className="p-4 text-sm text-[var(--ink-muted)]">
-                {t("common.empty")}
-              </p>
+              <AccountsEmpty
+                message={t("accounts.emptyPayables")}
+                href="/admin/accounts/vouchers?new=payment"
+                cta={t("accounts.emptyPayablesCta")}
+              />
             ) : null}
           </div>
         </>
       ) : (
-        <div className="tt-panel mt-4 overflow-x-auto">
+        <>
+        <div className="tt-acct-cards mt-4 sm:hidden">
+          {open.map((row) => {
+            const party = db?.parties.find((p) => p.id === row.voucher.partyId);
+            const due = (row.voucher.dueDate || row.voucher.date).slice(0, 10);
+            const overdue = due < asOf;
+            return (
+              <div key={row.voucher.id} className="tt-panel tt-acct-card">
+                <p className="font-mono text-sm font-semibold">
+                  <VoucherNumberLink
+                    id={row.voucher.id}
+                    number={row.voucher.number}
+                  />
+                </p>
+                <p className="text-sm">{party?.name || "—"}</p>
+                <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                  {row.voucher.date} · due {due}
+                  {overdue
+                    ? locale === "hi"
+                      ? ` · ओवरड्यू ${row.daysOverdue}द`
+                      : ` · overdue ${row.daysOverdue}d`
+                    : ""}
+                </p>
+                <p className="mt-1 flex items-center justify-between gap-2 text-sm font-semibold tabular-nums">
+                  {money(row.outstanding)}
+                  <Link
+                    href={`/admin/accounts/vouchers?new=payment&party=${row.voucher.partyId}`}
+                    className="text-sm font-semibold text-[var(--brand)]"
+                  >
+                    {t("accounts.payNow")}
+                  </Link>
+                </p>
+              </div>
+            );
+          })}
+        </div>
+        <div className="tt-panel tt-acct-table-wrap mt-4 hidden sm:block">
           <table className="tt-table min-w-[860px]">
             <thead>
               <tr>
-                <th>Bill</th>
-                <th>Date</th>
-                <th>Due</th>
+                <th>{t("accounts.colInvoice")}</th>
+                <th>{t("accounts.colDate")}</th>
+                <th>{t("accounts.colDue")}</th>
                 <th>{t("accounts.suppliers")}</th>
-                <th>Total</th>
+                <th>{t("accounts.colTotal")}</th>
                 <th>{t("accounts.outstanding")}</th>
-                <th>Status</th>
+                <th>{t("accounts.colAging")}</th>
                 <th></th>
               </tr>
             </thead>
@@ -422,11 +460,14 @@ export default function PayablesPage() {
             </tbody>
           </table>
           {!open.length ? (
-            <p className="p-4 text-sm text-[var(--ink-muted)]">
-              {t("common.empty")}
-            </p>
+            <AccountsEmpty
+              message={t("accounts.emptyPayables")}
+              href="/admin/accounts/vouchers?new=payment"
+              cta={t("accounts.emptyPayablesCta")}
+            />
           ) : null}
         </div>
+        </>
       )}
     </AccountsShell>
   );

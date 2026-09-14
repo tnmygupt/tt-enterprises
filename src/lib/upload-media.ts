@@ -12,7 +12,7 @@ const COMPRESS_ABOVE = 2.5 * 1024 * 1024;
 const COMPRESS_MAX_EDGE = 1920;
 const COMPRESS_QUALITY = 0.82;
 
-export type UploadFolder = "products" | "bills" | "lr" | "proofs" | "misc";
+export type UploadFolder = "products" | "bills" | "lr" | "proofs" | "misc" | "hr";
 
 const EXT_MIME: Record<string, string> = {
   jpg: "image/jpeg",

@@ -33,12 +33,15 @@ export {
   creditLimitBreach,
   creditorsClosingList,
   invoiceOutstanding,
+  invoiceSettlementLines,
+  leftoverReceipts,
   openInvoicesForParty,
   partyAging,
   paymentPlanPayables,
   refreshInvoiceOutstanding,
   unallocatedAdvance,
   type AgingBuckets,
+  type InvoiceSettlementLine,
   type OpenInvoice,
 } from "./receivables";
 export {
@@ -80,6 +83,11 @@ export {
   purchaseAnalysis,
   salesAnalysis,
   stockAlerts,
+  stockAlertsFromDb,
+  computeReorderSuggestion,
+  formatSeasonMonths,
+  parseSeasonMonthsFromText,
+  roundUpToMultiple,
   type AggRow,
   type CashFlowSection,
   type MonthPoint,
@@ -101,3 +109,12 @@ export {
   type HealthCheckItem,
   type HealthReport,
 } from "./controls";
+export {
+  bankBookEntriesAsOf,
+  brsDifference,
+  brsExpectedStatement,
+  collectBrsProofHints,
+  matchBrsProofHint,
+  summarizeBrs,
+  type BrsProofHint,
+} from "./brs";
