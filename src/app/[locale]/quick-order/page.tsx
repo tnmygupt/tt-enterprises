@@ -267,7 +267,7 @@ function mergeQuickRows(
   current: QuickRow[],
   toAdd: { variationId: string; colorId: string; qty: number }[]
 ): QuickRow[] {
-  let next = [...current];
+  const next = [...current];
   for (const item of toAdd) {
     const existingIdx = next.findIndex(
       (r) =>

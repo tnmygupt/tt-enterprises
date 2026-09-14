@@ -15,6 +15,13 @@ const eslintConfig = defineConfig([
     // Plain Node.js scripts / bridges — not part of the Next.js app.
     "scripts/**",
   ]),
+  {
+    rules: {
+      // Pre-dates the React Compiler rules that ship with Next 16. Warn until
+      // the effects that seed state on mount are reworked.
+      "react-hooks/set-state-in-effect": "warn",
+    },
+  },
 ]);
 
 export default eslintConfig;

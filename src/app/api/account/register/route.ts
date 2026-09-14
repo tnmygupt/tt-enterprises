@@ -90,7 +90,8 @@ export async function POST(req: NextRequest) {
       { status: 503 },
     );
   }
-  let { db, updatedAt, error } = await cloudGetAppDb();
+  const { db: loadedDb, updatedAt, error } = await cloudGetAppDb();
+  let db = loadedDb;
   if (error || !db) {
     return NextResponse.json(
       { error: error || "Cloud database empty" },
