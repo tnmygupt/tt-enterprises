@@ -87,6 +87,234 @@ function matchesFilter(
   }
 }
 
+const ACTION_BTN = "tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold";
+const ACTION_BTN_DARK = "tt-btn tt-btn-dark px-2 py-1.5 text-xs font-bold";
+
+function OrderQueueActions({
+  o,
+  locale,
+  t,
+  canManage,
+  canVerify,
+  session,
+  db,
+  refresh,
+  stacked,
+}: {
+  o: Order;
+  locale: "en" | "hi";
+  t: ReturnType<typeof useTranslations>;
+  canManage: boolean;
+  canVerify: boolean;
+  session: { id: string } | null;
+  db: ReturnType<typeof useDb>["db"];
+  refresh: () => void;
+  stacked?: boolean;
+}) {
+  const items = getProofItems(o.paymentProof);
+  const first = items[0];
+  const rem = proofRemaining(o.paymentProof, paymentAmountDue(o));
+  return (
+    <div className={stacked ? "flex flex-col gap-2 text-sm" : "flex flex-wrap gap-2"}>
+      <Link href={`/orders/${o.id}`} className={ACTION_BTN}>
+        {locale === "hi" ? "खोलें" : "Open"}
+      </Link>
+      {canManage ? (
+        <Link href={`/admin/orders/${o.id}/packing-slip`} className={ACTION_BTN}>
+          {locale === "hi" ? "पैकिंग" : "Packing"}
+        </Link>
+      ) : null}
+      {orderNeedsSaleVoucher(o, db?.vouchers ?? []) ? (
+        <Link href={`/orders/${o.id}`} className={ACTION_BTN_DARK}>
+          {locale === "hi" ? "बुक में डालें" : "Post to books"}
+        </Link>
+      ) : null}
+      {first?.url ? (
+        <a href={first.url} target="_blank" rel="noreferrer" className={ACTION_BTN}>
+          {locale === "hi"
+            ? items.length > 1
+              ? `प्रूफ (${items.length})`
+              : "प्रूफ देखें"
+            : items.length > 1
+              ? `Proofs (${items.length})`
+              : "View proof"}
+        </a>
+      ) : null}
+      {o.paymentProof && !o.paymentProof.verified ? (
+        <p className="text-[10px] text-[var(--ink-muted)] tabular-nums">
+          {formatInr(proofPaidTotal(o.paymentProof), locale)}
+          {" / "}
+          {formatInr(paymentAmountDue(o), locale)}
+          {rem > 0 ? (locale === "hi" ? " बाकी" : " left") : ""}
+        </p>
+      ) : null}
+      {o.paymentProof?.verified ? (
+        <span
+          className="inline-flex items-center justify-center rounded-lg px-2 py-1.5 text-xs font-bold text-white"
+          style={{ background: "var(--ok)" }}
+        >
+          {locale === "hi" ? "✓ वेरिफाइड" : "✓ Verified"}
+        </span>
+      ) : o.paymentProof && canVerify ? (
+        <button
+          type="button"
+          className={ACTION_BTN_DARK}
+          onClick={() => {
+            if (!session) return;
+            if (
+              rem > 0 &&
+              !confirm(
+                locale === "hi"
+                  ? `अभी ${formatInr(rem, locale)} बाकी है। Force-verify करें?`
+                  : `${formatInr(rem, locale)} still outstanding. Force-verify anyway?`
+              )
+            ) {
+              return;
+            }
+            if (
+              rem <= 0 &&
+              !confirm(
+                locale === "hi" ? "पेमेंट वेरिफाई करें?" : "Mark payment as verified?"
+              )
+            ) {
+              return;
+            }
+            try {
+              verifyPayment(o.id, session.id, { force: rem > 0 });
+            } catch (err) {
+              window.alert(err instanceof Error ? err.message : "Verify failed");
+              return;
+            }
+            if (db) {
+              void notifyOrderWhatsApp({
+                order: {
+                  ...o,
+                  status: "payment_verified",
+                  paymentProof: { ...o.paymentProof!, verified: true },
+                },
+                status: "payment_verified",
+                settings: db.settings,
+                users: db.users,
+                locale,
+              });
+            }
+            refresh();
+          }}
+        >
+          {locale === "hi" ? "वेरिफाई" : "Verify"}
+        </button>
+      ) : null}
+      {canManage && o.status === "estimate" ? (
+        <button
+          type="button"
+          className={ACTION_BTN}
+          onClick={() => {
+            updateOrderStatus(o.id, "confirmed", "Confirmed by admin");
+            if (db) {
+              void notifyOrderWhatsApp({
+                order: { ...o, status: "confirmed" },
+                status: "confirmed",
+                settings: db.settings,
+                users: db.users,
+                locale,
+              });
+            }
+            refresh();
+          }}
+        >
+          {locale === "hi" ? "कन्फर्म" : "Confirm"}
+        </button>
+      ) : null}
+      {canManage && o.status === "payment_verified" ? (
+        <button
+          type="button"
+          className={ACTION_BTN_DARK}
+          onClick={() => {
+            try {
+              markOrderDispatched(o.id);
+            } catch (err) {
+              alert(err instanceof Error ? err.message : "Cannot dispatch");
+              return;
+            }
+            if (db) {
+              void notifyOrderWhatsApp({
+                order: { ...o, status: "dispatched" },
+                status: "dispatched",
+                settings: db.settings,
+                users: db.users,
+                locale,
+                extraNote: locale === "hi" ? "LR अपलोड बाकी" : "LR upload pending",
+              });
+            }
+            refresh();
+          }}
+        >
+          {locale === "hi" ? "डिस्पैच" : "Dispatch"}
+        </button>
+      ) : null}
+      {(o.status === "dispatched" && !orderHasLr(o)) ||
+      (canManage && o.status === "payment_verified") ? (
+        <Link href={`/orders/${o.id}`} className={ACTION_BTN}>
+          {locale === "hi" ? "LR → डिलीवर" : "LR → delivered"}
+        </Link>
+      ) : null}
+      {canManage && o.status === "dispatched" && orderHasLr(o) ? (
+        <button
+          type="button"
+          className={ACTION_BTN}
+          onClick={() => {
+            try {
+              updateOrderStatus(o.id, "delivered" as OrderStatus, "Marked delivered");
+            } catch (err) {
+              alert(err instanceof Error ? err.message : "Cannot mark delivered");
+              return;
+            }
+            if (db) {
+              void notifyOrderWhatsApp({
+                order: { ...o, status: "delivered" },
+                status: "delivered",
+                settings: db.settings,
+                users: db.users,
+                locale,
+              });
+            }
+            refresh();
+          }}
+        >
+          {locale === "hi" ? "डिलीवर" : "Delivered"}
+        </button>
+      ) : null}
+      {canManage && canCancelOrderStatus(o.status) ? (
+        <button
+          type="button"
+          className="text-left text-xs font-semibold text-[var(--danger)]"
+          onClick={() => {
+            if (!session) return;
+            if (!confirm(t("common.cancelOrderConfirm"))) return;
+            try {
+              cancelOrder(o.id, session.id, "Cancelled by admin");
+              if (db) {
+                void notifyOrderWhatsApp({
+                  order: { ...o, status: "cancelled" },
+                  status: "cancelled",
+                  settings: db.settings,
+                  users: db.users,
+                  locale,
+                });
+              }
+              refresh();
+            } catch (err) {
+              alert(err instanceof Error ? err.message : "Cannot cancel");
+            }
+          }}
+        >
+          {t("common.cancelOrder")}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function AdminOrdersInner() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
@@ -289,29 +517,17 @@ function AdminOrdersInner() {
                 ? ` · ${formatInr(o.actualBillAmount, locale)}`
                 : ""}
             </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Link
-                href={`/orders/${o.id}`}
-                className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
-              >
-                {locale === "hi" ? "खोलें" : "Open"}
-              </Link>
-              {canManage ? (
-                <Link
-                  href={`/admin/orders/${o.id}/packing-slip`}
-                  className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
-                >
-                  {locale === "hi" ? "पैकिंग" : "Packing"}
-                </Link>
-              ) : null}
-              {orderNeedsSaleVoucher(o, db?.vouchers ?? []) ? (
-                <Link
-                  href={`/orders/${o.id}`}
-                  className="tt-btn tt-btn-dark px-2 py-1.5 text-xs font-bold"
-                >
-                  {locale === "hi" ? "बुक में डालें" : "Post to books"}
-                </Link>
-              ) : null}
+            <div className="mt-3">
+              <OrderQueueActions
+                o={o}
+                locale={locale}
+                t={t}
+                canManage={!!canManage}
+                canVerify={!!canVerify}
+                session={session}
+                db={db}
+                refresh={refresh}
+              />
             </div>
           </div>
         ))}
@@ -399,268 +615,17 @@ function AdminOrdersInner() {
                 </td>
                 <td>{o.fullTruckRequested ? "Yes" : "—"}</td>
                 <td>
-                  <div className="flex flex-col gap-2 text-sm">
-                    <Link
-                      href={`/orders/${o.id}`}
-                      className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
-                    >
-                      {locale === "hi" ? "खोलें" : "Open"}
-                    </Link>
-                    {canManage ? (
-                      <Link
-                        href={`/admin/orders/${o.id}/packing-slip`}
-                        className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
-                      >
-                        {locale === "hi" ? "पैकिंग" : "Packing"}
-                      </Link>
-                    ) : null}
-                    {(() => {
-                      const items = getProofItems(o.paymentProof);
-                      const first = items[0];
-                      if (!first?.url) return null;
-                      return (
-                        <a
-                          href={first.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
-                        >
-                          {locale === "hi"
-                            ? items.length > 1
-                              ? `प्रूफ (${items.length})`
-                              : "प्रूफ देखें"
-                            : items.length > 1
-                              ? `Proofs (${items.length})`
-                              : "View proof"}
-                        </a>
-                      );
-                    })()}
-                    {o.paymentProof && !o.paymentProof.verified ? (
-                      <p className="text-[10px] text-[var(--ink-muted)] tabular-nums">
-                        {formatInr(proofPaidTotal(o.paymentProof), locale)}
-                        {" / "}
-                        {formatInr(paymentAmountDue(o), locale)}
-                        {proofRemaining(o.paymentProof, paymentAmountDue(o)) >
-                        0
-                          ? locale === "hi"
-                            ? " बाकी"
-                            : " left"
-                          : ""}
-                      </p>
-                    ) : null}
-                    {o.paymentProof?.verified ? (
-                      <span className="inline-flex items-center justify-center rounded-lg px-2 py-1.5 text-xs font-bold text-white"
-                        style={{ background: "var(--ok)" }}
-                      >
-                        {locale === "hi" ? "✓ वेरिफाइड" : "✓ Verified"}
-                      </span>
-                    ) : o.paymentProof && canVerify ? (
-                      <button
-                        type="button"
-                        className="tt-btn tt-btn-dark px-2 py-1.5 text-xs font-bold"
-                        onClick={() => {
-                          if (!session) return;
-                          const rem = proofRemaining(
-                            o.paymentProof,
-                            paymentAmountDue(o)
-                          );
-                          if (
-                            rem > 0 &&
-                            !confirm(
-                              locale === "hi"
-                                ? `अभी ${formatInr(rem, locale)} बाकी है। Force-verify करें?`
-                                : `${formatInr(rem, locale)} still outstanding. Force-verify anyway?`
-                            )
-                          ) {
-                            return;
-                          }
-                          if (
-                            rem <= 0 &&
-                            !confirm(
-                              locale === "hi"
-                                ? "पेमेंट वेरिफाई करें?"
-                                : "Mark payment as verified?"
-                            )
-                          ) {
-                            return;
-                          }
-                          try {
-                            verifyPayment(o.id, session.id, {
-                              force: rem > 0,
-                            });
-                          } catch (err) {
-                            window.alert(
-                              err instanceof Error
-                                ? err.message
-                                : "Verify failed"
-                            );
-                            return;
-                          }
-                          if (db) {
-                            void notifyOrderWhatsApp({
-                              order: {
-                                ...o,
-                                status: "payment_verified",
-                                paymentProof: {
-                                  ...o.paymentProof!,
-                                  verified: true,
-                                },
-                              },
-                              status: "payment_verified",
-                              settings: db.settings,
-                              users: db.users,
-                              locale,
-                            });
-                          }
-                          refresh();
-                        }}
-                      >
-                        {locale === "hi" ? "वेरिफाई" : "Verify"}
-                      </button>
-                    ) : null}
-                    {canManage && o.status === "estimate" ? (
-                      <button
-                        type="button"
-                        className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
-                        onClick={() => {
-                          updateOrderStatus(o.id, "confirmed", "Confirmed by admin");
-                          if (db) {
-                            void notifyOrderWhatsApp({
-                              order: { ...o, status: "confirmed" },
-                              status: "confirmed",
-                              settings: db.settings,
-                              users: db.users,
-                              locale,
-                            });
-                          }
-                          refresh();
-                        }}
-                      >
-                        Confirm
-                      </button>
-                    ) : null}
-                    {canManage && o.status === "payment_verified" ? (
-                      <button
-                        type="button"
-                        className="tt-btn tt-btn-dark px-2 py-1.5 text-xs font-bold"
-                        onClick={() => {
-                          try {
-                            markOrderDispatched(o.id);
-                          } catch (err) {
-                            alert(
-                              err instanceof Error
-                                ? err.message
-                                : "Cannot dispatch"
-                            );
-                            return;
-                          }
-                          if (db) {
-                            void notifyOrderWhatsApp({
-                              order: { ...o, status: "dispatched" },
-                              status: "dispatched",
-                              settings: db.settings,
-                              users: db.users,
-                              locale,
-                              extraNote:
-                                locale === "hi"
-                                  ? "LR अपलोड बाकी"
-                                  : "LR upload pending",
-                            });
-                          }
-                          refresh();
-                        }}
-                      >
-                        {locale === "hi" ? "डिस्पैच" : "Dispatch"}
-                      </button>
-                    ) : null}
-                    {o.status === "dispatched" && !orderHasLr(o) ? (
-                      <Link
-                        href={`/orders/${o.id}`}
-                        className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
-                      >
-                        {locale === "hi"
-                          ? "LR → डिलीवर"
-                          : "LR → delivered"}
-                      </Link>
-                    ) : null}
-                    {canManage && o.status === "payment_verified" ? (
-                      <Link
-                        href={`/orders/${o.id}`}
-                        className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
-                      >
-                        {locale === "hi"
-                          ? "LR → डिलीवर"
-                          : "LR → delivered"}
-                      </Link>
-                    ) : null}
-                    {canManage &&
-                    o.status === "dispatched" &&
-                    orderHasLr(o) ? (
-                      <button
-                        type="button"
-                        className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
-                        onClick={() => {
-                          try {
-                            updateOrderStatus(
-                              o.id,
-                              "delivered" as OrderStatus,
-                              "Marked delivered"
-                            );
-                          } catch (err) {
-                            alert(
-                              err instanceof Error
-                                ? err.message
-                                : "Cannot mark delivered"
-                            );
-                            return;
-                          }
-                          if (db) {
-                            void notifyOrderWhatsApp({
-                              order: { ...o, status: "delivered" },
-                              status: "delivered",
-                              settings: db.settings,
-                              users: db.users,
-                              locale,
-                            });
-                          }
-                          refresh();
-                        }}
-                      >
-                        Delivered
-                      </button>
-                    ) : null}
-                    {canManage && canCancelOrderStatus(o.status) ? (
-                      <button
-                        type="button"
-                        className="text-left text-[var(--danger)]"
-                        onClick={() => {
-                          if (!session) return;
-                          if (!confirm(t("common.cancelOrderConfirm"))) return;
-                          try {
-                            cancelOrder(o.id, session.id, "Cancelled by admin");
-                            if (db) {
-                              void notifyOrderWhatsApp({
-                                order: { ...o, status: "cancelled" },
-                                status: "cancelled",
-                                settings: db.settings,
-                                users: db.users,
-                                locale,
-                              });
-                            }
-                            refresh();
-                          } catch (err) {
-                            alert(
-                              err instanceof Error
-                                ? err.message
-                                : "Cannot cancel"
-                            );
-                          }
-                        }}
-                      >
-                        {t("common.cancelOrder")}
-                      </button>
-                    ) : null}
-                  </div>
+                  <OrderQueueActions
+                    o={o}
+                    locale={locale}
+                    t={t}
+                    canManage={!!canManage}
+                    canVerify={!!canVerify}
+                    session={session}
+                    db={db}
+                    refresh={refresh}
+                    stacked
+                  />
                 </td>
               </tr>
             ))}

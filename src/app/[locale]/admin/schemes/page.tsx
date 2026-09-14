@@ -207,7 +207,83 @@ export default function AdminSchemesPage() {
         </button>
       </div>
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-acct-cards mt-5 sm:hidden">
+        {(db?.schemes ?? []).map((s) => (
+          <div key={s.id} className="tt-panel tt-acct-card space-y-2">
+            <div>
+              <p className="font-semibold">{s.name[locale]}</p>
+              <p className="text-xs text-[var(--ink-muted)]">
+                {s.description[locale]}
+              </p>
+            </div>
+            <p className="text-xs text-[var(--ink-muted)]">
+              {schemeScopeLabel(
+                s,
+                locale,
+                db?.products ?? [],
+                db?.categories
+              )}
+            </p>
+            <p className="text-xs font-semibold text-[var(--brand-deep)]">
+              {isOrderDiscountScheme(s)
+                ? t("admin.schemesKindBill")
+                : t("admin.schemesKindWallet")}
+            </p>
+            <p className="text-xs">{formatSchemeDuration(s, locale)}</p>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={s.active}
+                onChange={(e) => {
+                  upsertScheme({ ...s, active: e.target.checked });
+                  refresh();
+                }}
+              />
+              {t("admin.schemesColActive")}
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline px-3 py-1.5 text-xs"
+                onClick={() =>
+                  setEditing({
+                    ...structuredClone(s),
+                    levels: getSchemeLevels(s),
+                  })
+                }
+              >
+                {t("admin.schemesEditBtn")}
+              </button>
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline px-3 py-1.5 text-xs text-[var(--danger)]"
+                onClick={() => {
+                  const ok = window.confirm(
+                    t("admin.schemesDeleteConfirm", { name: s.name[locale] })
+                  );
+                  if (!ok) return;
+                  try {
+                    deleteScheme(s.id);
+                    if (editing?.id === s.id) setEditing(null);
+                    refresh();
+                  } catch (err) {
+                    window.alert(
+                      err instanceof Error ? err.message : "Delete failed"
+                    );
+                  }
+                }}
+              >
+                {t("admin.schemesDeleteBtn")}
+              </button>
+            </div>
+          </div>
+        ))}
+        {!(db?.schemes ?? []).length ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+        ) : null}
+      </div>
+
+      <div className="tt-panel mt-5 hidden overflow-x-auto sm:block">
         <table className="tt-table min-w-[960px]">
           <thead>
             <tr>

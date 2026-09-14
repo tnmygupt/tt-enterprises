@@ -735,7 +735,74 @@ export default function AdminProductsPage() {
             </select>
           </div>
 
-          <div className="tt-panel mt-5 overflow-x-auto">
+          <div className="tt-acct-cards mt-5 sm:hidden">
+            {!rows.length ? (
+              <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+            ) : null}
+            {rows.map((p) => {
+              const stock = productStockSummary(p);
+              const minRate = catalogFromRate(p);
+              return (
+                <div key={p.id} className="tt-panel tt-acct-card">
+                  <p className="text-xs text-[var(--ink-muted)]">
+                    {categoryLabel(db?.categories, p.category, locale)}
+                  </p>
+                  <p className="font-semibold">{loc(p.name, locale, p.code)}</p>
+                  <p className="font-mono text-xs text-[var(--ink-muted)]">
+                    {p.code}
+                    {p.gsm ? ` · ${p.gsm} GSM` : ""}
+                  </p>
+                  <p className="mt-2 text-sm tabular-nums">
+                    {formatInr(minRate, locale)} · {stock.bundles} bdl
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="tt-btn tt-btn-dark px-3 py-1.5 text-xs"
+                      onClick={() => {
+                        setEditing(cloneForEdit(p));
+                        setHomeNew(
+                          (db?.settings.homeNewProductIds ?? []).includes(p.id)
+                        );
+                        setHomePromo(
+                          (db?.settings.homePromoProductIds ?? []).includes(p.id)
+                        );
+                      }}
+                    >
+                      {t("common.edit")}
+                    </button>
+                    <button
+                      type="button"
+                      className="tt-btn tt-btn-outline px-3 py-1.5 text-xs"
+                      onClick={() => {
+                        const codes = (db?.products ?? []).map((x) => x.code);
+                        setEditing(duplicateProductForEdit(p, codes));
+                        setHomeNew(false);
+                        setHomePromo(false);
+                        setBulkSizes("");
+                        setBulkMsg("");
+                        setError("");
+                      }}
+                    >
+                      {t("common.duplicate")}
+                    </button>
+                    <button
+                      type="button"
+                      className="tt-btn tt-btn-outline px-3 py-1.5 text-xs text-[var(--danger)]"
+                      onClick={() => {
+                        deleteProduct(p.id);
+                        refresh();
+                      }}
+                    >
+                      {t("common.delete")}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="tt-panel mt-5 hidden overflow-x-auto sm:block">
             <table className="tt-table min-w-[960px]">
               <thead>
                 <tr>

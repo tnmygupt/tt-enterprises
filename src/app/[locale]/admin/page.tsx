@@ -571,7 +571,24 @@ export default function AdminDashboardPage() {
             {t("admin.deskPeriodOrders")}
             <span className="ml-2 font-normal normal-case">({periodOrders.length})</span>
           </h2>
-          <div className="tt-panel mt-3 overflow-x-auto">
+          <div className="tt-acct-cards mt-3 sm:hidden">
+            {periodOrders.slice(0, 8).map((o) => (
+              <Link key={o.id} href={`/orders/${o.id}`} className="tt-panel tt-acct-card">
+                <p className="font-mono text-sm font-semibold text-[var(--brand)]">
+                  {o.orderNumber}
+                </p>
+                <p className="mt-1 text-sm">{o.userName}</p>
+                <p className="mt-1 text-xs text-[var(--ink-muted)]">{orderNextAction(o)}</p>
+                <p className="mt-1 text-sm tabular-nums">
+                  {formatInr(o.actualBillAmount ?? o.estimatedTotal, locale)}
+                </p>
+              </Link>
+            ))}
+            {!periodOrders.length ? (
+              <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+            ) : null}
+          </div>
+          <div className="tt-panel mt-3 hidden overflow-x-auto sm:block">
             <table className="tt-table min-w-[720px]">
               <thead>
                 <tr>

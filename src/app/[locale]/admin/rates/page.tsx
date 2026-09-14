@@ -264,7 +264,50 @@ export default function AdminRatesPage() {
         <p className="mt-3 text-sm font-medium text-[var(--brand-deep)]">{msg}</p>
       ) : null}
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-acct-cards mt-5 sm:hidden">
+        {groups.length === 0 ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+        ) : (
+          groups.map((g) => {
+            const rate = rateValue(g);
+            const dirty = draft[g.key] !== undefined && draft[g.key] !== g.rate;
+            const sizeList = g.sizes.map((s) => s.sizeLabel).join(", ");
+            return (
+              <div
+                key={g.key}
+                className={`tt-panel tt-acct-card ${dirty ? "border-[var(--brand)]" : ""}`}
+              >
+                <p className="text-xs text-[var(--ink-muted)]">{g.category}</p>
+                <p className="font-semibold">{g.productName}</p>
+                <p className="mt-1 text-sm break-words">{sizeList}</p>
+                <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                  {g.sizes.length} {locale === "hi" ? "साइज़" : "sizes"}
+                </p>
+                <label className="tt-hr-field mt-3">
+                  <span className="tt-hr-label">
+                    {locale === "hi" ? "रेट (₹)" : "Rate (₹)"}
+                  </span>
+                  <NumberField
+                    className="tt-input"
+                    min={0}
+                    step={0.01}
+                    emptyAs={null}
+                    value={rate}
+                    onValueChange={(v) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        [g.key]: typeof v === "number" ? v : 0,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      <div className="tt-panel mt-5 hidden overflow-x-auto sm:block">
         <table className="tt-table min-w-[920px]">
           <thead>
             <tr>
