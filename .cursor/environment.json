@@ -1,0 +1,17 @@
+{
+  "name": "TT Enterprises",
+  "install": "npm install --no-audit --no-fund",
+  "terminals": [
+    {
+      "name": "next-dev",
+      "command": "npm run dev",
+      "description": "Next.js development server on http://localhost:3000 (redirects to /en). Runs in local demo mode when no Firebase/MySQL secrets are set."
+    }
+  ],
+  "ports": [
+    {
+      "name": "web",
+      "port": 3000
+    }
+  ]
+}
