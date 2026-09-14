@@ -893,6 +893,10 @@ export interface Party {
   gstin?: string;
   /** Max receivable (customers) or payable exposure (suppliers) */
   creditLimit?: number;
+  /** Supplier default MOQ when the product has none */
+  minOrderQty?: number;
+  /** Supplier default lead time (days) when the product has none */
+  leadTimeDays?: number;
   active: boolean;
   createdAt: string;
   /**
@@ -1301,7 +1305,7 @@ export type HrPayBasis = "monthly" | "daily" | "hourly";
 
 export type HrPunchKind = "in" | "out";
 export type HrLeaveKind = "casual" | "sick" | "unpaid";
-export type HrLeaveStatus = "pending" | "approved" | "rejected";
+export type HrLeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type StockCountStatus = "draft" | "submitted" | "owner_reviewed";
 export type CountLineDecision = "pending" | "approved" | "rejected";
 
@@ -1360,6 +1364,10 @@ export interface HrPunch {
   photoUrl?: string;
   userAgent?: string;
   weakGps?: boolean;
+  /** Clock-in saved without a GPS fix (owner-visible fallback). */
+  gpsFallback?: boolean;
+  note?: string;
+  correctedBy?: string;
   createdAt: string;
 }
 
@@ -1417,6 +1425,9 @@ export interface HrPayslip {
   advances: number;
   net: number;
   expenseVoucherId?: string;
+  voided?: boolean;
+  voidedAt?: string;
+  voidedBy?: string;
   createdAt: string;
   createdBy: string;
 }

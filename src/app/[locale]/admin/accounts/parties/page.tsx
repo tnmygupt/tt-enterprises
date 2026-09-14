@@ -34,6 +34,8 @@ export default function AccountsPartiesPage() {
     pincode: "",
     gstin: "",
     creditLimit: "",
+    minOrderQty: "",
+    leadTimeDays: "",
     openingBalance: "",
   });
 
@@ -91,6 +93,14 @@ export default function AccountsPartiesPage() {
       creditLimit: form.creditLimit
         ? Number(form.creditLimit) || undefined
         : undefined,
+      minOrderQty:
+        form.type === "supplier" && form.minOrderQty
+          ? Number(form.minOrderQty) || undefined
+          : undefined,
+      leadTimeDays:
+        form.type === "supplier" && form.leadTimeDays
+          ? Number(form.leadTimeDays) || undefined
+          : undefined,
       active: true,
       createdAt: new Date().toISOString(),
     };
@@ -104,6 +114,8 @@ export default function AccountsPartiesPage() {
       pincode: "",
       gstin: "",
       creditLimit: "",
+      minOrderQty: "",
+      leadTimeDays: "",
       openingBalance: "",
     });
     refresh();
@@ -211,6 +223,42 @@ export default function AccountsPartiesPage() {
             }
           />
         </div>
+        {form.type === "supplier" ? (
+          <>
+            <div>
+              <label className="tt-label">{t("accounts.supplierMoq")}</label>
+              <NumberField
+                className="tt-input"
+                min={0}
+                integer
+                emptyAs={null}
+                value={form.minOrderQty}
+                onValueChange={(v) =>
+                  setForm({
+                    ...form,
+                    minOrderQty: v === "" ? "" : String(v),
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label className="tt-label">{t("accounts.supplierLeadTime")}</label>
+              <NumberField
+                className="tt-input"
+                min={0}
+                integer
+                emptyAs={null}
+                value={form.leadTimeDays}
+                onValueChange={(v) =>
+                  setForm({
+                    ...form,
+                    leadTimeDays: v === "" ? "" : String(v),
+                  })
+                }
+              />
+            </div>
+          </>
+        ) : null}
         {isOwner ? (
           <div>
             <label className="tt-label">Opening balance</label>
@@ -249,6 +297,8 @@ export default function AccountsPartiesPage() {
               <th>{t("common.phone")}</th>
               <th>{t("auth.pincode")}</th>
               <th>{t("accounts.creditLimit")}</th>
+              <th>{t("accounts.supplierMoq")}</th>
+              <th>{t("accounts.supplierLeadTime")}</th>
               <th>{t("common.balance")}</th>
               <th>{locale === "hi" ? "क्रिया" : "Actions"}</th>
             </tr>
@@ -273,6 +323,48 @@ export default function AccountsPartiesPage() {
                     {p.creditLimit
                       ? formatInr(p.creditLimit, locale)
                       : "—"}
+                  </td>
+                  <td>
+                    {p.type === "supplier" ? (
+                      <NumberField
+                        className="tt-input w-20"
+                        min={0}
+                        integer
+                        emptyAs={null}
+                        value={p.minOrderQty ?? ""}
+                        onValueChange={(v) => {
+                          upsertParty({
+                            ...p,
+                            minOrderQty:
+                              typeof v === "number" && v > 0 ? v : undefined,
+                          });
+                          refresh();
+                        }}
+                      />
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                  <td>
+                    {p.type === "supplier" ? (
+                      <NumberField
+                        className="tt-input w-20"
+                        min={0}
+                        integer
+                        emptyAs={null}
+                        value={p.leadTimeDays ?? ""}
+                        onValueChange={(v) => {
+                          upsertParty({
+                            ...p,
+                            leadTimeDays:
+                              typeof v === "number" && v > 0 ? v : undefined,
+                          });
+                          refresh();
+                        }}
+                      />
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td>
                     {p.type === "supplier" && !isOwner

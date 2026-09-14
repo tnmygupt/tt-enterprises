@@ -9,11 +9,16 @@ import type {
   Product,
   PurchaseOrder,
   StockMovement,
+  SupplierContract,
   Voucher,
 } from "../types";
 import { stockMatrixKey } from "../inventory";
 import { poLineRemaining } from "../purchase-orders";
 import { roundMoney } from "../pricing";
+import {
+  contractHeadroomQty,
+  resolveInForceContract,
+} from "../contracts";
 import { ACCT, isCashBankAccount } from "./seed";
 import { accountBalance } from "./engine";
 
@@ -287,6 +292,8 @@ export function profitAnalysis(
   };
 }
 
+export type StockAlertBlocker = "missing_supplier" | "contract_exhausted";
+
 export type StockAlertRow = {
   productId: string;
   variationId?: string;
@@ -305,6 +312,8 @@ export type StockAlertRow = {
   incomingQty?: number;
   committedQty?: number;
   coverMode?: ReorderCoverMode;
+  blockers?: StockAlertBlocker[];
+  contractCapped?: boolean;
 };
 
 export const REORDER_DEFAULTS = {
@@ -417,10 +426,14 @@ export function seasonMultiplier(
 
 export function productCoverDays(
   product: Product,
-  settings?: AppSettings
+  settings?: AppSettings,
+  supplier?: { leadTimeDays?: number } | null
 ): number {
   const lead =
     product.leadTimeDays ??
+    (typeof supplier?.leadTimeDays === "number" && supplier.leadTimeDays > 0
+      ? supplier.leadTimeDays
+      : undefined) ??
     settings?.autoReorderLeadTimeDays ??
     REORDER_DEFAULTS.leadTimeDays;
   const safety = settings?.autoReorderSafetyDays ?? REORDER_DEFAULTS.safetyDays;
@@ -552,12 +565,15 @@ export type StockAlertsDb = {
   orders?: Order[];
   purchaseOrders?: PurchaseOrder[];
   settings?: AppSettings;
+  parties?: Party[];
+  supplierContracts?: SupplierContract[];
 };
 
 export type StockAlertsOpts = {
   deadDays?: number;
   slowDays?: number;
-  parties?: { id: string }[];
+  parties?: Party[];
+  supplierContracts?: SupplierContract[];
   orders?: Order[];
   purchaseOrders?: PurchaseOrder[];
   settings?: AppSettings;
@@ -619,6 +635,8 @@ export function stockAlertsFromDb(
     orders: opts.orders ?? db.orders,
     purchaseOrders: opts.purchaseOrders ?? db.purchaseOrders,
     settings: opts.settings ?? db.settings,
+    parties: opts.parties ?? db.parties,
+    supplierContracts: opts.supplierContracts ?? db.supplierContracts,
   });
 }
 
@@ -687,20 +705,47 @@ export function stockAlerts(
       slot.level
     );
     const hadVelocity = out > 0;
+    const supplier = p.preferredSupplierId
+      ? (opts.parties ?? []).find((x) => x.id === p.preferredSupplierId)
+      : undefined;
     const suggestion = computeReorderSuggestion({
       onHand: slot.stock,
       staffMin: slot.min,
       reorderQty: p.reorderQty,
       avgDailyOut: out / lookbackDays,
       hadVelocity,
-      coverDays: productCoverDays(p, settings),
+      coverDays: productCoverDays(p, settings, supplier),
       season: seasonMultiplier(p.category, asOf, settings),
       committed: committedQty,
       incoming: incomingQty,
-      minOrderQty: p.minOrderQty,
+      minOrderQty: p.minOrderQty ?? supplier?.minOrderQty,
       useVelocity,
     });
     if (suggestion.suggestedQty <= 0) return;
+    const blockers: StockAlertBlocker[] = [];
+    if (!p.preferredSupplierId) blockers.push("missing_supplier");
+    let suggestedQty = suggestion.suggestedQty;
+    let contractCapped = false;
+    if (p.preferredSupplierId) {
+      const contract = resolveInForceContract(
+        opts.supplierContracts ?? [],
+        products,
+        p.preferredSupplierId,
+        p.id,
+        asOf,
+        { variationId: slot.variationId }
+      );
+      if (contract) {
+        const head = contractHeadroomQty(contract, suggestedQty, contract.rate);
+        if (head.exhausted) {
+          blockers.push("contract_exhausted");
+          suggestedQty = 0;
+        } else if (head.capped) {
+          suggestedQty = head.qty;
+          contractCapped = true;
+        }
+      }
+    }
     const last = lastOutForLevel(
       lastOut,
       p.id,
@@ -718,7 +763,7 @@ export function stockAlerts(
       stock: slot.stock,
       stockSecondary: slot.stockSecondary,
       minStockLevel: slot.min,
-      suggestedQty: suggestion.suggestedQty,
+      suggestedQty,
       preferredSupplierId: p.preferredSupplierId,
       lastOutDate: last,
       daysSinceOut: daysSince(last, asOfMs),
@@ -727,6 +772,8 @@ export function stockAlerts(
       incomingQty: suggestion.incomingQty,
       committedQty: suggestion.committedQty,
       coverMode: suggestion.coverMode,
+      blockers: blockers.length ? blockers : undefined,
+      contractCapped: contractCapped || undefined,
     });
   };
 

@@ -36,7 +36,7 @@ export default function HrPunchPage() {
     .filter((p) => p.userId === session?.id)
     .sort((a, b) => b.at.localeCompare(a.at))[0];
 
-  const punch = async (kind: "in" | "out") => {
+  const punch = async (kind: "in" | "out", gpsFallback = false) => {
     if (!session) return;
     setBusy(true);
     setMsg("");
@@ -46,36 +46,51 @@ export default function HrPunchPage() {
         const up = await uploadMediaFile(selfie, "hr");
         photoUrl = up.url;
       }
-      const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
-        if (!navigator.geolocation) {
-          reject(new Error("Location not available"));
-          return;
-        }
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 20000,
-          maximumAge: 0,
+      let lat: number | undefined;
+      let lng: number | undefined;
+      let accuracyM: number | undefined;
+      if (!gpsFallback) {
+        const pos = await new Promise<GeolocationPosition>((resolve, reject) => {
+          if (!navigator.geolocation) {
+            reject(new Error("Location not available"));
+            return;
+          }
+          navigator.geolocation.getCurrentPosition(resolve, reject, {
+            enableHighAccuracy: true,
+            timeout: 20000,
+            maximumAge: 0,
+          });
         });
-      });
+        lat = pos.coords.latitude;
+        lng = pos.coords.longitude;
+        accuracyM = pos.coords.accuracy;
+      }
       const row = clockStaffPunch({
         userId: session.id,
         kind,
-        lat: pos.coords.latitude,
-        lng: pos.coords.longitude,
-        accuracyM: pos.coords.accuracy,
+        lat,
+        lng,
+        accuracyM,
         photoUrl,
         userAgent: navigator.userAgent.slice(0, 180),
+        gpsFallback,
       });
       setSelfie(null);
       setMsg(
-        row.insideFence
-          ? t("admin.hrInside")
-          : `${t("admin.hrOutside")}${row.weakGps ? ` · ${t("admin.hrWeakGps")}` : ""}`
+        gpsFallback || row.gpsFallback
+          ? t("admin.hrGpsFallbackSaved")
+          : row.insideFence
+            ? t("admin.hrInside")
+            : `${t("admin.hrOutside")}${row.weakGps ? ` · ${t("admin.hrWeakGps")}` : ""}`
       );
       refresh();
     } catch (err) {
       const raw = err instanceof Error ? err.message : "";
       if (raw.includes("Selfie required")) setMsg(t("admin.hrSelfieRequired"));
+      else if (raw.includes("Already clocked in")) setMsg(t("admin.hrDuplicateIn"));
+      else if (raw.includes("Already clocked out")) setMsg(t("admin.hrDuplicateOut"));
+      else if (raw.includes("Clock in before")) setMsg(t("admin.hrOutWithoutIn"));
+      else if (raw.includes("Payroll locked")) setMsg(t("admin.hrPayrollLocked"));
       else if (
         raw === "Location not available" ||
         /denied|timeout|unavailable/i.test(raw)
@@ -140,6 +155,26 @@ export default function HrPunchPage() {
         </button>
       </div>
       {msg ? <p className="mt-4 text-sm font-medium">{msg}</p> : null}
+      {msg === t("admin.hrNoLocation") ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="tt-btn tt-btn-outline"
+            disabled={busy}
+            onClick={() => void punch("in", true)}
+          >
+            {t("admin.hrGpsFallback")} · {t("admin.hrClockIn")}
+          </button>
+          <button
+            type="button"
+            className="tt-btn tt-btn-outline"
+            disabled={busy}
+            onClick={() => void punch("out", true)}
+          >
+            {t("admin.hrGpsFallback")} · {t("admin.hrClockOut")}
+          </button>
+        </div>
+      ) : null}
     </AdminShell>
   );
 }

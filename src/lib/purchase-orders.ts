@@ -35,3 +35,18 @@ export function confirmDraftPurchaseOrder<
   }
   return { ...po, status: "ordered" };
 }
+
+/** Cancel a draft PO. Throws if the PO is not a draft. */
+export function cancelDraftPurchaseOrder<
+  T extends { status: PurchaseOrder["status"] },
+>(po: T): T {
+  if (po.status !== "draft") {
+    throw new Error("Only draft purchase orders can be cancelled");
+  }
+  return { ...po, status: "cancelled" };
+}
+
+export function retotalPurchaseOrder<T extends PurchaseOrder>(po: T): T {
+  const total = po.lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+  return { ...po, total };
+}

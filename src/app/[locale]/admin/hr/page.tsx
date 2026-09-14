@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
@@ -11,13 +11,18 @@ import { NumberField } from "@/components/NumberField";
 import { ACCT } from "@/lib/accounting";
 import { useDb, useSession } from "@/lib/hooks";
 import {
-  canManageHr,
+  advanceExceedsNet,
+  buildHrPunch,
   computePayroll,
   dateInIst,
   dayAttendanceStatusKey,
   deriveDayAttendance,
+  ensureStaffHrTerms,
   inclusiveLeaveDays,
+  isActivePayslip,
+  isHrMonthLocked,
   isIssuedAdvance,
+  leaveHasOverlap,
   leaveOverlapsMonth,
   leaveQuotaBlocked,
   leaveQuotaRemaining,
@@ -32,10 +37,12 @@ import {
 } from "@/lib/hr-print";
 import { formatInr } from "@/lib/pricing";
 import {
+  checkCapability,
   isStaff as roleIsStaff,
   loadDb,
   recordExpense,
   saveDb,
+  voidVoucher,
 } from "@/lib/store/db";
 import type {
   HrAdvance,
@@ -74,9 +81,29 @@ export default function HrDeskPage() {
   const [advDraft, setAdvDraft] = useState<Record<string, string>>({});
   const [detailUserId, setDetailUserId] = useState<string | null>(null);
 
-  const ownerHr = canManageHr(session);
+  const ownerHr = checkCapability(session, db, "manage_hr");
   const allowed = session ? roleIsStaff(session.role) : false;
   const staff = (db?.users ?? []).filter((u) => u.role !== "customer" && u.active);
+
+  const persist = (mut: (d: NonNullable<typeof db>) => void) => {
+    const live = loadDb();
+    mut(live);
+    saveDb(live);
+    refresh();
+  };
+
+  useEffect(() => {
+    if (!ownerHr || !db) return;
+    const missing = staff.some(
+      (u) => !(db.hrTerms ?? []).some((t) => t.userId === u.id)
+    );
+    if (!missing) return;
+    persist((d) => {
+      ensureStaffHrTerms(d, staff);
+    });
+    // persist already refreshes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerHr, db, staff.length]);
 
   if (ready && !allowed) {
     return (
@@ -85,13 +112,6 @@ export default function HrDeskPage() {
       </AdminShell>
     );
   }
-
-  const persist = (mut: (d: NonNullable<typeof db>) => void) => {
-    const live = loadDb();
-    mut(live);
-    saveDb(live);
-    refresh();
-  };
 
   if (session && !ownerHr) {
     return (
@@ -173,6 +193,9 @@ export default function HrDeskPage() {
                   <th>{t("admin.hrCasual")}</th>
                   <th>{t("admin.hrSick")}</th>
                   <th>{t("admin.hrSelfieCol")}</th>
+                  <th>{t("admin.hrJoinDate")}</th>
+                  <th>{t("admin.hrHalfDayHours")}</th>
+                  <th>{t("admin.hrAssignedSites")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -318,6 +341,56 @@ export default function HrDeskPage() {
                           }
                         />
                       </td>
+                      <td>
+                        <input
+                          className="tt-input"
+                          type="date"
+                          value={terms?.joinDate || ""}
+                          onChange={(e) =>
+                            persist((d) =>
+                              upsertTerms(d, u.id, { joinDate: e.target.value })
+                            )
+                          }
+                        />
+                      </td>
+                      <td>
+                        <NumberField
+                          className="tt-input w-16"
+                          value={terms?.halfDayHours ?? ""}
+                          emptyAs={null}
+                          onValueChange={(v) =>
+                            persist((d) =>
+                              upsertTerms(d, u.id, {
+                                halfDayHours:
+                                  typeof v === "number" && v > 0 ? v : undefined,
+                              })
+                            )
+                          }
+                        />
+                      </td>
+                      <td>
+                        <select
+                          className="tt-input"
+                          multiple
+                          value={terms?.siteIds ?? []}
+                          onChange={(e) => {
+                            const ids = Array.from(e.target.selectedOptions).map(
+                              (o) => o.value
+                            );
+                            persist((d) =>
+                              upsertTerms(d, u.id, {
+                                siteIds: ids.length ? ids : undefined,
+                              })
+                            );
+                          }}
+                        >
+                          {(db?.hrSites ?? []).map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
                     </tr>
                   );
                 })}
@@ -394,6 +467,9 @@ export default function HrDeskPage() {
           db={db}
           detailUserId={detailUserId}
           onOpen={setDetailUserId}
+          persist={persist}
+          sessionId={session?.id || ""}
+          setMsg={setMsg}
         />
       ) : null}
 
@@ -410,8 +486,20 @@ export default function HrDeskPage() {
               setMsg(t("admin.hrLeaveQuota"));
               return;
             }
+            if (leaveHasOverlap(db?.hrLeaves ?? [], row)) {
+              setMsg(t("admin.hrLeaveOverlap"));
+              return;
+            }
             persist((d) => {
-              d.hrLeaves = [row, ...(d.hrLeaves ?? [])];
+              d.hrLeaves = [
+                {
+                  ...row,
+                  status: "approved",
+                  decidedBy: session?.id,
+                  decidedAt: new Date().toISOString(),
+                },
+                ...(d.hrLeaves ?? []),
+              ];
             });
           }}
           onDecide={(id, status, rejectReason) =>
@@ -431,6 +519,20 @@ export default function HrDeskPage() {
                       ...l,
                       status,
                       rejectReason: status === "rejected" ? rejectReason : undefined,
+                      decidedBy: session?.id,
+                      decidedAt: new Date().toISOString(),
+                    }
+                  : l
+              );
+            })
+          }
+          onCancel={(id) =>
+            persist((d) => {
+              d.hrLeaves = (d.hrLeaves ?? []).map((l) =>
+                l.id === id
+                  ? {
+                      ...l,
+                      status: "cancelled",
                       decidedBy: session?.id,
                       decidedAt: new Date().toISOString(),
                     }
@@ -464,12 +566,18 @@ function OwnerAttendance({
   db,
   detailUserId,
   onOpen,
+  persist,
+  sessionId,
+  setMsg,
 }: {
   month: string;
   staff: { id: string; name: string }[];
   db: ReturnType<typeof loadDb> | null;
   detailUserId: string | null;
   onOpen: (id: string | null) => void;
+  persist: (mut: (d: NonNullable<ReturnType<typeof loadDb>>) => void) => void;
+  sessionId: string;
+  setMsg: (s: string) => void;
 }) {
   const t = useTranslations();
   if (!staff.length) {
@@ -504,6 +612,7 @@ function OwnerAttendance({
                 <th>{t("admin.hrOtShort")}</th>
                 <th>{t("admin.hrStatus")}</th>
                 <th>{t("admin.hrSelfieCol")}</th>
+                <th className="print:hidden">{t("admin.hrCorrectPunch")}</th>
               </tr>
             </thead>
             <tbody>
@@ -535,6 +644,16 @@ function OwnerAttendance({
                       ) : (
                         "—"
                       )}
+                    </td>
+                    <td className="print:hidden">
+                      <OwnerPunchCorrect
+                        userId={detail.id}
+                        date={date}
+                        sessionId={sessionId}
+                        db={db}
+                        persist={persist}
+                        setMsg={setMsg}
+                      />
                     </td>
                   </tr>
                 );
@@ -574,6 +693,13 @@ function OwnerAttendance({
         >
           {t("admin.hrPdfRegister")}
         </button>
+        <button
+          type="button"
+          className="tt-btn tt-btn-outline"
+          onClick={() => downloadAttendanceCsv(month, staff, db, t)}
+        >
+          {t("admin.hrCsvAttendance")}
+        </button>
       </div>
       <div className="tt-panel tt-acct-table-wrap">
         <table className="tt-table">
@@ -587,6 +713,8 @@ function OwnerAttendance({
               <th>{t("admin.hrMissingOut")}</th>
               <th>{t("admin.hrOutsideFence")}</th>
               <th>{t("admin.hrWeakGps")}</th>
+              <th>{t("admin.hrAbsent")}</th>
+              <th>{t("admin.hrPaidLeave")}</th>
             </tr>
           </thead>
           <tbody>
@@ -601,6 +729,8 @@ function OwnerAttendance({
               let outside = 0;
               let weak = 0;
               let minutes = 0;
+              let absent = 0;
+              let paidLeave = 0;
               for (const date of dates) {
                 const att = deriveDayAttendance(
                   db?.hrPunches ?? [],
@@ -609,6 +739,15 @@ function OwnerAttendance({
                   shift,
                   terms?.halfDayHours
                 );
+                const onLeave = (db?.hrLeaves ?? []).some(
+                  (l) =>
+                    l.userId === u.id &&
+                    l.status === "approved" &&
+                    (l.kind === "casual" || l.kind === "sick") &&
+                    date >= l.from &&
+                    date <= l.to
+                );
+                if (onLeave) paidLeave += 1;
                 if (att.present) present += 1;
                 if (att.half) half += 1;
                 if (att.late) late += 1;
@@ -616,6 +755,7 @@ function OwnerAttendance({
                 if (att.outsideFence) outside += 1;
                 if (att.weakGps) weak += 1;
                 minutes += att.workedMinutes;
+                if (!att.present && !att.half && !onLeave) absent += 1;
               }
               return (
                 <tr
@@ -631,6 +771,8 @@ function OwnerAttendance({
                   <td>{missing}</td>
                   <td>{outside}</td>
                   <td>{weak}</td>
+                  <td>{absent}</td>
+                  <td>{paidLeave}</td>
                 </tr>
               );
             })}
@@ -678,19 +820,23 @@ function OwnerPay({
         advances: (db?.hrAdvances ?? []).filter((a) => a.userId === u.id),
       });
       const existing = (db?.hrPayslips ?? []).find(
+        (p) => p.userId === u.id && p.month === month && isActivePayslip(p)
+      );
+      const slips = (db?.hrPayslips ?? []).filter(
         (p) => p.userId === u.id && p.month === month
       );
       const pending = (db?.hrAdvances ?? []).filter(
         (a) => a.userId === u.id && a.status === "pending"
       );
-      return { u, terms, pay, existing, pending };
+      return { u, terms, pay, existing, pending, slips };
     })
     .filter(Boolean) as {
     u: { id: string; name: string };
     terms: HrTerms;
     pay: ReturnType<typeof computePayroll>;
-    existing?: { id: string };
+    existing?: { id: string; expenseVoucherId?: string };
     pending: HrAdvance[];
+    slips: { id: string; net: number; voided?: boolean; expenseVoucherId?: string; createdAt: string }[];
   }[];
 
   if (!cards.length) {
@@ -699,7 +845,7 @@ function OwnerPay({
 
   return (
     <div className="mt-4 space-y-3">
-      {cards.map(({ u, pay, existing, pending }) => (
+      {cards.map(({ u, pay, existing, pending, slips }) => (
         <div
           key={u.id}
           className={`tt-panel p-4 print:break-after-page ${printTarget && printTarget !== u.id ? "print:hidden" : ""}`}
@@ -748,6 +894,10 @@ function OwnerPay({
                     className="tt-btn tt-btn-dark"
                     onClick={() =>
                       persist((d) => {
+                        if (advanceExceedsNet(a.amount, pay.net + a.amount)) {
+                          setMsg(t("admin.hrAdvanceCap"));
+                          return;
+                        }
                         d.hrAdvances = (d.hrAdvances ?? []).map((x) =>
                           x.id === a.id
                             ? {
@@ -804,6 +954,10 @@ function OwnerPay({
               onClick={() => {
                 const amt = Number(advDraft[u.id] || 0);
                 if (!sessionId || !(amt > 0)) return;
+                if (advanceExceedsNet(amt, pay.net)) {
+                  setMsg(t("admin.hrAdvanceCap"));
+                  return;
+                }
                 persist((d) => {
                   d.hrAdvances = [
                     {
@@ -829,12 +983,31 @@ function OwnerPay({
               disabled={!!existing}
               onClick={() => {
                 if (!sessionId || existing) return;
+                let expenseVoucherId: string | undefined;
+                if (pay.net > 0) {
+                  try {
+                    const v = recordExpense({
+                      accountId: ACCT.salary,
+                      amount: pay.net,
+                      date: `${month}-28`,
+                      cashAccountId: ACCT.cash,
+                      narration: `Payslip ${month} ${u.name}`,
+                      createdBy: sessionId,
+                    });
+                    expenseVoucherId = v.id;
+                  } catch (err) {
+                    setMsg(
+                      err instanceof Error ? err.message : t("admin.hrPayslipExpenseSkip")
+                    );
+                  }
+                }
                 persist((d) => {
                   const slip = {
                     id: `ps_${crypto.randomUUID()}`,
                     userId: u.id,
                     month,
                     ...pay,
+                    expenseVoucherId,
                     createdAt: new Date().toISOString(),
                     createdBy: sessionId,
                   };
@@ -845,28 +1018,40 @@ function OwnerPay({
                     }
                   }
                 });
-                if (pay.net > 0) {
-                  try {
-                    recordExpense({
-                      accountId: ACCT.salary,
-                      amount: pay.net,
-                      date: `${month}-28`,
-                      cashAccountId: ACCT.cash,
-                      narration: `Payslip ${month} ${u.name}`,
-                      createdBy: sessionId,
-                    });
-                    refresh();
-                  } catch (err) {
-                    setMsg(
-                      err instanceof Error ? err.message : t("admin.hrPayslipExpenseSkip")
-                    );
-                  }
-                }
                 setMsg(`${t("admin.hrPayslipSaved")} ${u.name} ${month}`);
               }}
             >
               {t("admin.hrIssuePayslip")}
             </button>
+            {existing ? (
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline"
+                onClick={() => {
+                  persist((d) => {
+                    const slip = (d.hrPayslips ?? []).find((p) => p.id === existing.id);
+                    if (!slip || slip.voided) return;
+                    slip.voided = true;
+                    slip.voidedAt = new Date().toISOString();
+                    slip.voidedBy = sessionId;
+                    for (const a of d.hrAdvances ?? []) {
+                      if (a.payslipId === slip.id) a.payslipId = undefined;
+                    }
+                  });
+                  if (existing.expenseVoucherId) {
+                    try {
+                      voidVoucher(existing.expenseVoucherId, sessionId);
+                    } catch {
+                      /* already voided */
+                    }
+                  }
+                  refresh();
+                  setMsg(t("admin.hrPayslipVoided"));
+                }}
+              >
+                {t("admin.hrVoidPayslip")}
+              </button>
+            ) : null}
             <button
               type="button"
               className="tt-btn tt-btn-outline"
@@ -892,6 +1077,20 @@ function OwnerPay({
               {t("admin.hrPdfPayslip")}
             </button>
           </div>
+          {slips.length ? (
+            <ul className="mt-3 space-y-1 text-xs print:hidden">
+              <li className="font-semibold">{t("admin.hrIssuedPayslips")}</li>
+              {slips.map((s) => (
+                <li key={s.id}>
+                  {s.createdAt.slice(0, 10)} · {formatInr(s.net)}
+                  {s.voided ? ` · ${t("admin.hrPayslipVoided")}` : ""}
+                  {s.expenseVoucherId && !s.voided
+                    ? ` · ${t("admin.hrExpenseVoucher")} ${s.expenseVoucherId.slice(-6)}`
+                    : ""}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
       ))}
     </div>
@@ -1138,6 +1337,10 @@ function StaffSelfHr({
                 setLeaveMsg(t("admin.hrLeaveQuota"));
                 return;
               }
+              if (leaveHasOverlap(leaves, { ...row, userId: sessionId })) {
+                setLeaveMsg(t("admin.hrLeaveOverlap"));
+                return;
+              }
               persist((d) => {
                 d.hrLeaves = [
                   { ...row, userId: sessionId, status: "pending" },
@@ -1146,6 +1349,15 @@ function StaffSelfHr({
               });
             }}
             onDecide={() => undefined}
+            onCancel={(id) =>
+              persist((d) => {
+                d.hrLeaves = (d.hrLeaves ?? []).map((l) =>
+                  l.id === id && l.userId === sessionId && l.status === "pending"
+                    ? { ...l, status: "cancelled" }
+                    : l
+                );
+              })
+            }
           />
         </div>
       ) : null}
@@ -1362,6 +1574,7 @@ function LeavePanel({
   canDecide = true,
   onSave,
   onDecide,
+  onCancel,
 }: {
   staff: { id: string; name: string }[];
   leaves: HrLeave[];
@@ -1371,6 +1584,7 @@ function LeavePanel({
   canDecide?: boolean;
   onSave: (row: HrLeave) => void;
   onDecide: (id: string, status: "approved" | "rejected", rejectReason?: string) => void;
+  onCancel?: (id: string) => void;
 }) {
   const t = useTranslations();
   const [userId, setUserId] = useState(lockUserId || staff[0]?.id || "");
@@ -1378,7 +1592,7 @@ function LeavePanel({
   const [from, setFrom] = useState(new Date().toISOString().slice(0, 10));
   const [to, setTo] = useState(from);
   const [reason, setReason] = useState("");
-  const [rejectNote, setRejectNote] = useState("");
+  const [rejectNotes, setRejectNotes] = useState<Record<string, string>>({});
   const targetId = lockUserId || userId;
   const year = from.slice(0, 4);
   const personTerms = terms.find((x) => x.userId === targetId);
@@ -1465,7 +1679,9 @@ function LeavePanel({
                   ? t("admin.hrLeaveApproved")
                   : l.status === "rejected"
                     ? t("admin.hrLeaveRejected")
-                    : t("admin.hrLeavePending")}
+                    : l.status === "cancelled"
+                      ? t("admin.hrLeaveCancelled")
+                      : t("admin.hrLeavePending")}
                 {l.reason ? ` · ${l.reason}` : ""}
                 {l.rejectReason ? ` · ${l.rejectReason}` : ""}
               </span>
@@ -1474,8 +1690,10 @@ function LeavePanel({
                   <input
                     className="tt-input"
                     placeholder={t("admin.hrRejectReason")}
-                    value={rejectNote}
-                    onChange={(e) => setRejectNote(e.target.value)}
+                    value={rejectNotes[l.id] ?? ""}
+                    onChange={(e) =>
+                      setRejectNotes((cur) => ({ ...cur, [l.id]: e.target.value }))
+                    }
                   />
                   <button
                     type="button"
@@ -1487,11 +1705,22 @@ function LeavePanel({
                   <button
                     type="button"
                     className="tt-btn tt-btn-outline"
-                    onClick={() => onDecide(l.id, "rejected", rejectNote.trim() || undefined)}
+                    onClick={() =>
+                      onDecide(l.id, "rejected", rejectNotes[l.id]?.trim() || undefined)
+                    }
                   >
                     {t("admin.hrReject")}
                   </button>
                 </span>
+              ) : null}
+              {onCancel && (l.status === "pending" || (canDecide && l.status === "approved")) ? (
+                <button
+                  type="button"
+                  className="tt-btn tt-btn-outline"
+                  onClick={() => onCancel(l.id)}
+                >
+                  {t("admin.hrCancelLeave")}
+                </button>
               ) : null}
             </li>
           ))}
@@ -1501,4 +1730,167 @@ function LeavePanel({
       )}
     </div>
   );
+}
+
+function OwnerPunchCorrect({
+  userId,
+  date,
+  sessionId,
+  db,
+  persist,
+  setMsg,
+}: {
+  userId: string;
+  date: string;
+  sessionId: string;
+  db: ReturnType<typeof loadDb> | null;
+  persist: (mut: (d: NonNullable<ReturnType<typeof loadDb>>) => void) => void;
+  setMsg: (s: string) => void;
+}) {
+  const t = useTranslations();
+  const [kind, setKind] = useState<"in" | "out">("in");
+  const [time, setTime] = useState("09:00");
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      <select
+        className="tt-input"
+        value={kind}
+        onChange={(e) => setKind(e.target.value as "in" | "out")}
+      >
+        <option value="in">{t("admin.hrClockIn")}</option>
+        <option value="out">{t("admin.hrClockOut")}</option>
+      </select>
+      <input
+        className="tt-input w-24"
+        type="time"
+        value={time}
+        onChange={(e) => setTime(e.target.value)}
+      />
+      <button
+        type="button"
+        className="text-xs font-semibold underline"
+        onClick={() => {
+          if (
+            isHrMonthLocked({
+              month: date.slice(0, 7),
+              userId,
+              audits: db?.monthlyAudits,
+              payslips: db?.hrPayslips,
+            })
+          ) {
+            setMsg(t("admin.hrPayrollLocked"));
+            return;
+          }
+          const at = new Date(`${date}T${time}:00+05:30`).toISOString();
+          persist((d) => {
+            d.hrPunches = (d.hrPunches ?? []).filter(
+              (p) =>
+                !(
+                  p.userId === userId &&
+                  dateInIst(p.at) === date &&
+                  p.kind === kind
+                )
+            );
+            d.hrPunches = [
+              buildHrPunch({
+                userId,
+                kind,
+                at,
+                sites: d.hrSites ?? [],
+                gpsFallback: true,
+                correctedBy: sessionId,
+              }),
+              ...(d.hrPunches ?? []),
+            ];
+          });
+        }}
+      >
+        {t("common.save")}
+      </button>
+    </span>
+  );
+}
+
+function downloadAttendanceCsv(
+  month: string,
+  staff: { id: string; name: string }[],
+  db: ReturnType<typeof loadDb> | null,
+  t: ReturnType<typeof useTranslations>
+) {
+  const dates = monthDateList(month);
+  const rows: (string | number)[][] = [
+    [
+      t("admin.hrStaff"),
+      t("admin.hrPresent"),
+      t("admin.hrHalf"),
+      t("admin.hrHours"),
+      t("admin.hrLate"),
+      t("admin.hrMissingOut"),
+      t("admin.hrOutsideFence"),
+      t("admin.hrWeakGps"),
+      t("admin.hrAbsent"),
+      t("admin.hrPaidLeave"),
+    ],
+  ];
+  for (const u of staff) {
+    const terms = (db?.hrTerms ?? []).find((x) => x.userId === u.id);
+    const shift = (db?.hrShifts ?? []).find((s) => s.id === terms?.shiftId);
+    let present = 0;
+    let half = 0;
+    let late = 0;
+    let missing = 0;
+    let outside = 0;
+    let weak = 0;
+    let minutes = 0;
+    let absent = 0;
+    let paidLeave = 0;
+    for (const date of dates) {
+      const att = deriveDayAttendance(
+        db?.hrPunches ?? [],
+        u.id,
+        date,
+        shift,
+        terms?.halfDayHours
+      );
+      const onLeave = (db?.hrLeaves ?? []).some(
+        (l) =>
+          l.userId === u.id &&
+          l.status === "approved" &&
+          (l.kind === "casual" || l.kind === "sick") &&
+          date >= l.from &&
+          date <= l.to
+      );
+      if (onLeave) paidLeave += 1;
+      if (att.present) present += 1;
+      if (att.half) half += 1;
+      if (att.late) late += 1;
+      if (att.missingOut) missing += 1;
+      if (att.outsideFence) outside += 1;
+      if (att.weakGps) weak += 1;
+      minutes += att.workedMinutes;
+      if (!att.present && !att.half && !onLeave) absent += 1;
+    }
+    rows.push([
+      u.name,
+      present,
+      half,
+      (minutes / 60).toFixed(1),
+      late,
+      missing,
+      outside,
+      weak,
+      absent,
+      paidLeave,
+    ]);
+  }
+  const csv = rows
+    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `attendance-${month}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }

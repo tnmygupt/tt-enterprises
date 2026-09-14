@@ -124,4 +124,54 @@ describe("buildDraftPosFromAlerts", () => {
     });
     expect(created[0]?.narration).toBe("Auto reorder (velocity)");
   });
+
+  it("merges into an existing draft PO for the same supplier", () => {
+    const draftPo: PurchaseOrder = {
+      id: "po_draft",
+      number: "PO-1002",
+      supplierId: "s1",
+      date: "2026-07-01",
+      status: "draft",
+      lines: [
+        {
+          id: "l1",
+          productId: "p1",
+          itemLabel: "HDPE",
+          qty: 2,
+          rate: 10,
+          amount: 20,
+          receivedQty: 0,
+          billedQty: 0,
+        },
+      ],
+      total: 20,
+      createdAt: "2026-07-01T00:00:00.000Z",
+      createdBy: "u1",
+    };
+    const store = db({ purchaseOrders: [draftPo] });
+    const touched = buildDraftPosFromAlerts(store, "cron", {
+      rows: [alert({ suggestedQty: 4, coverMode: "min" })],
+      asOf: "2026-07-15",
+    });
+    expect(touched).toHaveLength(1);
+    expect(touched[0]?.id).toBe("po_draft");
+    expect(store.purchaseOrders).toHaveLength(1);
+    expect(touched[0]?.lines).toHaveLength(1);
+    expect(touched[0]?.lines[0]?.qty).toBe(6);
+    expect(touched[0]?.lines[0]?.rate).toBe(10);
+  });
+
+  it("skips missing-supplier blockers instead of creating a PO", () => {
+    const created = buildDraftPosFromAlerts(db(), "cron", {
+      rows: [
+        alert({
+          preferredSupplierId: undefined,
+          blockers: ["missing_supplier"],
+          suggestedQty: 8,
+        }),
+      ],
+      asOf: "2026-07-15",
+    });
+    expect(created).toHaveLength(0);
+  });
 });

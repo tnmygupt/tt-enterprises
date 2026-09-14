@@ -7,6 +7,7 @@ import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { sanitizeDbForCloud } from "@/lib/supabase/sanitize";
 import { tombsFromDb, userBeatsTomb } from "@/lib/user-tombs";
 import { notifyDealerReviewServer } from "@/lib/server/whatsapp-notify";
+import { ensureStaffHrTerms } from "@/lib/hr";
 import type { Capability, UserProfile, UserRole } from "@/lib/types";
 
 function normalizePhone(phone: string): string {
@@ -228,6 +229,9 @@ export async function POST(req: NextRequest) {
     }
 
     db.users.push(user);
+    if (kind === "staff") {
+      ensureStaffHrTerms(db, db.users);
+    }
     // Clear tombstone if this phone/id was previously force-deleted
     if (db.deletedUserIds?.length) {
       db.deletedUserIds = db.deletedUserIds.filter((id) => id !== user.id);

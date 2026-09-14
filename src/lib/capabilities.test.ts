@@ -68,9 +68,9 @@ describe("effectiveCapabilities", () => {
     const user = { role: "sales" as const, jobId: "job_2" };
     const caps = effectiveCapabilities(user, { staffJobs: [job] });
     expect(caps).toContain("manage_products");
+    expect(caps).toContain("manage_hr");
     expect(caps).not.toContain("manage_users");
     expect(caps).not.toContain("view_financials");
-    expect(caps).not.toContain("manage_hr");
     expect(
       userHasCapability(user, "manage_users", { staffJobs: [job] })
     ).toBe(false);
@@ -145,7 +145,7 @@ describe("sanitize helpers", () => {
       baseRole: "sales",
       extraCapabilities: ["manage_users", "manage_hr", "manage_products"] as Capability[],
     });
-    expect(job?.extraCapabilities).toEqual(["manage_products"]);
+    expect(job?.extraCapabilities).toEqual(["manage_hr", "manage_products"]);
   });
 
   it("strips owner-only caps from role presets", () => {
@@ -157,11 +157,11 @@ describe("sanitize helpers", () => {
 });
 
 describe("canManageHr", () => {
-  it("cannot be granted on a staff job or preset", () => {
-    expect(OWNER_ONLY_CAPABILITIES).toContain("manage_hr");
+  it("is grantable to staff, unlike owner-only financials", () => {
+    expect(OWNER_ONLY_CAPABILITIES).not.toContain("manage_hr");
   });
 
-  it("is owner-only even if another role has leftover manage_hr", () => {
+  it("follows the manage_hr capability", () => {
     expect(canManageHr({ role: "super_admin" })).toBe(true);
     expect(canManageHr({ role: "accounts" })).toBe(false);
     expect(canManageHr({ role: "sales" })).toBe(false);
@@ -170,6 +170,6 @@ describe("canManageHr", () => {
         role: "accounts",
         extraCapabilities: ["manage_hr"],
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 });
