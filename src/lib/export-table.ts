@@ -64,3 +64,72 @@ export async function exportTableExcel(
   anchor.click();
   URL.revokeObjectURL(url);
 }
+
+export type ExcelSheet = {
+  name: string;
+  title?: string;
+  subtitle?: string;
+  columns: string[];
+  rows: PdfCell[][];
+  foot?: PdfCell[];
+};
+
+export type ExportWorkbookOptions = {
+  filename: string;
+  companyName?: string;
+  company?: PdfCompany;
+  sheets: ExcelSheet[];
+};
+
+function safeSheetName(name: string, used: Set<string>): string {
+  const cleaned = name.replace(/[\\/?*[\]:]/g, " ").slice(0, 31).trim() || "Sheet";
+  let next = cleaned;
+  let n = 2;
+  while (used.has(next.toLowerCase())) {
+    const suffix = ` ${n}`;
+    next = `${cleaned.slice(0, 31 - suffix.length)}${suffix}`;
+    n += 1;
+  }
+  used.add(next.toLowerCase());
+  return next;
+}
+
+/** Multi-sheet workbook — one worksheet per report section. */
+export async function exportWorkbookExcel(
+  options: ExportWorkbookOptions
+): Promise<void> {
+  const ExcelJS = (await import("exceljs")).default;
+  const workbook = new ExcelJS.Workbook();
+  const used = new Set<string>();
+  const company = options.company?.name || options.companyName || "T T Enterprises";
+
+  for (const sheet of options.sheets) {
+    const worksheet = workbook.addWorksheet(safeSheetName(sheet.name, used));
+    const sheetRows: PdfCell[][] = [[company]];
+    if (sheet.title) sheetRows.push([sheet.title]);
+    if (sheet.subtitle) sheetRows.push([sheet.subtitle]);
+    sheetRows.push([]);
+    sheetRows.push(sheet.columns);
+    for (const row of sheet.rows) sheetRows.push(row);
+    if (sheet.foot) sheetRows.push(sheet.foot);
+    for (const row of sheetRows) {
+      worksheet.addRow(row.map((c) => (c == null ? "" : c)));
+    }
+  }
+
+  const base = options.filename.replace(/[^\w.-]+/g, "_");
+  const name = base.toLowerCase().endsWith(".xlsx")
+    ? base
+    : `${base.replace(/\.pdf$/i, "")}.xlsx`;
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}

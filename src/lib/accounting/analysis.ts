@@ -1,4 +1,5 @@
 import type {
+  Account,
   AppSettings,
   BatchConsumption,
   CategoryDef,
@@ -13,9 +14,8 @@ import type {
 import { stockMatrixKey } from "../inventory";
 import { poLineRemaining } from "../purchase-orders";
 import { roundMoney } from "../pricing";
-import { ACCT } from "./seed";
+import { ACCT, isCashBankAccount } from "./seed";
 import { accountBalance } from "./engine";
-import type { Account } from "../types";
 
 export type AggRow = {
   key: string;
@@ -867,6 +867,39 @@ export type CashFlowSection = {
   total: number;
 };
 
+const CURRENT_ASSET_IDS = new Set<string>([
+  ACCT.cash,
+  ACCT.bank,
+  ACCT.debtors,
+  ACCT.inventory,
+  ACCT.taxInput,
+]);
+
+/** Non-current asset (plant, vehicle, furniture, etc.) — cash against these is investing. */
+export function isInvestingAccount(account: Account | undefined): boolean {
+  if (!account || account.type !== "asset") return false;
+  if (isCashBankAccount(account)) return false;
+  if (CURRENT_ASSET_IDS.has(account.id)) return false;
+  return true;
+}
+
+function voucherTouchesInvesting(
+  voucher: Voucher,
+  accountsById: Map<string, Account>,
+  entries: LedgerEntry[]
+): boolean {
+  for (const line of voucher.lines) {
+    if (line.accountId && isInvestingAccount(accountsById.get(line.accountId))) {
+      return true;
+    }
+  }
+  for (const e of entries) {
+    if (e.voided || e.voucherId !== voucher.id) continue;
+    if (isInvestingAccount(accountsById.get(e.accountId))) return true;
+  }
+  return false;
+}
+
 /** Simple cash-flow from cash+bank ledger movements in period. */
 export function cashFlowStatement(
   accounts: Account[],
@@ -883,8 +916,12 @@ export function cashFlowStatement(
   netChange: number;
 } {
   const cashIds = new Set<string>([ACCT.cash, ACCT.bank]);
+  for (const a of accounts) {
+    if (isCashBankAccount(a)) cashIds.add(a.id);
+  }
   const cash = accounts.find((a) => a.id === ACCT.cash);
   const bank = accounts.find((a) => a.id === ACCT.bank);
+  const accountsById = new Map(accounts.map((a) => [a.id, a]));
   const dayBefore = (() => {
     const d = new Date(from.slice(0, 10) + "T00:00:00");
     d.setDate(d.getDate() - 1);
@@ -911,6 +948,8 @@ export function cashFlowStatement(
   let otherOut = 0;
   let capitalIn = 0;
   let capitalOut = 0;
+  let investIn = 0;
+  let investOut = 0;
 
   for (const e of entries) {
     if (e.voided || !cashIds.has(e.accountId)) continue;
@@ -922,6 +961,12 @@ export function cashFlowStatement(
       else otherOut += Math.abs(net);
       continue;
     }
+    const investing = voucherTouchesInvesting(v, accountsById, entries);
+    if (investing) {
+      if (net > 0) investIn += net;
+      else investOut += Math.abs(net);
+      continue;
+    }
     if (v.type === "receipt") receipts += net > 0 ? net : 0;
     else if (v.type === "payment") {
       if (v.lines[0]?.accountId && v.lines[0].accountId !== ACCT.creditors) {
@@ -930,7 +975,6 @@ export function cashFlowStatement(
         supplierPay += Math.abs(net);
       }
     } else if (v.type === "journal") {
-      // Classify vs capital
       const touchesCapital = v.lines.some((l) => l.accountId === ACCT.capital);
       if (touchesCapital) {
         if (net > 0) capitalIn += net;
@@ -947,6 +991,10 @@ export function cashFlowStatement(
     { label: "Operating expenses", amount: roundMoney(-expenses) },
     { label: "Other operating", amount: roundMoney(otherIn - otherOut) },
   ];
+  const investingRows = [
+    { label: "Sale of assets", amount: roundMoney(investIn) },
+    { label: "Purchase of assets", amount: roundMoney(-investOut) },
+  ];
   const financingRows = [
     { label: "Capital / owner in", amount: roundMoney(capitalIn) },
     { label: "Capital / owner out", amount: roundMoney(-capitalOut) },
@@ -962,8 +1010,8 @@ export function cashFlowStatement(
   };
   const investing: CashFlowSection = {
     label: "Investing",
-    rows: [{ label: "—", amount: 0 }],
-    total: 0,
+    rows: investingRows,
+    total: sum(investingRows),
   };
   const financing: CashFlowSection = {
     label: "Financing",

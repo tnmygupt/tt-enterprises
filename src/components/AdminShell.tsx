@@ -76,12 +76,12 @@ const GROUPS: NavGroup[] = [
       {
         href: "/admin/owner",
         labelKey: "admin.ownerTracking",
-        superOnly: true,
+        cap: "view_financials",
       },
       {
         href: "/admin/owner/monthly-audit",
         labelKey: "admin.monthlyAudit",
-        superOnly: true,
+        cap: "view_financials",
       },
       {
         href: "/admin/audit",

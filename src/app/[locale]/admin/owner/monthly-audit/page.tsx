@@ -3,6 +3,7 @@
 import { Suspense, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
+import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsEmpty } from "@/components/AccountsEmpty";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
@@ -12,7 +13,7 @@ import { exportMonthlyAuditPdf, printAuditPage } from "@/lib/audit-print";
 import { useDb, useSession } from "@/lib/hooks";
 import { buildMonthlyAuditReport, type MonthCloseBlocker } from "@/lib/owner-monthly-audit";
 import { formatInr } from "@/lib/pricing";
-import { canViewFinancials, loadDb, saveDb } from "@/lib/store/db";
+import { checkCapability, loadDb, saveDb } from "@/lib/store/db";
 
 function blockerLabel(
   t: ReturnType<typeof useTranslations>,
@@ -37,7 +38,7 @@ function AuditInner() {
     [db, month]
   );
 
-  if (ready && (!session || !canViewFinancials(session.role))) {
+  if (ready && (!session || !checkCapability(session, db, "view_financials"))) {
     return (
       <AdminShell>
         <AdminAccessDenied />
@@ -54,7 +55,13 @@ function AuditInner() {
         backLabel={t("admin.auditHub")}
         actions={
           <>
-            <input
+          <Link
+            href={`/admin/owner#audit`}
+            className="tt-btn tt-btn-outline"
+          >
+            {locale === "hi" ? "कॉकपिट" : "Cockpit"}
+          </Link>
+          <input
               className="tt-input"
               type="month"
               value={month}
