@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { StaffPermissionsPanel } from "@/components/admin/StaffPermissionsPanel";
 import {
@@ -61,9 +61,11 @@ export function PeopleJobsTab({
     rolePresetCapabilities("sales", db?.rolePresets)
   );
 
-  useEffect(() => {
+  const [syncedPresets, setSyncedPresets] = useState(db?.rolePresets);
+  if (db?.rolePresets !== syncedPresets) {
+    setSyncedPresets(db?.rolePresets);
     setDraft(presetsFromDb(db));
-  }, [db?.rolePresets]);
+  }
 
   const jobs = db?.staffJobs ?? [];
 

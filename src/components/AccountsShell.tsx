@@ -347,6 +347,8 @@ function AccountsShellFrame({
     const params = searchParams ?? new URLSearchParams();
     const href = canonicalHref(pathname, params);
     if (href === "/admin/accounts") return;
+    // Recording a visit is a real effect of navigating, not derived state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRecents((cur) => {
       const next = [href, ...cur.filter((h) => h !== href)].slice(0, RECENT_MAX);
       writeHrefs(RECENT_KEY, next);

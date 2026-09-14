@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 
 export type FilePickKind = "photo" | "photoOrPdf" | "media" | "qr";
@@ -146,23 +146,26 @@ export function FilePick({
   const [error, setError] = useState("");
   const selected = toList(value);
   const selectedKey = selected.map(fileKey).join("|");
-  const [previews, setPreviews] = useState<string[]>([]);
   const showCamera = camera ?? kind !== "media";
   const acceptAttr = accept || ACCEPT[kind];
   const locked = disabled || busy;
 
-  useEffect(() => {
-    const list = toList(value);
-    const urls = list.map((f) =>
+  const previews = useMemo(() => {
+    if (typeof window === "undefined") return [];
+    return toList(value).map((f) =>
       isImageFile(f) ? URL.createObjectURL(f) : ""
     );
-    setPreviews(urls);
-    return () => {
-      urls.forEach((u) => {
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKey, value]);
+
+  useEffect(
+    () => () => {
+      previews.forEach((u) => {
         if (u) URL.revokeObjectURL(u);
       });
-    };
-  }, [selectedKey, value]);
+    },
+    [previews]
+  );
 
   const chooseLabel =
     kind === "photo"

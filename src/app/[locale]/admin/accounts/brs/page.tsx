@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsEmpty } from "@/components/AccountsEmpty";
@@ -51,7 +51,9 @@ export default function BankReconPage() {
     );
   }, [db, accountId, asOf]);
 
-  useEffect(() => {
+  const [syncedRecon, setSyncedRecon] = useState<typeof saved>(undefined);
+  if (saved !== syncedRecon) {
+    setSyncedRecon(saved);
     if (saved) {
       setStatement(String(saved.statementBalance));
       setCleared(new Set(saved.clearedEntryIds));
@@ -63,7 +65,7 @@ export default function BankReconPage() {
       setExtras([]);
       setSessionId(undefined);
     }
-  }, [saved]);
+  }
 
   const summary = useMemo(() => {
     if (!db || !account) return null;

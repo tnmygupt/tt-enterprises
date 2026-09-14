@@ -157,15 +157,13 @@ export default function AdminUsersPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!session) return;
-    if (
-      !checkCapability(session, db, "manage_users") &&
-      tab !== "dealers"
-    ) {
-      setTab("dealers");
-    }
-  }, [session, db, tab]);
+  if (
+    session &&
+    !checkCapability(session, db, "manage_users") &&
+    tab !== "dealers"
+  ) {
+    setTab("dealers");
+  }
 
   const [form, setForm] = useState({
     name: "",
@@ -235,22 +233,28 @@ export default function AdminUsersPage() {
     );
   }, [db, viewingUser]);
 
-  useEffect(() => {
-    if (!viewingUser || viewingUser.role !== "customer") return;
-    setDealerEdit({
-      name: viewingUser.name || "",
-      phone: viewingUser.phone || "",
-      company: viewingUser.company || "",
-      address: viewingUser.address || "",
-      pincode: viewingUser.pincode || "",
-      gstOrAadhar: viewingUser.gstOrAadhar || "",
-      transport: viewingUser.transport || "",
-      creditLimit:
-        viewingParty?.creditLimit && viewingParty.creditLimit > 0
-          ? viewingParty.creditLimit
-          : "",
-    });
-  }, [viewingUser, viewingParty]);
+  const [syncedDealer, setSyncedDealer] = useState({
+    user: viewingUser,
+    party: viewingParty,
+  });
+  if (viewingUser !== syncedDealer.user || viewingParty !== syncedDealer.party) {
+    setSyncedDealer({ user: viewingUser, party: viewingParty });
+    if (viewingUser && viewingUser.role === "customer") {
+      setDealerEdit({
+        name: viewingUser.name || "",
+        phone: viewingUser.phone || "",
+        company: viewingUser.company || "",
+        address: viewingUser.address || "",
+        pincode: viewingUser.pincode || "",
+        gstOrAadhar: viewingUser.gstOrAadhar || "",
+        transport: viewingUser.transport || "",
+        creditLimit:
+          viewingParty?.creditLimit && viewingParty.creditLimit > 0
+            ? viewingParty.creditLimit
+            : "",
+      });
+    }
+  }
 
   const capCtx = capabilityContextFrom(db);
 

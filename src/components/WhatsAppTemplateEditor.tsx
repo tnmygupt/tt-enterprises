@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { AppSettings, Locale, WhatsAppTemplateKey } from "@/lib/types";
 import {
   WA_TEMPLATE_KEYS,
@@ -30,9 +30,11 @@ export function WhatsAppTemplateEditor({
   const [lang, setLang] = useState<Locale>(locale);
   const current = resolveWaTemplate(key, lang, settings);
   const [draft, setDraft] = useState(current);
-  useEffect(() => {
+  const [syncedTemplate, setSyncedTemplate] = useState(current);
+  if (current !== syncedTemplate) {
+    setSyncedTemplate(current);
     setDraft(current);
-  }, [current]);
+  }
 
   const preview = useMemo(
     () =>
