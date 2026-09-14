@@ -16,8 +16,9 @@ export default function HrPunchPage() {
   const { session, ready } = useSession();
   const { db, refresh } = useDb();
   const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busyKind, setBusyKind] = useState<"in" | "out" | null>(null);
   const [selfie, setSelfie] = useState<File | null>(null);
+  const locating = busyKind !== null;
 
   if (ready && (!session || !roleIsStaff(session.role))) {
     return (
@@ -37,8 +38,12 @@ export default function HrPunchPage() {
     .sort((a, b) => b.at.localeCompare(a.at))[0];
 
   const punch = async (kind: "in" | "out", gpsFallback = false) => {
-    if (!session) return;
-    setBusy(true);
+    if (!session || locating) return;
+    if (terms?.requireSelfie && !selfie) {
+      setMsg(t("admin.hrSelfieMissing"));
+      return;
+    }
+    setBusyKind(kind);
     setMsg("");
     try {
       let photoUrl: string | undefined;
@@ -57,8 +62,8 @@ export default function HrPunchPage() {
           }
           navigator.geolocation.getCurrentPosition(resolve, reject, {
             enableHighAccuracy: true,
-            timeout: 20000,
-            maximumAge: 0,
+            timeout: 8000,
+            maximumAge: 15000,
           });
         });
         lat = pos.coords.latitude;
@@ -98,7 +103,7 @@ export default function HrPunchPage() {
         setMsg(t("admin.hrNoLocation"));
       } else setMsg(t("admin.hrPunchFail"));
     } finally {
-      setBusy(false);
+      setBusyKind(null);
     }
   };
 
@@ -110,24 +115,24 @@ export default function HrPunchPage() {
         backHref="/admin/hr"
         backLabel={t("admin.hrDesk")}
       />
-      {att ? (
-        <p className="mt-3 text-sm">
+      <div className="tt-panel mt-4 max-w-md p-4">
+        <p className="tt-hr-section">{t("admin.hrPunchStatus")}</p>
+        <p className="text-sm">
           {today}
-          {att.inAt ? ` · ${t("admin.hrPunchInAt")} ${att.inAt.slice(11, 16)}` : ""}
-          {att.outAt ? ` · ${t("admin.hrPunchOutAt")} ${att.outAt.slice(11, 16)}` : ""}
-          {att.late ? ` · ${t("admin.hrLate")}` : ""}
+          {att?.inAt ? ` · ${t("admin.hrPunchInAt")} ${att.inAt.slice(11, 16)}` : ""}
+          {att?.outAt ? ` · ${t("admin.hrPunchOutAt")} ${att.outAt.slice(11, 16)}` : ""}
+          {att?.late ? ` · ${t("admin.hrLate")}` : ""}
         </p>
-      ) : null}
-      {last ? (
-        <p className="mt-1 text-xs text-[var(--ink-muted)]">
-          {t("admin.hrLastPunch")}:{" "}
-          {last.kind === "out" ? t("admin.hrClockOut") : t("admin.hrClockIn")}{" "}
-          {last.at.replace("T", " ").slice(0, 16)}{" "}
-          {last.insideFence ? t("admin.hrInside") : t("admin.hrOutside")}
-        </p>
-      ) : null}
-      <div className="mt-4 max-w-sm">
-        <p className="mb-1 text-sm font-medium">
+        {last ? (
+          <p className="mt-1 text-xs text-[var(--ink-muted)]">
+            {t("admin.hrLastPunch")}:{" "}
+            {last.kind === "out" ? t("admin.hrClockOut") : t("admin.hrClockIn")}{" "}
+            {last.at.replace("T", " ").slice(0, 16)}{" "}
+            {last.insideFence ? t("admin.hrInside") : t("admin.hrOutside")}
+          </p>
+        ) : null}
+
+        <p className="mb-1 mt-4 text-sm font-medium">
           {terms?.requireSelfie ? t("admin.hrSelfieRequired") : t("admin.hrSelfie")}
         </p>
         <FilePick
@@ -135,46 +140,56 @@ export default function HrPunchPage() {
           value={selfie}
           onChange={(files) => setSelfie(files[0] || null)}
         />
-      </div>
-      <div className="mt-6 grid max-w-md gap-3 sm:grid-cols-2">
-        <button
-          type="button"
-          className="tt-btn tt-btn-dark min-h-16 text-lg"
-          disabled={busy}
-          onClick={() => void punch("in")}
-        >
-          {busy ? t("admin.hrLocating") : t("admin.hrClockIn")}
-        </button>
-        <button
-          type="button"
-          className="tt-btn tt-btn-outline min-h-16 text-lg"
-          disabled={busy}
-          onClick={() => void punch("out")}
-        >
-          {t("admin.hrClockOut")}
-        </button>
-      </div>
-      {msg ? <p className="mt-4 text-sm font-medium">{msg}</p> : null}
-      {msg === t("admin.hrNoLocation") ? (
-        <div className="mt-3 flex flex-wrap gap-2">
+
+        {locating ? (
+          <p className="mt-4 text-sm font-medium" role="status">
+            {t("admin.hrLocatingBanner")}
+          </p>
+        ) : null}
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <button
             type="button"
-            className="tt-btn tt-btn-outline"
-            disabled={busy}
-            onClick={() => void punch("in", true)}
+            className="tt-btn tt-btn-dark min-h-16 text-lg"
+            disabled={locating}
+            onClick={() => void punch("in")}
           >
-            {t("admin.hrGpsFallback")} · {t("admin.hrClockIn")}
+            {busyKind === "in" ? t("admin.hrLocating") : t("admin.hrClockIn")}
           </button>
           <button
             type="button"
-            className="tt-btn tt-btn-outline"
-            disabled={busy}
-            onClick={() => void punch("out", true)}
+            className="tt-btn tt-btn-outline min-h-16 text-lg"
+            disabled={locating}
+            onClick={() => void punch("out")}
           >
-            {t("admin.hrGpsFallback")} · {t("admin.hrClockOut")}
+            {busyKind === "out" ? t("admin.hrLocating") : t("admin.hrClockOut")}
           </button>
         </div>
-      ) : null}
+
+        {msg ? <p className="mt-4 text-sm font-medium">{msg}</p> : null}
+
+        <div className="mt-4 rounded-xl border border-[var(--line)] bg-[var(--surface-2)] p-3">
+          <p className="text-xs text-[var(--ink-muted)]">{t("admin.hrGpsFallbackHint")}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              disabled={locating}
+              onClick={() => void punch("in", true)}
+            >
+              {t("admin.hrGpsFallback")} · {t("admin.hrClockIn")}
+            </button>
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              disabled={locating}
+              onClick={() => void punch("out", true)}
+            >
+              {t("admin.hrGpsFallback")} · {t("admin.hrClockOut")}
+            </button>
+          </div>
+        </div>
+      </div>
     </AdminShell>
   );
 }
