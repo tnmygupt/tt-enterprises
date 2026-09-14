@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
+import { isSessionAuthMessage } from "@/lib/sync-errors";
 
 type BannerState =
   | { kind: "none" }
@@ -26,7 +27,7 @@ export function ConnectionBanner() {
     const onSyncError = (e: Event) => {
       const detail = (e as CustomEvent<string>).detail;
       const text = typeof detail === "string" ? detail : "";
-      if (/log in again|login required|session invalid|account removed/i.test(text)) {
+      if (isSessionAuthMessage(text)) {
         setState({ kind: "session", detail: text });
         return;
       }

@@ -113,6 +113,7 @@ import {
   roundOffRupees,
 } from "../pricing";
 import { calcShippingAmount } from "@/lib/shipping";
+import { shouldRetrySessionCookieCheck } from "@/lib/sync-errors";
 import { buildDraftPosFromAlerts } from "@/lib/reorder-po";
 import { confirmDraftPurchaseOrder } from "@/lib/purchase-orders";
 import { placeEstimateOnDatabase } from "@/lib/place-estimate";
@@ -1053,6 +1054,28 @@ export async function syncSessionFromServer(): Promise<SessionUser | null> {
       return data.user;
     }
     if (res.status === 401) {
+      if (shouldRetrySessionCookieCheck(res.status, data.error, Boolean(getSession()))) {
+        await new Promise((r) => setTimeout(r, 300));
+        if (gen !== sessionSyncGen) return getSession();
+        const retry = await fetch("/api/account/login", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const retryData = (await retry.json().catch(() => ({}))) as {
+          user?: SessionUser | null;
+          error?: string;
+        };
+        if (gen !== sessionSyncGen) return getSession();
+        if (retry.ok && retryData.user) {
+          setSession(retryData.user);
+          return retryData.user;
+        }
+        if (retry.status === 401 && (retryData.error || getSession())) {
+          setSession(null);
+          return null;
+        }
+        return getSession();
+      }
       // Deleted / disabled account: always drop leftover local session.
       // Missing cookie (no error): also drop leftover local session so the
       // login form is visible — in-flight GETs after login are ignored via gen.
