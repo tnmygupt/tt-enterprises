@@ -255,6 +255,21 @@ export default function AccountsHomePage() {
     <AccountsShell>
       <AccountsPageHeader home title={t("homeTitle")} hint={t("homeHint")} />
 
+      <div className="tt-panel mt-3 p-4 text-sm">
+        <p className="font-semibold text-[var(--brand-deep)]">Which entry?</p>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-[var(--ink-muted)]">
+          <li>
+            Selling a dealer order: <Link href="/admin/orders/new" className="font-semibold text-[var(--brand)]">/admin/orders/new</Link> (F8). The sale voucher is a secondary path.
+          </li>
+          <li>
+            Stock in from a PO: <Link href="/admin/accounts/goods-received" className="font-semibold text-[var(--brand)]">GRN</Link> (F9), then bill.
+          </li>
+          <li>
+            Money in / out: receipt (F6) and payment (F5). Journal (F7) is for transfers, not sales.
+          </li>
+        </ul>
+      </div>
+
       {(stats?.posted ?? 0) === 0 ? (
         <div className="mt-3 rounded-lg border border-[var(--brand)] bg-[var(--brand-soft)] px-4 py-3">
           <p className="text-sm font-semibold text-[var(--brand-deep)]">

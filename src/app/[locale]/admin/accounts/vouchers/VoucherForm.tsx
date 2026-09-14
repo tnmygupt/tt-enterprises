@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
@@ -11,6 +11,7 @@ import {
 import { PackingSlipWeighmentGrid } from "@/components/PackingSlipWeighmentGrid";
 import { SearchSelect } from "@/components/SearchSelect";
 import { ACCT, SALE_CHARGE_PRESETS, allocateOldestFirst,
+  assertPeriodOpen,
   cashBankAccounts,
   openInvoicesForParty,
   partyBalance,
@@ -33,6 +34,8 @@ import {
   pickBestOrderDiscount,
   type ManualDiscountKind,
 } from "@/lib/schemes";
+import { matchVoucherFormHotkey } from "@/lib/accounts-hotkeys";
+import { assertPriorMonthAudited } from "@/lib/month-close-policy";
 import { attachPackingSlip, canViewFinancials, createVoucher } from "@/lib/store/db";
 import type { PackingSlip, PartyType, VoucherLine, VoucherType } from "@/lib/types";
 import { formatInr, isSqftUnit, ratePerPacket, ratePerPiece, resolveSqftPack, roundMoney, roundOffRupees, unitLabel } from "@/lib/pricing";
@@ -82,6 +85,22 @@ export function VoucherForm({
   const [saleSlip, setSaleSlip] = useState<PackingSlip | null>(null);
   const [discKind, setDiscKind] = useState<ManualDiscountKind | "">("");
   const [discValue, setDiscValue] = useState("");
+  const formRef = useRef<HTMLFormElement>(null);
+
+  const dateWarning = useMemo(() => {
+    if (!db || !date) return "";
+    try {
+      assertPeriodOpen(date, db.settings);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    try {
+      assertPriorMonthAudited(date, db);
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+    return "";
+  }, [db, date]);
 
   const lineIdentity = lines
     .map(
@@ -290,6 +309,24 @@ export function VoucherForm({
 
   const showPurchaseRates = session ? canViewFinancials(session.role) : false;
 
+  const addItemLine = () => setLines((prev) => [...prev, blankLine()]);
+  const removeLastLine = () =>
+    setLines((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev));
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const action = matchVoucherFormHotkey(e);
+      if (!action) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (action === "save") formRef.current?.requestSubmit();
+      if (action === "add-line") addItemLine();
+      if (action === "remove-line") removeLastLine();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!session || !db) return;
@@ -454,6 +491,7 @@ export function VoucherForm({
   return (
     <>
       <form
+        ref={formRef}
         onSubmit={onSubmit}
         className="tt-panel mt-5 space-y-5 p-5 sm:p-6"
       >
@@ -479,28 +517,35 @@ export function VoucherForm({
                 ? t("accounts.linkInvoice")
                 : t("accounts.linkPurchase")}
             </label>
-            <select
-              className="tt-select"
+            <SearchSelect
               value={linkedInvoiceId}
-              onChange={(e) => setLinkedInvoiceId(e.target.value)}
+              onChange={setLinkedInvoiceId}
               required
-            >
-              <option value="">{t("common.select")}</option>
-              {(db?.vouchers ?? [])
+              placeholder={
+                locale === "hi" ? "इनवॉइस खोजें…" : "Search invoice…"
+              }
+              options={(db?.vouchers ?? [])
                 .filter(
                   (v) =>
                     !v.voided &&
                     v.type === (type === "credit_note" ? "sale" : "purchase")
                 )
-                .map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.number} · {v.date}
-                    {type === "debit_note" && !showPurchaseRates
+                .map((v) => {
+                  const party =
+                    db?.parties.find((p) => p.id === v.partyId)?.name || "";
+                  const amt =
+                    type === "debit_note" && !showPurchaseRates
                       ? ""
-                      : ` · ${formatInr(v.total, locale)}`}
-                  </option>
-                ))}
-            </select>
+                      : formatInr(v.total, locale);
+                  return {
+                    value: v.id,
+                    label: [v.number, v.date, party, amt]
+                      .filter(Boolean)
+                      .join(" · "),
+                    searchText: `${v.number} ${v.date} ${party}`,
+                  };
+                })}
+            />
           </div>
         )}
 
@@ -514,6 +559,17 @@ export function VoucherForm({
               onChange={(e) => setDate(e.target.value)}
               required
             />
+            {dateWarning ? (
+              <p className="mt-1 text-xs font-medium text-[var(--danger)]">
+                {dateWarning}
+              </p>
+            ) : (
+              <p className="mt-1 text-[11px] text-[var(--ink-muted)]">
+                {locale === "hi"
+                  ? "Ctrl+S सेव · Ctrl+Enter लाइन · Alt+Delete हटाएँ"
+                  : "Ctrl+S save · Ctrl+Enter add line · Alt+Delete remove"}
+              </p>
+            )}
           </div>
           {type === "sale" || type === "purchase" ? (
             <div>
@@ -985,7 +1041,7 @@ export function VoucherForm({
               <button
                 type="button"
                 className="tt-btn tt-btn-outline"
-                onClick={() => setLines([...lines, blankLine()])}
+                onClick={addItemLine}
               >
                 + Add item
               </button>
