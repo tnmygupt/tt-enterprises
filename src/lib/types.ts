@@ -761,6 +761,8 @@ export interface AppSettings {
     hrMissPunchOn?: string;
     /** Last owner digest of GPS punches outside the fence. */
     hrFenceOn?: string;
+    /** Last owner monthly-audit reminder (YYYY-MM-DD). Daily cooldown. */
+    monthAuditOn?: string;
   };
   tallyLastSyncAt?: string;
   tallySyncStatus?: "idle" | "ok" | "error";
@@ -816,7 +818,27 @@ export interface AppSettings {
   homeNewProductIds?: string[];
   /** Ordered product ids shown as promo / offer cards on home. */
   homePromoProductIds?: string[];
+  /**
+   * How strictly the last-week / month-end audit is enforced.
+   * escalating (default): remind in the last week, then block new-month postings.
+   * hard: block as soon as the prior month is unstamped.
+   * reminder: banner + WhatsApp only, never block billing.
+   */
+  monthAuditPolicy?: MonthAuditPolicy;
+  /** Extra IST calendar days after month-end before escalating blocks (default 0). */
+  monthAuditGraceDays?: number;
+  /** Owner escape hatch so a pending audit cannot brick billing. */
+  monthAuditOverrides?: MonthAuditOverride[];
 }
+
+export type MonthAuditPolicy = "escalating" | "hard" | "reminder";
+
+export type MonthAuditOverride = {
+  month: string;
+  by: string;
+  at: string;
+  reason: string;
+};
 
 export interface CartItem {
   key: string;

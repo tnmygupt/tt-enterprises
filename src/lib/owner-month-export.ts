@@ -178,6 +178,12 @@ export function ownerMonthReportSections(report: OwnerMonthReport): PdfTableSect
         ["Stock shortages", report.audit.stockShortages.length],
         ["Uncounted SKUs", report.audit.uncountedSkus],
         ["Period lock", report.periodLockedThrough || "Open"],
+        [
+          "Posting override",
+          report.auditOverride
+            ? `${report.auditOverride.reason} (${report.auditOverride.at.slice(0, 10)})`
+            : "—",
+        ],
       ],
     },
   ];

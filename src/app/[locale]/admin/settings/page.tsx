@@ -935,6 +935,69 @@ export default function AdminSettingsPage() {
       </div>
 
       <div className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm">
+        <p className="font-semibold text-[var(--ink)]">
+          {locale === "hi" ? "मासिक ऑडिट नीति" : "Monthly audit policy"}
+        </p>
+        <p className="text-[var(--ink-muted)]">
+          {locale === "hi"
+            ? "आखिरी सप्ताह में याद दिलाना; महीने के बाद नई एंट्री तब तक न लगने देना जब तक ऑडिट स्टैम्प न हो — ओवरराइड से बिलिंग न रुके।"
+            : "Remind in the last week, then block new-month postings until the audit is stamped. An owner override keeps billing unblocked."}
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="tt-label">
+              {locale === "hi" ? "नीति" : "Policy"}
+            </label>
+            <select
+              className="tt-input"
+              value={db.settings.monthAuditPolicy || "escalating"}
+              onChange={(e) => {
+                const value = e.target.value as
+                  | "escalating"
+                  | "hard"
+                  | "reminder";
+                saveSettings({
+                  ...db.settings,
+                  monthAuditPolicy: value,
+                });
+                refresh();
+              }}
+            >
+              <option value="escalating">
+                {locale === "hi" ? "एस्केलेटिंग (डिफ़ॉल्ट)" : "Escalating (default)"}
+              </option>
+              <option value="hard">
+                {locale === "hi" ? "सख्त — महीने के बाद तुरंत ब्लॉक" : "Hard — block at month-end"}
+              </option>
+              <option value="reminder">
+                {locale === "hi" ? "केवल याद" : "Reminder only"}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label className="tt-label">
+              {locale === "hi" ? "ग्रेस दिन" : "Grace days"}
+            </label>
+            <NumberField
+              className="tt-input"
+              min={0}
+              integer
+              emptyAs={0}
+              value={db.settings.monthAuditGraceDays ?? 0}
+              onValueChange={(v) => {
+                saveSettings({
+                  ...db.settings,
+                  monthAuditGraceDays:
+                    v === "" ? 0 : Math.max(0, Math.min(31, Number(v) || 0)),
+                });
+                refresh();
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm">
         <p className="font-semibold text-[var(--ink)]">Live integrations</p>
         <ul className="space-y-2 text-[var(--ink-muted)]">
           <li>

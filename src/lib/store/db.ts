@@ -36,6 +36,7 @@ import {
   type PartyCsvRow,
   type StockCsvRow,
 } from "../accounting";
+import { assertPriorMonthAudited } from "../month-close-policy";
 import type {
   Account,
   AppSettings,
@@ -5344,6 +5345,7 @@ export function createVoucher(input: {
 }): Voucher {
   const db = loadDb();
   assertPeriodOpen(input.date, db.settings);
+  assertPriorMonthAudited(input.date, db);
   if (input.linkedOrderId && input.type === "sale") {
     const exists = db.vouchers.some(
       (v) =>

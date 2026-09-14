@@ -84,6 +84,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoReorderSeasonMultiplier: 1.4,
   homeNewProductIds: [],
   homePromoProductIds: [],
+  monthAuditPolicy: "escalating",
+  monthAuditGraceDays: 0,
 };
 
 /** Demo logins removed — production bootstraps from cloud DB only. */

@@ -145,6 +145,7 @@ export type OwnerMonthReport = {
   };
   audit: MonthlyAuditReport;
   periodLockedThrough: string | null;
+  auditOverride?: { by: string; at: string; reason: string };
 };
 
 function pctDelta(current: number, prior: number): number | null {
@@ -580,6 +581,9 @@ export function buildOwnerMonthReport(
     },
     audit,
     periodLockedThrough: db.settings?.lockedThroughDate?.slice(0, 10) || null,
+    auditOverride: (db.settings?.monthAuditOverrides ?? []).find(
+      (o) => o.month === month
+    ),
   };
 }
 

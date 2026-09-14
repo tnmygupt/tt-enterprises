@@ -11,6 +11,7 @@ import { AdminShell } from "@/components/AdminShell";
 import { MonthCloseHowTo } from "@/components/HrAuditHowTo";
 import { exportMonthlyAuditPdf, printAuditPage } from "@/lib/audit-print";
 import { useDb, useSession } from "@/lib/hooks";
+import { upsertMonthAuditOverride } from "@/lib/month-close-policy";
 import { buildMonthlyAuditReport, type MonthCloseBlocker } from "@/lib/owner-monthly-audit";
 import { formatInr } from "@/lib/pricing";
 import { checkCapability, loadDb, saveDb } from "@/lib/store/db";
@@ -32,6 +33,7 @@ function AuditInner() {
   const { db, refresh } = useDb();
   const initial = search.get("month") || new Date().toISOString().slice(0, 7);
   const [month, setMonth] = useState(initial);
+  const [overrideReason, setOverrideReason] = useState("");
 
   const report = useMemo(
     () => (db ? buildMonthlyAuditReport(db, month) : null),
@@ -110,6 +112,34 @@ function AuditInner() {
             >
               {t("admin.closeMonthStamp")}
             </button>
+            <input
+              className="tt-input"
+              placeholder={
+                locale === "hi" ? "ओवरराइड कारण" : "Override reason"
+              }
+              value={overrideReason}
+              onChange={(e) => setOverrideReason(e.target.value)}
+            />
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              disabled={!!report?.stamp || !overrideReason.trim()}
+              onClick={() => {
+                if (!session || report?.stamp || !overrideReason.trim()) return;
+                const live = loadDb();
+                live.settings = upsertMonthAuditOverride(live.settings, {
+                  month,
+                  by: session.id,
+                  at: new Date().toISOString(),
+                  reason: overrideReason.trim(),
+                });
+                saveDb(live);
+                setOverrideReason("");
+                refresh();
+              }}
+            >
+              {locale === "hi" ? "पोस्टिंग ओवरराइड" : "Override posting lock"}
+            </button>
           </>
         }
       />
@@ -135,6 +165,15 @@ function AuditInner() {
                 : report.ready.reasons.map((r) => blockerLabel(t, r)).join(" ")}
             </p>
           )}
+          {db?.settings.monthAuditOverrides?.find((o) => o.month === month) ? (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-950">
+              {locale === "hi" ? "पोस्टिंग ओवरराइड" : "Posting override"}:{" "}
+              {
+                db.settings.monthAuditOverrides.find((o) => o.month === month)
+                  ?.reason
+              }
+            </p>
+          ) : null}
 
           <section className="print:break-after-page">
             <h2 className="text-xl font-bold uppercase">{t("admin.auditExceptions")}</h2>

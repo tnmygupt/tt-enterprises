@@ -582,6 +582,11 @@ export default function OwnerCockpitPage() {
                 ? "इस माह का ऑडिट अभी खुला है।"
                 : "This month’s audit is still open."}
           </p>
+          {report?.auditOverride ? (
+            <p className="mt-2 text-sm text-amber-800">
+              {hi ? "ओवरराइड" : "Override"}: {report.auditOverride.reason}
+            </p>
+          ) : null}
           <ul className="mt-3 grid gap-2 sm:grid-cols-2 text-sm">
             <li>
               {hi ? "कमी" : "Shortages"}: {audit?.stockShortages.length ?? 0}
