@@ -45,8 +45,8 @@ import {
   restoreStockCountRates,
   stripStockCountRates,
 } from "@/lib/stock-count";
-import type { ServerSession } from "@/lib/server/session";
-import { isStaffRole } from "@/lib/server/session";
+import { liveSessionUser } from "@/lib/server/live-login";
+import { isStaffRole, type ServerSession } from "@/lib/server/session";
 import { calcShippingAmount } from "@/lib/shipping";
 import { roundOffRupees } from "@/lib/pricing";
 import { applyOrderEstimateStock } from "@/lib/inventory";
@@ -1431,9 +1431,12 @@ export function resolveCloudActor(
   existing: AppDatabase,
   session: ServerSession
 ): { actor: UserProfile; role: UserRole } {
-  const actor = (existing.users ?? []).find((u) => u.id === session.id);
-  if (!actor) throw new Error("Account not found in cloud database");
-  if (!actor.active) throw new Error("Account is disabled");
+  const actor = liveSessionUser(existing, session.id);
+  if (!actor) {
+    const row = (existing.users ?? []).find((u) => u.id === session.id);
+    if (row && !row.active) throw new Error("Account is disabled");
+    throw new Error("Account not found in cloud database");
+  }
   return { actor, role: actor.role };
 }
 

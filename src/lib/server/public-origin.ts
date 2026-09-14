@@ -21,6 +21,25 @@ export function isPrivateHost(host: string): boolean {
   return false;
 }
 
+/** Force www.tanmayphotos.space onto the apex so login cookies stick. */
+export function wwwApexRedirect(req: NextRequest): NextResponse | null {
+  const host = hostnameOf(
+    firstHeader(req, "x-forwarded-host") || firstHeader(req, "host")
+  );
+  if (host !== "www.tanmayphotos.space") return null;
+  const proto = firstHeader(req, "x-forwarded-proto") || "https";
+  const dest = new URL(req.nextUrl.pathname + req.nextUrl.search, req.nextUrl);
+  dest.protocol = proto === "http" ? "http:" : "https:";
+  dest.hostname = "tanmayphotos.space";
+  dest.port = "";
+  const res = NextResponse.redirect(dest, 308);
+  res.headers.set(
+    "Cache-Control",
+    "private, no-cache, no-store, max-age=0, must-revalidate"
+  );
+  return res;
+}
+
 /** Public https origin for redirects (never 0.0.0.0 / localhost). */
 export function publicOrigin(req: NextRequest): string {
   const candidates = [
