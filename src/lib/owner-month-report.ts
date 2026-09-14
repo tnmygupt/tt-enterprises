@@ -1,6 +1,4 @@
 import {
-  ACCT,
-  accountBalance,
   allOpenPayables,
   allOpenReceivables,
   balanceSheet,
@@ -21,6 +19,7 @@ import {
   type OpenInvoice,
 } from "@/lib/accounting";
 import { monthRange, shiftMonth } from "@/lib/month-date";
+import { bankBooksTotal, cashInHand } from "@/lib/bank-accounts";
 import {
   buildMonthlyAuditReport,
   type MonthlyAuditReport,
@@ -417,14 +416,8 @@ export function buildOwnerMonthReport(
     yearAgo.to
   );
 
-  const cashAcct = db.accounts.find((a) => a.id === ACCT.cash);
-  const bankAcct = db.accounts.find((a) => a.id === ACCT.bank);
-  const cashClose = cashAcct
-    ? accountBalance(cashAcct, db.ledgerEntries, to)
-    : 0;
-  const bankClose = bankAcct
-    ? accountBalance(bankAcct, db.ledgerEntries, to)
-    : 0;
+  const cashClose = cashInHand(db.accounts, db.ledgerEntries, to);
+  const bankClose = bankBooksTotal(db.accounts, db.ledgerEntries, to);
 
   const items = itemMovementRollup(db, from, to);
   const alerts = stockAlertsFromDb(db, { asOf: to });

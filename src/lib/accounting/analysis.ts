@@ -19,7 +19,7 @@ import {
   contractHeadroomQty,
   resolveInForceContract,
 } from "../contracts";
-import { ACCT, isCashBankAccount } from "./seed";
+import { ACCT, cashBankAccounts, isCashBankAccount } from "./seed";
 import { accountBalance } from "./engine";
 
 export type AggRow = {
@@ -966,8 +966,7 @@ export function cashFlowStatement(
   for (const a of accounts) {
     if (isCashBankAccount(a)) cashIds.add(a.id);
   }
-  const cash = accounts.find((a) => a.id === ACCT.cash);
-  const bank = accounts.find((a) => a.id === ACCT.bank);
+  const cashBank = cashBankAccounts(accounts);
   const accountsById = new Map(accounts.map((a) => [a.id, a]));
   const dayBefore = (() => {
     const d = new Date(from.slice(0, 10) + "T00:00:00");
@@ -979,12 +978,10 @@ export function cashFlowStatement(
   })();
 
   const opening = roundMoney(
-    (cash ? accountBalance(cash, entries, dayBefore) : 0) +
-      (bank ? accountBalance(bank, entries, dayBefore) : 0)
+    cashBank.reduce((s, a) => s + accountBalance(a, entries, dayBefore), 0)
   );
   const closing = roundMoney(
-    (cash ? accountBalance(cash, entries, to) : 0) +
-      (bank ? accountBalance(bank, entries, to) : 0)
+    cashBank.reduce((s, a) => s + accountBalance(a, entries, to), 0)
   );
 
   const vById = new Map(vouchers.map((v) => [v.id, v]));

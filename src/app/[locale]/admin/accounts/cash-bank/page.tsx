@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
@@ -9,19 +9,34 @@ import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AccountsShell } from "@/components/AccountsShell";
 import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
+import { NumberField } from "@/components/NumberField";
 import { ACCT, accountBalance, cashBankAccounts } from "@/lib/accounting";
 import { ExportButtons } from "@/components/ExportButtons";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr, roundMoney } from "@/lib/pricing";
-import { checkCapability } from "@/lib/store/db";
+import { addCompanyBankAccount, checkCapability } from "@/lib/store/db";
 
 export default function CashBankBookPage() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
   const { session } = useSession();
-  const { db } = useDb();
+  const { db, refresh } = useDb();
   const [accountId, setAccountId] = useState<string>(ACCT.cash);
   const [range, setRange] = useAdminDateRange("mtd");
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [form, setForm] = useState({
+    label: "",
+    bankName: "",
+    accountName: "",
+    accountNumber: "",
+    ifsc: "",
+    branch: "",
+    upiId: "",
+    openingBalance: 0,
+    showToDealers: true,
+  });
   const from = range.from;
   const to = range.to;
 
@@ -100,6 +115,50 @@ export default function CashBankBookPage() {
     );
   }
 
+  const resetAddForm = () => {
+    setForm({
+      label: "",
+      bankName: "",
+      accountName: "",
+      accountNumber: "",
+      ifsc: "",
+      branch: "",
+      upiId: "",
+      openingBalance: 0,
+      showToDealers: true,
+    });
+    setAdding(false);
+  };
+
+  const onAddBank = (e: FormEvent) => {
+    e.preventDefault();
+    setMsg("");
+    setBusy(true);
+    try {
+      const created = addCompanyBankAccount({
+        label: form.label,
+        bankName: form.bankName,
+        accountName: form.accountName,
+        accountNumber: form.accountNumber,
+        ifsc: form.ifsc,
+        branch: form.branch,
+        upiId: form.upiId,
+        openingBalance: form.openingBalance,
+        showToDealers: form.showToDealers,
+      });
+      setAccountId(created.account.id);
+      setMsg(t("accounts.bankAdded"));
+      resetAddForm();
+      refresh();
+    } catch (err) {
+      setMsg(
+        err instanceof Error ? err.message : t("accounts.bankNeedName")
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <AccountsShell>
       <AccountsPageHeader
@@ -129,9 +188,136 @@ export default function CashBankBookPage() {
             <Link href="/admin/accounts/brs" className="tt-btn tt-btn-outline">
               {t("accounts.brs")} · Alt+B
             </Link>
+            <button
+              type="button"
+              className="tt-btn tt-btn-dark print:hidden"
+              onClick={() => setAdding((v) => !v)}
+            >
+              {t("accounts.addBankAccount")}
+            </button>
           </div>
         }
       />
+      {msg ? (
+        <p className="mt-3 text-sm font-semibold text-[var(--ok)] print:hidden">
+          {msg}
+        </p>
+      ) : null}
+      {adding ? (
+        <form
+          onSubmit={onAddBank}
+          className="tt-panel mt-4 grid max-w-3xl gap-3 p-4 print:hidden sm:grid-cols-2"
+        >
+          <p className="sm:col-span-2 text-sm text-[var(--ink-muted)]">
+            {t("accounts.addBankAccountHint")}
+          </p>
+          <div>
+            <label className="tt-label">{t("accounts.bankNickname")}</label>
+            <input
+              className="tt-input"
+              value={form.label}
+              onChange={(e) => setForm({ ...form, label: e.target.value })}
+              placeholder="HDFC Current"
+              required
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("accounts.bankName")}</label>
+            <input
+              className="tt-input"
+              value={form.bankName}
+              onChange={(e) => setForm({ ...form, bankName: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("accounts.bankHolder")}</label>
+            <input
+              className="tt-input"
+              value={form.accountName}
+              onChange={(e) =>
+                setForm({ ...form, accountName: e.target.value })
+              }
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("accounts.bankNumber")}</label>
+            <input
+              className="tt-input font-mono"
+              value={form.accountNumber}
+              onChange={(e) =>
+                setForm({ ...form, accountNumber: e.target.value })
+              }
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("accounts.bankIfsc")}</label>
+            <input
+              className="tt-input font-mono uppercase"
+              value={form.ifsc}
+              onChange={(e) => setForm({ ...form, ifsc: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("accounts.bankBranch")}</label>
+            <input
+              className="tt-input"
+              value={form.branch}
+              onChange={(e) => setForm({ ...form, branch: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("accounts.bankUpi")}</label>
+            <input
+              className="tt-input"
+              value={form.upiId}
+              placeholder="name@okaxis"
+              onChange={(e) => setForm({ ...form, upiId: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="tt-label">{t("accounts.bankOpening")}</label>
+            <NumberField
+              className="tt-input"
+              min={0}
+              emptyAs={null}
+              value={form.openingBalance}
+              onValueChange={(v) =>
+                setForm({
+                  ...form,
+                  openingBalance: typeof v === "number" ? v : 0,
+                })
+              }
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-[var(--brand)]"
+              checked={form.showToDealers}
+              onChange={(e) =>
+                setForm({ ...form, showToDealers: e.target.checked })
+              }
+            />
+            {t("accounts.bankShowDealers")}
+          </label>
+          <div className="flex flex-wrap gap-2 sm:col-span-2">
+            <button
+              type="submit"
+              className="tt-btn tt-btn-dark"
+              disabled={busy}
+            >
+              {t("common.save")}
+            </button>
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              onClick={resetAddForm}
+            >
+              {t("accounts.cancelAddBank")}
+            </button>
+          </div>
+        </form>
+      ) : null}
       <div className="tt-acct-cards mt-4 sm:hidden">
         <div className="tt-panel tt-acct-card">
           <p className="text-xs font-bold uppercase text-[var(--ink-muted)]">

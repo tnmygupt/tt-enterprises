@@ -66,6 +66,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     bankName: "",
     branch: "",
   },
+  bankAccounts: [],
   paymentNote:
     "Pay the amount shown to Sudhir Gupta (UPI: 9415133028.eazypay@icici), then upload payment proof on this order.",
   whatsappNotifyEnabled: true,

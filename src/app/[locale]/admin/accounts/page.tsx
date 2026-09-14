@@ -7,12 +7,11 @@ import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import {
-  ACCT,
-  accountBalance,
   allOpenPayables,
   allOpenReceivables,
   leftoverReceipts,
 } from "@/lib/accounting";
+import { bankBooksTotal, cashInHand } from "@/lib/bank-accounts";
 import { getAdminQueues } from "@/lib/admin-queues";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
@@ -103,8 +102,6 @@ export default function AccountsHomePage() {
 
   const stats = useMemo(() => {
     if (!db) return null;
-    const cash = db.accounts.find((a) => a.id === ACCT.cash);
-    const bank = db.accounts.find((a) => a.id === ACCT.bank);
     const salesToday = db.vouchers
       .filter((v) => v.type === "sale" && !v.voided && v.date === today)
       .reduce((s, v) => s + v.total, 0);
@@ -137,8 +134,8 @@ export default function AccountsHomePage() {
     ).length;
     const posted = db.vouchers.filter((v) => !v.voided).length;
     return {
-      cash: cash ? accountBalance(cash, db.ledgerEntries, today) : 0,
-      bank: bank ? accountBalance(bank, db.ledgerEntries, today) : 0,
+      cash: cashInHand(db.accounts, db.ledgerEntries, today),
+      bank: bankBooksTotal(db.accounts, db.ledgerEntries, today),
       salesToday,
       toCollect,
       toPay,

@@ -12,10 +12,12 @@ import {
   checkCapability,
   resetDb,
   saveSettings,
+  addCompanyBankAccount,
+  upsertAccount,
 } from "@/lib/store/db";
 import { uploadMediaFile } from "@/lib/upload-media";
 import { formatSeasonMonths, parseSeasonMonthsFromText } from "@/lib/accounting";
-import { UPI_MAX_AMOUNT_DEFAULT, listPayableAccounts } from "@/lib/upi";
+import { UPI_MAX_AMOUNT_DEFAULT, listStoredPayableAccounts } from "@/lib/upi";
 import { WhatsAppTemplateEditor } from "@/components/WhatsAppTemplateEditor";
 import type { BankAccountDetails } from "@/lib/types";
 
@@ -36,7 +38,10 @@ export default function AdminSettingsPage() {
   // Memoize the derived accounts list here (before any conditional early
   // return) so React's rules-of-hooks are satisfied.
   const bankAccounts = useMemo(
-    () => (db ? listPayableAccounts(db.settings) : []),
+    () =>
+      db
+        ? listStoredPayableAccounts(db.settings, { includeInactive: true })
+        : [],
     [db]
   );
 
@@ -86,26 +91,33 @@ export default function AdminSettingsPage() {
     saveSettings({ ...db.settings, bankAccounts: next });
     refresh();
   };
+  const addAccount = () => {
+    try {
+      addCompanyBankAccount({
+        label: locale === "hi" ? "नया खाता" : "New account",
+        showToDealers: true,
+      });
+      setMsg(locale === "hi" ? "खाता जुड़ गया — विवरण भरें" : "Account added — fill in the details");
+      refresh();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not add account");
+    }
+  };
   const updateAccount = (id: string, patch: Partial<BankAccountDetails>) => {
     persistAccounts(
       bankAccounts.map((a) => (a.id === id ? { ...a, ...patch } : a))
     );
-  };
-  const addAccount = () => {
-    const newAccount: BankAccountDetails = {
-      id: `bank_${crypto.randomUUID()}`,
-      label: locale === "hi" ? "नया खाता" : "New account",
-      accountName: "",
-      accountNumber: "",
-      ifsc: "",
-      bankName: "",
-      branch: "",
-      upiId: "",
-      upiPayeeName: "",
-      active: true,
-      isDefault: bankAccounts.length === 0,
-    };
-    persistAccounts([...bankAccounts, newAccount]);
+    const nextLabel = (patch.label ?? "").trim();
+    const ledgerId = bankAccounts.find((a) => a.id === id)?.ledgerId;
+    if (ledgerId && nextLabel && db) {
+      const ledger = db.accounts.find((a) => a.id === ledgerId);
+      if (ledger && ledger.id !== "acct_cash" && ledger.id !== "acct_bank") {
+        upsertAccount({
+          ...ledger,
+          name: { en: nextLabel, hi: nextLabel },
+        });
+      }
+    }
   };
   const removeAccount = (id: string) => {
     if (

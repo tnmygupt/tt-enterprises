@@ -37,6 +37,10 @@ import {
   type StockCsvRow,
 } from "../accounting";
 import { assertPriorMonthAudited } from "../month-close-policy";
+import {
+  draftCompanyBankAccount,
+  type NewCompanyBankInput,
+} from "../bank-accounts";
 import type {
   Account,
   AppSettings,
@@ -62,6 +66,7 @@ import type {
   BatchConsumption,
   StatementMatch,
   StatementMatchExtra,
+  BankAccountDetails,
   BankRecon,
   BankReconExtra,
   SupplierContract,
@@ -4800,6 +4805,33 @@ export function upsertAccount(account: Account): void {
   if (i >= 0) db.accounts[i] = account;
   else db.accounts.push(account);
   saveDb(db);
+}
+
+/** Add another company bank: ledger in Cash/Bank book plus a dealer payment row. */
+export function addCompanyBankAccount(input: NewCompanyBankInput): {
+  account: Account;
+  payable: BankAccountDetails;
+} {
+  const label =
+    input.label.trim() ||
+    input.bankName?.trim() ||
+    input.accountName?.trim() ||
+    "";
+  if (!label) {
+    throw new Error("Enter a bank name or nickname");
+  }
+  const db = loadDb();
+  const drafted = draftCompanyBankAccount({
+    ledgerId: `acct_bank_${crypto.randomUUID()}`,
+    payableId: `bank_${crypto.randomUUID()}`,
+    accounts: db.accounts,
+    settings: db.settings,
+    input: { ...input, label },
+  });
+  db.accounts.push(drafted.account);
+  db.settings = { ...db.settings, bankAccounts: drafted.bankAccounts };
+  saveDb(db);
+  return { account: drafted.account, payable: drafted.payable };
 }
 
 export function upsertParty(party: Party): void {

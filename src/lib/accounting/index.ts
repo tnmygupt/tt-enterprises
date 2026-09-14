@@ -8,6 +8,7 @@ export {
   SEED_PARTIES,
   buildSeedAccounting,
   cashBankAccounts,
+  bankBookAccounts,
   isCashBankAccount,
 } from "./seed";
 export {

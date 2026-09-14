@@ -560,7 +560,8 @@ export function staffScopedProjection(
   } else if (
     !cap("verify_payment") &&
     !cap("manage_orders") &&
-    !cap("manage_wallet")
+    !cap("manage_wallet") &&
+    !cap("manage_accounts")
   ) {
     out.settings = stripPaymentSettings(out.settings);
   }

@@ -673,6 +673,8 @@ export interface BankAccountDetails {
   active?: boolean;
   /** Marks the account shown first in the picker. */
   isDefault?: boolean;
+  /** Linked cash/bank ledger (`Account.id`) for books, BRS, and receipts. */
+  ledgerId?: string;
 }
 
 /** Weight slab: ≤minKg → flat X; above min → X + steps × (X × fraction) */
