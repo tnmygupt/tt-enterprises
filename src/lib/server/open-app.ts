@@ -48,13 +48,13 @@ export function openAppOrWebsite(
 <meta property="og:description" content="${escapeHtml(blurb)}"/>
 <meta http-equiv="refresh" content="8;url=${destHtml}"/>
 <style>
-  body{margin:0;font-family:system-ui,sans-serif;background:#f4f7f8;color:#123;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}
-  .card{max-width:22rem;width:100%;background:#fff;border:2px solid #d7e3e8;border-radius:1.25rem;padding:1.25rem;text-align:center}
+  body{margin:0;font-family:system-ui,sans-serif;background:#faf6f5;color:#2c1f1f;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}
+  .card{max-width:22rem;width:100%;background:#fff;border:2px solid #eadcda;border-radius:1.25rem;padding:1.25rem;text-align:center}
   h1{margin:0 0 .5rem;font-size:1.15rem}
-  p{margin:0 0 1rem;color:#4a6070;font-size:.9rem;line-height:1.4}
+  p{margin:0 0 1rem;color:#7a6565;font-size:.9rem;line-height:1.4}
   a{display:block;width:100%;box-sizing:border-box;border-radius:999px;padding:.75rem 1rem;font-weight:700;text-decoration:none;margin-top:.5rem}
-  .app{background:#0b7ea4;color:#fff}
-  .web{background:#fff;color:#0b7ea4;border:2px solid #0b7ea4}
+  .app{background:#ff3131;color:#fff}
+  .web{background:#fff;color:#ff3131;border:2px solid #ff3131}
 </style>
 </head>
 <body>

@@ -15,7 +15,7 @@ function BrandLockup({ light = false }: { light?: boolean }) {
     <span className={`tt-brand ${light ? "tt-brand-light" : ""}`}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={light ? "/brand/tt-mark-light.svg" : "/brand/tt-mark.svg"}
+        src={light ? "/brand/tt-mark-light.svg" : "/brand/tt-mark.png"}
         alt=""
         className="tt-brand-mark"
       />

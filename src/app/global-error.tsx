@@ -20,15 +20,15 @@ export default function GlobalError({
           minHeight: "100vh",
           alignItems: "center",
           justifyContent: "center",
-          background: "#f7f5f0",
-          color: "#0b3d2e",
+          background: "#faf6f5",
+          color: "#c21818",
         }}
       >
         <main style={{ maxWidth: 420, padding: 24, textAlign: "center" }}>
           <h1 style={{ fontSize: 22, marginBottom: 8 }}>
             This page couldn&apos;t load
           </h1>
-          <p style={{ fontSize: 14, color: "#5c6b66", marginBottom: 20 }}>
+          <p style={{ fontSize: 14, color: "#7a6565", marginBottom: 20 }}>
             Reload or go Back to continue. These buttons always work.
           </p>
           {error?.digest ? (
@@ -47,7 +47,7 @@ export default function GlobalError({
             <button
               type="button"
               style={{
-                background: "#0b3d2e",
+                background: "#c21818",
                 color: "#fff",
                 border: 0,
                 borderRadius: 6,

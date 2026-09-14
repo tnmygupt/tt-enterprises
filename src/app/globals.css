@@ -1,24 +1,24 @@
 @import "tailwindcss";
 
 :root {
-  /* Soft sky / teal — easy contrast, no black/gold */
-  --bg: #f3f8fb;
+  /* Warm red from the TT mark — easy contrast, no teal/gold */
+  --bg: #faf6f5;
   --bg-elevated: #ffffff;
-  --surface: #f3f8fb;
-  --surface-2: #e7f1f6;
+  --surface: #faf6f5;
+  --surface-2: #f4eceb;
   --panel: #ffffff;
-  --ink: #1e3a4c;
-  --ink-muted: #5b7383;
-  --brand: #0b7ea4;
-  --brand-deep: #086484;
-  --brand-soft: #e4f4fa;
-  --brand-gold: #0b7ea4;
-  --brand-bronze: #0b7ea4;
-  --accent: #28a3c9;
-  --line: #d5e4ec;
-  --danger: #c43131;
+  --ink: #2c1f1f;
+  --ink-muted: #7a6565;
+  --brand: #ff3131;
+  --brand-deep: #c21818;
+  --brand-soft: #ffe8e6;
+  --brand-gold: #ff3131;
+  --brand-bronze: #ff3131;
+  --accent: #ff5a5a;
+  --line: #eadcda;
+  --danger: #9b1b1b;
   --ok: #0f8a5f;
-  --shadow: 0 1px 2px rgba(14, 60, 80, 0.04), 0 10px 28px rgba(14, 60, 80, 0.06);
+  --shadow: 0 1px 2px rgba(80, 20, 20, 0.04), 0 10px 28px rgba(80, 20, 20, 0.06);
 }
 
 @theme inline {
@@ -49,8 +49,8 @@ body {
   max-width: 100%;
   color: var(--ink);
   background:
-    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(11, 126, 164, 0.1), transparent 55%),
-    radial-gradient(ellipse 55% 40% at 0% 100%, rgba(40, 163, 201, 0.08), transparent 50%),
+    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(255, 49, 49, 0.1), transparent 55%),
+    radial-gradient(ellipse 55% 40% at 0% 100%, rgba(255, 90, 90, 0.08), transparent 50%),
     var(--surface);
   font-family: var(--font-body), system-ui, sans-serif;
   overflow-x: clip;
@@ -91,7 +91,7 @@ button.tt-selected {
   border-radius: 1.25rem;
   color: var(--ink);
   background:
-    linear-gradient(145deg, #ffffff 0%, #eef7fb 48%, #dff0f7 100%);
+    linear-gradient(145deg, #ffffff 0%, #fff5f4 48%, #ffe8e6 100%);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   padding: clamp(2rem, 5vw, 3.25rem);
@@ -102,7 +102,7 @@ button.tt-selected {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 88% 18%, rgba(40, 163, 201, 0.22), transparent 42%);
+    radial-gradient(circle at 88% 18%, rgba(255, 49, 49, 0.18), transparent 42%);
   pointer-events: none;
 }
 
@@ -130,7 +130,7 @@ button.tt-selected {
   justify-content: center;
   min-height: 11rem;
   border-radius: 1.1rem;
-  background: linear-gradient(160deg, #0b7ea4 0%, #28a3c9 100%);
+  background: linear-gradient(160deg, #ff3131 0%, #ff5a5a 100%);
   border: none;
 }
 

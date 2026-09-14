@@ -35,8 +35,8 @@ export function companyFromSettings(
   };
 }
 
-const BRAND: [number, number, number] = [15, 76, 74];
-const RULE: [number, number, number] = [205, 213, 212];
+const BRAND: [number, number, number] = [194, 24, 24];
+const RULE: [number, number, number] = [234, 220, 218];
 const MUTED = 110;
 
 /**

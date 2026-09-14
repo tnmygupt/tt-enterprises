@@ -23,7 +23,7 @@ import type { Capability, Order } from "@/lib/types";
 const MIX_COLORS = {
   critical: "#c43131",
   soon: "#c47a12",
-  watch: "#0b7ea4",
+  watch: "#ff3131",
   healthy: "#0f8a5f",
 };
 

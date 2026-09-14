@@ -483,7 +483,7 @@ export function AdminShell({
         <div className="mb-3 flex items-center gap-2.5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/brand/tt-mark.svg"
+            src="/brand/tt-mark.png"
             alt=""
             className="h-10 w-10 rounded-[0.65rem]"
           />
