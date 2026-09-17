@@ -26,7 +26,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 5,
   viewportFit: "cover",
-  themeColor: "#0b7ea4",
+  themeColor: "#ff3131",
   // Helps Safari treat the layout width correctly with notches / safe areas
   interactiveWidget: "resizes-content",
 };

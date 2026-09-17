@@ -12,10 +12,12 @@ import {
   checkCapability,
   resetDb,
   saveSettings,
+  addCompanyBankAccount,
+  upsertAccount,
 } from "@/lib/store/db";
 import { uploadMediaFile } from "@/lib/upload-media";
 import { formatSeasonMonths, parseSeasonMonthsFromText } from "@/lib/accounting";
-import { UPI_MAX_AMOUNT_DEFAULT, listPayableAccounts } from "@/lib/upi";
+import { UPI_MAX_AMOUNT_DEFAULT, listStoredPayableAccounts } from "@/lib/upi";
 import { WhatsAppTemplateEditor } from "@/components/WhatsAppTemplateEditor";
 import type { BankAccountDetails } from "@/lib/types";
 
@@ -36,7 +38,10 @@ export default function AdminSettingsPage() {
   // Memoize the derived accounts list here (before any conditional early
   // return) so React's rules-of-hooks are satisfied.
   const bankAccounts = useMemo(
-    () => (db ? listPayableAccounts(db.settings) : []),
+    () =>
+      db
+        ? listStoredPayableAccounts(db.settings, { includeInactive: true })
+        : [],
     [db]
   );
 
@@ -86,26 +91,33 @@ export default function AdminSettingsPage() {
     saveSettings({ ...db.settings, bankAccounts: next });
     refresh();
   };
+  const addAccount = () => {
+    try {
+      addCompanyBankAccount({
+        label: locale === "hi" ? "नया खाता" : "New account",
+        showToDealers: true,
+      });
+      setMsg(locale === "hi" ? "खाता जुड़ गया — विवरण भरें" : "Account added — fill in the details");
+      refresh();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not add account");
+    }
+  };
   const updateAccount = (id: string, patch: Partial<BankAccountDetails>) => {
     persistAccounts(
       bankAccounts.map((a) => (a.id === id ? { ...a, ...patch } : a))
     );
-  };
-  const addAccount = () => {
-    const newAccount: BankAccountDetails = {
-      id: `bank_${crypto.randomUUID()}`,
-      label: locale === "hi" ? "नया खाता" : "New account",
-      accountName: "",
-      accountNumber: "",
-      ifsc: "",
-      bankName: "",
-      branch: "",
-      upiId: "",
-      upiPayeeName: "",
-      active: true,
-      isDefault: bankAccounts.length === 0,
-    };
-    persistAccounts([...bankAccounts, newAccount]);
+    const nextLabel = (patch.label ?? "").trim();
+    const ledgerId = bankAccounts.find((a) => a.id === id)?.ledgerId;
+    if (ledgerId && nextLabel && db) {
+      const ledger = db.accounts.find((a) => a.id === ledgerId);
+      if (ledger && ledger.id !== "acct_cash" && ledger.id !== "acct_bank") {
+        upsertAccount({
+          ...ledger,
+          name: { en: nextLabel, hi: nextLabel },
+        });
+      }
+    }
   };
   const removeAccount = (id: string) => {
     if (
@@ -926,6 +938,69 @@ export default function AdminSettingsPage() {
                 saveSettings({
                   ...db.settings,
                   autoReorderSeasonMultiplier: Math.max(1, v),
+                });
+                refresh();
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm">
+        <p className="font-semibold text-[var(--ink)]">
+          {locale === "hi" ? "मासिक ऑडिट नीति" : "Monthly audit policy"}
+        </p>
+        <p className="text-[var(--ink-muted)]">
+          {locale === "hi"
+            ? "आखिरी सप्ताह में याद दिलाना; महीने के बाद नई एंट्री तब तक न लगने देना जब तक ऑडिट स्टैम्प न हो — ओवरराइड से बिलिंग न रुके।"
+            : "Remind in the last week, then block new-month postings until the audit is stamped. An owner override keeps billing unblocked."}
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="tt-label">
+              {locale === "hi" ? "नीति" : "Policy"}
+            </label>
+            <select
+              className="tt-input"
+              value={db.settings.monthAuditPolicy || "escalating"}
+              onChange={(e) => {
+                const value = e.target.value as
+                  | "escalating"
+                  | "hard"
+                  | "reminder";
+                saveSettings({
+                  ...db.settings,
+                  monthAuditPolicy: value,
+                });
+                refresh();
+              }}
+            >
+              <option value="escalating">
+                {locale === "hi" ? "एस्केलेटिंग (डिफ़ॉल्ट)" : "Escalating (default)"}
+              </option>
+              <option value="hard">
+                {locale === "hi" ? "सख्त — महीने के बाद तुरंत ब्लॉक" : "Hard — block at month-end"}
+              </option>
+              <option value="reminder">
+                {locale === "hi" ? "केवल याद" : "Reminder only"}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label className="tt-label">
+              {locale === "hi" ? "ग्रेस दिन" : "Grace days"}
+            </label>
+            <NumberField
+              className="tt-input"
+              min={0}
+              integer
+              emptyAs={0}
+              value={db.settings.monthAuditGraceDays ?? 0}
+              onValueChange={(v) => {
+                saveSettings({
+                  ...db.settings,
+                  monthAuditGraceDays:
+                    v === "" ? 0 : Math.max(0, Math.min(31, Number(v) || 0)),
                 });
                 refresh();
               }}

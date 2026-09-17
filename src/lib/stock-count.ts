@@ -1,4 +1,4 @@
-import { accountBalance, ACCT } from "@/lib/accounting";
+import { accountBalance, ACCT, bankBookAccounts } from "@/lib/accounting";
 import { inventoryRows } from "@/lib/inventory";
 import { roundMoney } from "@/lib/pricing";
 import type {
@@ -296,7 +296,6 @@ export function startCashCountSession(input: {
   const last = daysInMonthSafe(input.month);
   const date = `${input.month}-${String(last).padStart(2, "0")}`;
     const cash = input.accounts.find((a) => a.id === ACCT.cash);
-  const bank = input.accounts.find((a) => a.id === ACCT.bank);
   return {
     id: `cc_${crypto.randomUUID()}`,
     month: input.month,
@@ -304,7 +303,10 @@ export function startCashCountSession(input: {
     startedBy: input.startedBy,
     startedAt: now,
     bookCash: cash ? accountBalance(cash, input.ledgerEntries, date) : 0,
-    bookBank: bank ? accountBalance(bank, input.ledgerEntries, date) : 0,
+    bookBank: bankBookAccounts(input.accounts).reduce(
+      (sum, a) => sum + accountBalance(a, input.ledgerEntries, date),
+      0
+    ),
     ownerDecision: "pending",
     updatedAt: now,
   };

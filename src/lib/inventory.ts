@@ -8,7 +8,9 @@ import type {
   VoucherLine,
 } from "./types";
 import {
+  isPackCountUnit,
   isSqftUnit,
+  resolveGsmPacketWeightKg,
   resolveSqftPack,
   resolveUnitWeightKg,
   roundMoney,
@@ -363,10 +365,15 @@ export function normalizeProductStock(product: Product): Product {
     stockMatrix: { ...(product.stockMatrix ?? {}) },
   };
   for (const v of next.variations) {
-    v.weightKg =
-      v.weightKg != null && v.weightKg > 0
-        ? v.weightKg
-        : next.baseWeightKg ?? 0;
+    if (v.weightKg != null && v.weightKg > 0) continue;
+    if (
+      isPackCountUnit(next.unit) &&
+      resolveGsmPacketWeightKg(next, v) > 0
+    ) {
+      v.weightKg = 0;
+      continue;
+    }
+    v.weightKg = next.baseWeightKg ?? 0;
   }
   ensureStockMatrix(next);
   if (next.variations.length) {

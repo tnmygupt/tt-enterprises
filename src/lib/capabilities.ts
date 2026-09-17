@@ -33,7 +33,6 @@ export const ALL_CAPABILITIES: Capability[] = [
 export const OWNER_ONLY_CAPABILITIES: Capability[] = [
   "manage_users",
   "view_financials",
-  "manage_hr",
 ];
 
 export const JOB_BASE_ROLES: StaffJobBaseRole[] = [
@@ -296,6 +295,7 @@ export const BEYOND_SALES_DESK_CAPS: Capability[] = [
   "manage_wallet",
   "manage_schemes",
   "manage_reorder",
+  "manage_hr",
 ];
 
 /** True when this staffer should only see orders + clock-in. */

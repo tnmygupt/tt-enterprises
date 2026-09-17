@@ -99,7 +99,7 @@ const raw = bytes.toString("latin1");
 const checks: [string, boolean][] = [
   ["produced a PDF", raw.startsWith("%PDF")],
   ["no raw rupee sign", !raw.includes("\u20B9")],
-  ["letterhead GSTIN present", raw.includes("09ABCDE1234F1Z5")],
+  ["letterhead GSTIN omitted", !raw.includes("09ABCDE1234F1Z5")],
   [
     "grid split into blocks",
     ITEMS <= 6 ? !raw.includes("ITEMS 1-") : raw.includes("ITEMS 1-6"),

@@ -17,6 +17,7 @@ import {
   schemeRewardLabel,
 } from "@/lib/schemes";
 import { OrderDiscountExplain } from "@/components/OrderDiscountExplain";
+import { PacketWeightCalculator } from "@/components/PacketWeightCalculator";
 import { resolveHomeNewProducts, resolveHomePromoProducts } from "@/lib/home-merch";
 import {
   checkCapability,
@@ -457,11 +458,6 @@ function MoreInfoSection() {
               ) : null}
             </p>
           </div>
-          {settings.gstin ? (
-            <p className="mt-3 text-xs text-[var(--ink-muted)]">
-              GSTIN: {settings.gstin}
-            </p>
-          ) : null}
         </div>
       ) : null}
     </section>
@@ -507,6 +503,8 @@ function LoggedInHome() {
             ) : null}
           </div>
         </div>
+
+        <PacketWeightCalculator />
 
         <MyOrdersSection orders={myOrders} />
         <SchemesSection
@@ -702,7 +700,7 @@ function AuthLanding() {
             <div className="mb-5 flex items-center gap-3">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src="/brand/tt-mark.svg"
+                src="/brand/tt-mark.png"
                 alt=""
                 className="h-14 w-14 rounded-2xl shadow-sm"
               />
@@ -992,6 +990,8 @@ function AuthLanding() {
             )}
           </div>
         </div>
+
+        <PacketWeightCalculator />
 
         <MoreInfoSection />
       </div>

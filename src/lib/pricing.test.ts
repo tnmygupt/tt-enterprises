@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   calcLineTotal,
+  packetWeightKgFromGsm,
+  pcsPerPacketLabel,
+  piecesInPacketLine,
+  pieceWeightGFromGsm,
+  pieceWeightKgFromGsm,
   ratePerPacket,
   ratePerPiece,
+  resolvePcsPerPacket,
   resolveRate,
+  resolveUnitWeightKg,
+  resolveWeightKg,
   roundOffRupees,
   roundMoney,
   sqftPacketAmount,
@@ -80,6 +88,104 @@ describe("pricing", () => {
   it("roundMoney keeps two decimals", () => {
     expect(roundMoney(1.005)).toBe(1.01);
     expect(roundMoney(10.999)).toBe(11);
+  });
+});
+
+describe("GSM packet weight", () => {
+  const silpauline = {
+    id: "silp",
+    baseRate: 2,
+    pricingMode: "pcs",
+    unit: "sqft",
+    gsm: 120,
+    lengthFt: 12,
+    widthFt: 18,
+    pcsPerPacket: 10,
+    baseWeightKg: 1,
+  } as Product;
+
+  it("uses L × W × GSM × 0.092903 for grams and /1000 for kg", () => {
+    expect(pieceWeightGFromGsm(12, 18, 120)).toBe(
+      roundMoney(12 * 18 * 120 * 0.092903)
+    );
+    expect(pieceWeightGFromGsm(12, 18, 120)).toBe(2408.05);
+    expect(pieceWeightKgFromGsm(12, 18, 120)).toBe(
+      roundMoney((12 * 18 * 120 * 0.092903) / 1000)
+    );
+    expect(pieceWeightKgFromGsm(12, 18, 120)).toBe(2.41);
+  });
+
+  it("multiplies sheet kg by pcs for kg/pkt without compounding rounding", () => {
+    expect(packetWeightKgFromGsm(12, 18, 120, 10)).toBe(
+      roundMoney((12 * 18 * 120 * 10 * 0.092903) / 1000)
+    );
+    expect(packetWeightKgFromGsm(12, 18, 120, 10)).toBe(24.08);
+  });
+
+  it("resolveWeightKg uses GSM when pack kg is blank", () => {
+    const variation = {
+      id: "v1",
+      rate: 2,
+      lengthFt: 12,
+      widthFt: 18,
+      pcsPerPacket: 10,
+    } as ProductVariation;
+    expect(resolveUnitWeightKg(silpauline, variation)).toBe(24.08);
+    expect(resolveWeightKg(silpauline, variation, 2)).toBe(48.16);
+    expect(pcsPerPacketLabel(10, "en")).toBe("10 pcs/pkt");
+    expect(pcsPerPacketLabel(10, "hi")).toBe("10 पीस/पैकेट");
+    expect(piecesInPacketLine(10, "en")).toBe("10 pieces in 1 packet");
+    expect(piecesInPacketLine(10, "hi")).toBe("10 पीस 1 पैकेट में");
+  });
+
+  it("uses product pcs when variation pcs is 0, and infers from pkt/pc rates", () => {
+    expect(
+      resolvePcsPerPacket(
+        { pcsPerPacket: 12 } as Product,
+        { pcsPerPacket: 0 } as ProductVariation
+      )
+    ).toBe(12);
+    expect(
+      resolvePcsPerPacket(
+        {
+          unit: "sqft",
+          ratePerSqft: 4,
+          lengthFt: 12,
+          widthFt: 15,
+        } as Product,
+        {
+          rate: 8640,
+          lengthFt: 12,
+          widthFt: 15,
+          ratePerSqft: 4,
+        } as ProductVariation
+      )
+    ).toBe(12);
+  });
+
+  it("keeps a typed pack-kg override", () => {
+    const variation = {
+      id: "v1",
+      rate: 2,
+      lengthFt: 12,
+      widthFt: 18,
+      pcsPerPacket: 10,
+      weightKg: 20,
+    } as ProductVariation;
+    expect(resolveUnitWeightKg(silpauline, variation)).toBe(20);
+    expect(resolveWeightKg(silpauline, variation, 3)).toBe(60);
+  });
+
+  it("ignores leftover dummy 1 kg on pack-count goods when GSM can compute", () => {
+    const variation = {
+      id: "v1",
+      rate: 2,
+      lengthFt: 12,
+      widthFt: 18,
+      pcsPerPacket: 10,
+      weightKg: 1,
+    } as ProductVariation;
+    expect(resolveUnitWeightKg(silpauline, variation)).toBe(24.08);
   });
 });
 

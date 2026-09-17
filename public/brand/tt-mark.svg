@@ -1,7 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="TT">
-  <rect width="64" height="64" rx="14" fill="#0B7EA4"/>
-  <!-- T -->
-  <path d="M14 18h24v5.5H31.5V46h-7V23.5H14V18z" fill="#FFFFFF"/>
-  <!-- T -->
-  <path d="M34 18h16v5.5h-5.5V46H38V23.5H34V18z" fill="#FFFFFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" role="img" aria-label="TT Enterprises">
+  <rect width="512" height="512" fill="#FF3131"/>
+  <g fill="#FFFFFF" transform="translate(256 256) skewX(-14) translate(-256 -256)">
+    <rect x="118" y="52" width="188" height="188" rx="38"/>
+    <rect x="324" y="128" width="106" height="112" rx="26"/>
+    <rect x="118" y="260" width="106" height="112" rx="26"/>
+    <rect x="242" y="260" width="188" height="188" rx="38"/>
+  </g>
+  <circle cx="468" cy="44" r="26" fill="none" stroke="#FFFFFF" stroke-width="8"/>
+  <text x="468" y="53" text-anchor="middle" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700">TM</text>
 </svg>

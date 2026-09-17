@@ -271,7 +271,100 @@ function InventoryInner({ initialQ }: { initialQ: string }) {
         </Link>
       </div>
 
-      <div className="tt-panel mt-4 overflow-x-auto">
+      <div className="tt-acct-cards mt-4 sm:hidden">
+        {rows.map((r) => {
+          const key = rowKey(r);
+          const adj = pending[key] ?? { bundles: "", secondary: "" };
+          const preview = previewAfter(r);
+          const dirty = !!(adj.bundles || adj.secondary);
+          return (
+            <div
+              key={key}
+              className={`tt-panel tt-acct-card space-y-2 ${
+                dirty ? "border-[var(--brand)]" : ""
+              }`}
+            >
+              <p className="font-semibold">{r.name}</p>
+              <p className="font-mono text-xs text-[var(--ink-muted)]">
+                {r.sku} · {r.code} · {unitLabel(r.unit, locale)}
+              </p>
+              <p className="text-sm tabular-nums">
+                <span className={r.stock <= 0 ? "text-[var(--danger)]" : ""}>
+                  {r.stock} {t("common.bundles")}
+                </span>
+                {preview && Number(adj.bundles) ? (
+                  <span className="ml-1 text-xs text-[var(--brand-deep)]">
+                    → {preview.bundles}
+                  </span>
+                ) : null}
+                <span className="mx-2 text-[var(--ink-muted)]">·</span>
+                <span
+                  className={r.stockSecondary <= 0 ? "text-[var(--danger)]" : ""}
+                >
+                  {r.stockSecondary} {unitLabel(r.unit, locale)}
+                </span>
+                {preview?.secondary != null ? (
+                  <span className="ml-1 text-xs text-[var(--brand-deep)]">
+                    → {preview.secondary}
+                  </span>
+                ) : null}
+              </p>
+              {canAdjust ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="tt-hr-field">
+                    <span className="tt-hr-label">
+                      {locale === "hi" ? "Δ बंडल" : "Δ Bundles"}
+                    </span>
+                    <NumberField
+                      className="tt-input tabular-nums"
+                      integer
+                      emptyAs={null}
+                      placeholder="+ / −"
+                      value={adj.bundles}
+                      onValueChange={(v) =>
+                        setRowAdj(key, {
+                          bundles: v === "" ? "" : String(v),
+                        })
+                      }
+                      aria-label={`${r.name} bundle delta`}
+                    />
+                  </label>
+                  <label className="tt-hr-field">
+                    <span className="tt-hr-label">
+                      {locale === "hi" ? "Δ किग्रा/पीस" : "Δ Kg / Pcs"}
+                    </span>
+                    <NumberField
+                      className="tt-input tabular-nums"
+                      emptyAs={null}
+                      placeholder={
+                        locale === "hi" ? "ऑटो / ±" : "auto / ±"
+                      }
+                      value={adj.secondary}
+                      onValueChange={(v) =>
+                        setRowAdj(key, {
+                          secondary: v === "" ? "" : String(v),
+                        })
+                      }
+                      aria-label={`${r.name} ${unitLabel(r.unit, locale)} delta`}
+                    />
+                  </label>
+                </div>
+              ) : null}
+              <Link
+                href={`/admin/accounts/reports/stock-movements?product=${r.productId}`}
+                className="inline-flex min-h-11 items-center text-sm underline"
+              >
+                {locale === "hi" ? "इतिहास" : "History"}
+              </Link>
+            </div>
+          );
+        })}
+        {!rows.length ? (
+          <AccountsEmpty message={t("common.empty")} />
+        ) : null}
+      </div>
+
+      <div className="tt-panel mt-4 hidden overflow-x-auto sm:block">
         <table className="tt-table min-w-[980px]">
           <thead>
             <tr>
@@ -451,7 +544,45 @@ function InventoryInner({ initialQ }: { initialQ: string }) {
         </div>
       ) : null}
 
-      <div className="tt-panel mt-6 overflow-x-auto">
+      <div className="mt-6">
+        <p className="text-sm font-semibold sm:hidden">
+          {locale === "hi" ? "हाल की मूवमेंट" : "Recent movements"}
+        </p>
+        <div className="tt-acct-cards mt-3 sm:hidden">
+          {movements.map((m) => {
+            const p = db?.products.find((x) => x.id === m.productId);
+            const v = p?.variations.find((x) => x.id === m.variationId);
+            const c = p?.colors.find((x) => x.id === m.colorId);
+            return (
+              <div key={m.id} className="tt-panel tt-acct-card space-y-1">
+                <p className="text-xs text-[var(--ink-muted)]">{m.date}</p>
+                <p className="text-sm font-medium">
+                  {p?.name[locale] || m.productId}
+                  {v ? ` · ${v.size?.[locale] || v.label[locale]}` : ""}
+                  {c ? ` · ${c.name[locale]}` : ""}
+                </p>
+                <p className="text-xs capitalize text-[var(--ink-muted)]">
+                  {m.type.replaceAll("_", " ")} ({m.direction})
+                </p>
+                <p className="text-sm tabular-nums">
+                  {m.direction === "in" ? "+" : "−"}
+                  {m.qty} {t("common.bundles")}
+                  {" · "}
+                  {m.direction === "in" ? "+" : "−"}
+                  {m.secondaryQty ?? "—"}
+                  {m.unit ? ` ${unitLabel(m.unit, locale)}` : ""}
+                </p>
+                {m.note ? (
+                  <p className="text-xs text-[var(--ink-muted)]">{m.note}</p>
+                ) : null}
+              </div>
+            );
+          })}
+          {!movements.length ? (
+            <AccountsEmpty message={t("common.empty")} />
+          ) : null}
+        </div>
+        <div className="tt-panel mt-3 hidden overflow-x-auto sm:block">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
           {locale === "hi" ? "हाल की मूवमेंट" : "Recent movements"}
         </p>
@@ -502,6 +633,7 @@ function InventoryInner({ initialQ }: { initialQ: string }) {
         {!movements.length ? (
           <AccountsEmpty message={t("common.empty")} />
         ) : null}
+        </div>
       </div>
     </AccountsShell>
   );

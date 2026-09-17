@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useMemo, useState } from "react";
+import { FormEvent, Fragment, Suspense, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
@@ -34,9 +34,11 @@ import {
   checkAnyCapability,
   checkCapability,
   createVoucher,
+  cancelPurchaseOrder,
   markPurchaseOrderOrdered,
+  updateDraftPurchaseOrder,
 } from "@/lib/store/db";
-import type { PurchaseOrder, VoucherLine } from "@/lib/types";
+import type { PurchaseOrder, PurchaseOrderLine, VoucherLine } from "@/lib/types";
 import {
   sendWhatsAppMessage,
   supplierPoWhatsAppText,
@@ -88,6 +90,11 @@ function PurchasesInner() {
   const [msg, setMsg] = useState("");
   const [saving, setSaving] = useState(false);
   const [poBusyId, setPoBusyId] = useState<string | null>(null);
+  const [editPoId, setEditPoId] = useState<string | null>(null);
+  const [waPreview, setWaPreview] = useState<{
+    poId: string;
+    text: string;
+  } | null>(null);
   const [packingFile, setPackingFile] = useState<File | null>(null);
   const [form, setForm] = useState({
     supplierId: "",
@@ -191,7 +198,7 @@ function PurchasesInner() {
     }
   };
 
-  const onConfirmPo = async (po: PurchaseOrder) => {
+  const onConfirmPo = async (po: PurchaseOrder, waText?: string) => {
     if (!session || poBusyId) return;
     setPoBusyId(po.id);
     setError("");
@@ -200,31 +207,74 @@ function PurchasesInner() {
       markPurchaseOrderOrdered(po.id, session.id);
       refresh();
       const sup = db?.parties.find((p) => p.id === po.supplierId);
-      const wa = await sendWhatsAppMessage(
-        sup?.phone || "",
+      const text =
+        waText ??
         supplierPoWhatsAppText({
           po,
           companyName: db?.settings.companyName || "TT Enterprises",
           locale,
-        }),
-        whatsappCountryCode(db?.settings),
-        { outboxLabel: sup?.name }
-      );
-      setMsg(
-        `${t("accounts.poMarkedOrdered", { number: po.number })} · ${whatsappResultCopy(
-          wa,
-          {
-            sent: t("common.whatsappSent"),
-            opened: t("common.whatsappOpened"),
-            fail: t("common.whatsappSendFailed"),
-            noPhone: t("common.whatsappNoPhone"),
-          }
-        )}`
-      );
+        });
+      if (text.trim() && (sup?.phone || "").trim()) {
+        const wa = await sendWhatsAppMessage(
+          sup?.phone || "",
+          text,
+          whatsappCountryCode(db?.settings),
+          { outboxLabel: sup?.name }
+        );
+        setMsg(
+          `${t("accounts.poMarkedOrdered", { number: po.number })} · ${whatsappResultCopy(
+            wa,
+            {
+              sent: t("common.whatsappSent"),
+              opened: t("common.whatsappOpened"),
+              fail: t("common.whatsappSendFailed"),
+              noPhone: t("common.whatsappNoPhone"),
+            }
+          )}`
+        );
+      } else {
+        setMsg(t("accounts.poMarkedOrdered", { number: po.number }));
+      }
+      setWaPreview(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
     } finally {
       setPoBusyId(null);
+    }
+  };
+
+  const openWaPreview = (po: PurchaseOrder) => {
+    setWaPreview({
+      poId: po.id,
+      text: supplierPoWhatsAppText({
+        po,
+        companyName: db?.settings.companyName || "TT Enterprises",
+        locale,
+      }),
+    });
+  };
+
+  const saveDraftPo = (po: PurchaseOrder, lines: PurchaseOrderLine[]) => {
+    if (!session) return;
+    try {
+      updateDraftPurchaseOrder(po.id, session.id, { lines });
+      refresh();
+      setMsg(t("accounts.poDraftSaved", { number: po.number }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    }
+  };
+
+  const onCancelPo = (po: PurchaseOrder) => {
+    if (!session) return;
+    try {
+      cancelPurchaseOrder(po.id, session.id);
+      if (editPoId === po.id) setEditPoId(null);
+      if (waPreview?.poId === po.id) setWaPreview(null);
+      refresh();
+      setMsg(t("accounts.poCancelled", { number: po.number }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
     }
   };
 
@@ -552,38 +602,120 @@ function PurchasesInner() {
             <tbody>
               {openPos.map((po) => {
                 const sup = db?.parties.find((p) => p.id === po.supplierId);
+                const editing = editPoId === po.id;
+                const previewing = waPreview?.poId === po.id;
                 return (
-                  <tr key={po.id}>
-                    <td className="font-mono text-sm">{po.number}</td>
-                    <td>{po.date}</td>
-                    <td>{sup?.name || "—"}</td>
-                    <td className="capitalize">{po.status}</td>
-                    <td className="tabular-nums">{poRemainingQty(po)}</td>
-                    <td>
-                      <div className="flex flex-wrap gap-x-3">
-                        {po.status === "draft" ? (
-                          <button
-                            type="button"
-                            className="text-sm font-semibold text-[var(--brand-deep)] underline"
-                            disabled={poBusyId === po.id}
-                            onClick={() => void onConfirmPo(po)}
-                          >
-                            {poBusyId === po.id
-                              ? "…"
-                              : t("accounts.confirmPoWhatsApp")}
-                          </button>
-                        ) : null}
-                        {canBooks ? (
-                          <Link
-                            href="/admin/accounts/goods-received"
-                            className="text-sm font-semibold text-[var(--brand-deep)] underline"
-                          >
-                            {t("accounts.receiveAgainstPo")}
-                          </Link>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
+                  <Fragment key={po.id}>
+                    <tr>
+                      <td className="font-mono text-sm">{po.number}</td>
+                      <td>{po.date}</td>
+                      <td>{sup?.name || "—"}</td>
+                      <td className="capitalize">{po.status}</td>
+                      <td className="tabular-nums">{poRemainingQty(po)}</td>
+                      <td>
+                        <div className="flex flex-wrap gap-x-3">
+                          {po.status === "draft" ? (
+                            <>
+                              <button
+                                type="button"
+                                className="text-sm font-semibold text-[var(--brand-deep)] underline"
+                                onClick={() =>
+                                  setEditPoId(editing ? null : po.id)
+                                }
+                              >
+                                {editing
+                                  ? t("common.cancel")
+                                  : t("accounts.editDraftPo")}
+                              </button>
+                              <button
+                                type="button"
+                                className="text-sm font-semibold text-[var(--brand-deep)] underline"
+                                disabled={poBusyId === po.id}
+                                onClick={() => openWaPreview(po)}
+                              >
+                                {t("accounts.confirmPoWhatsApp")}
+                              </button>
+                              <button
+                                type="button"
+                                className="text-sm font-semibold text-[var(--danger)] underline"
+                                onClick={() => onCancelPo(po)}
+                              >
+                                {t("accounts.cancelPo")}
+                              </button>
+                            </>
+                          ) : null}
+                          {canBooks ? (
+                            <Link
+                              href="/admin/accounts/goods-received"
+                              className="text-sm font-semibold text-[var(--brand-deep)] underline"
+                            >
+                              {t("accounts.receiveAgainstPo")}
+                            </Link>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                    {editing && po.status === "draft" ? (
+                      <tr>
+                        <td colSpan={6} className="bg-[var(--surface)] p-3">
+                          <DraftPoEditor
+                            po={po}
+                            showRates={showRates}
+                            onSave={(lines) => saveDraftPo(po, lines)}
+                            onCancelPo={() => onCancelPo(po)}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                    {previewing ? (
+                      <tr>
+                        <td colSpan={6} className="bg-[var(--surface)] p-3">
+                          <p className="text-sm font-semibold">
+                            {t("accounts.whatsAppPreview")}
+                          </p>
+                          <textarea
+                            className="tt-input mt-2 min-h-32 w-full font-mono text-sm"
+                            value={waPreview.text}
+                            onChange={(e) =>
+                              setWaPreview({
+                                poId: po.id,
+                                text: e.target.value,
+                              })
+                            }
+                          />
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              className="tt-btn tt-btn-dark"
+                              disabled={poBusyId === po.id}
+                              onClick={() =>
+                                void onConfirmPo(po, waPreview.text)
+                              }
+                            >
+                              {poBusyId === po.id
+                                ? "…"
+                                : t("accounts.confirmAndSendWa")}
+                            </button>
+                            <button
+                              type="button"
+                              className="tt-btn tt-btn-outline"
+                              disabled={poBusyId === po.id}
+                              onClick={() => void onConfirmPo(po, " ")}
+                            >
+                              {t("accounts.confirmWithoutWa")}
+                            </button>
+                            <button
+                              type="button"
+                              className="tt-btn tt-btn-outline"
+                              onClick={() => setWaPreview(null)}
+                            >
+                              {t("common.cancel")}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -632,5 +764,85 @@ function PurchasesInner() {
       </div>
       )}
     </AccountsShell>
+  );
+}
+
+function DraftPoEditor({
+  po,
+  showRates,
+  onSave,
+  onCancelPo,
+}: {
+  po: PurchaseOrder;
+  showRates: boolean;
+  onSave: (lines: PurchaseOrderLine[]) => void;
+  onCancelPo: () => void;
+}) {
+  const t = useTranslations();
+  const [lines, setLines] = useState<PurchaseOrderLine[]>(() =>
+    po.lines.map((l) => ({ ...l }))
+  );
+
+  const patch = (i: number, next: Partial<PurchaseOrderLine>) => {
+    setLines((cur) => {
+      const copy = [...cur];
+      const row = { ...copy[i]!, ...next };
+      row.amount = (Number(row.qty) || 0) * (Number(row.rate) || 0);
+      copy[i] = row;
+      return copy;
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-semibold">{t("accounts.draftPoLines")}</p>
+      {lines.map((l, i) => (
+        <div key={l.id} className="grid gap-2 md:grid-cols-5">
+          <p className="self-center text-sm md:col-span-2">{l.itemLabel}</p>
+          <NumberField
+            className="tt-input"
+            integer
+            emptyAs={null}
+            value={l.qty}
+            onValueChange={(v) => patch(i, { qty: typeof v === "number" ? v : 0 })}
+          />
+          {showRates ? (
+            <NumberField
+              className="tt-input"
+              emptyAs={null}
+              value={l.rate}
+              onValueChange={(v) =>
+                patch(i, { rate: typeof v === "number" ? v : 0 })
+              }
+            />
+          ) : (
+            <span className="self-center text-xs text-[var(--ink-muted)]">••••</span>
+          )}
+          <button
+            type="button"
+            className="text-sm font-semibold text-[var(--danger)] underline"
+            onClick={() => setLines((cur) => cur.filter((_, j) => j !== i))}
+          >
+            {t("accounts.dropPoLine")}
+          </button>
+        </div>
+      ))}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="tt-btn tt-btn-dark"
+          onClick={() => onSave(lines)}
+        >
+          {t("common.save")}
+        </button>
+        <button
+          type="button"
+          className="tt-btn tt-btn-outline"
+          onClick={onCancelPo}
+        >
+          {t("accounts.cancelPo")}
+        </button>
+      </div>
+    </div>
   );
 }

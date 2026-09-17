@@ -5,6 +5,7 @@ import { Link, usePathname } from "@/i18n/routing";
 import { useLocale, useTranslations } from "next-intl";
 import { useDb, useSession } from "@/lib/hooks";
 import { getAdminQueues } from "@/lib/admin-queues";
+import { monthCloseObligation } from "@/lib/month-close-policy";
 import { checkCapability, isSalesDeskStaff, isStaff } from "@/lib/store/db";
 import { SALES_DESK_HREFS } from "@/lib/capabilities";
 import { refreshCloudDealerDirectory } from "@/lib/cloud-dealers";
@@ -76,12 +77,12 @@ const GROUPS: NavGroup[] = [
       {
         href: "/admin/owner",
         labelKey: "admin.ownerTracking",
-        superOnly: true,
+        cap: "view_financials",
       },
       {
         href: "/admin/owner/monthly-audit",
         labelKey: "admin.monthlyAudit",
-        superOnly: true,
+        cap: "view_financials",
       },
       {
         href: "/admin/audit",
@@ -227,6 +228,11 @@ export function AdminShell({
   const { session, ready } = useSession();
   const { db, refresh } = useDb();
   const queues = getAdminQueues(db);
+  const auditObligation = db ? monthCloseObligation(db) : null;
+  const showAuditBanner =
+    !!auditObligation &&
+    auditObligation.state !== "ok" &&
+    checkCapability(session, db, "view_financials");
   const salesDesk = isSalesDeskStaff(session, db);
   const [navOpen, setNavOpen] = useState(false);
   const [pendingOpen, setPendingOpen] = useState(false);
@@ -477,7 +483,7 @@ export function AdminShell({
         <div className="mb-3 flex items-center gap-2.5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/brand/tt-mark.svg"
+            src="/brand/tt-mark.png"
             alt=""
             className="h-10 w-10 rounded-[0.65rem]"
           />
@@ -579,6 +585,10 @@ export function AdminShell({
                       : pathname === l.href ||
                         pathname.startsWith(`${l.href}/`);
                   const badgeCount = l.badge ? queues.counts[l.badge] : 0;
+                  const auditHot =
+                    l.href === "/admin/owner/monthly-audit" &&
+                    auditObligation &&
+                    auditObligation.state !== "ok";
                   const showBadge =
                     l.href === "/admin/orders"
                       ? pendingTotal
@@ -602,7 +612,19 @@ export function AdminShell({
                           ? t("admin.hrMyDesk")
                           : t(l.labelKey as "admin.dashboard")}
                       </span>
-                      {showBadge > 0 ? (
+                      {auditHot ? (
+                        <span
+                          className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
+                            auditObligation?.state === "blocking"
+                              ? "bg-red-600 text-white"
+                              : active
+                                ? "bg-white/25 text-white"
+                                : "bg-red-600 text-white"
+                          }`}
+                        >
+                          {locale === "hi" ? "ऑडिट" : "Audit"}
+                        </span>
+                      ) : showBadge > 0 ? (
                         <span
                           className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
                             active
@@ -634,6 +656,34 @@ export function AdminShell({
 
   return (
     <div className="min-h-[70vh] border-t border-[var(--line)] bg-[var(--surface)]">
+      {showAuditBanner && auditObligation ? (
+        <Link
+          href={`/admin/owner/monthly-audit?month=${auditObligation.month}`}
+          className={`block px-4 py-2 text-sm font-semibold print:hidden ${
+            auditObligation.state === "blocking"
+              ? "bg-red-700 text-white"
+              : "bg-amber-100 text-amber-950"
+          }`}
+        >
+          {locale === "hi"
+            ? `मासिक ऑडिट ${auditObligation.month}: ${auditObligation.state === "blocking" ? "नए महीने की एंट्री बंद" : auditObligation.state === "overdue" ? "ओवरड्यू" : "इस सप्ताह करें"}`
+            : `Monthly audit ${auditObligation.month}: ${
+                auditObligation.state === "blocking"
+                  ? "new-month posting blocked"
+                  : auditObligation.state === "overdue"
+                    ? "overdue"
+                    : "due this week"
+              }`}
+          {auditObligation.override
+            ? locale === "hi"
+              ? " · ओवरराइड सक्रिय"
+              : " · override on"
+            : ""}
+          <span className="ml-2 underline">
+            {locale === "hi" ? "खोलें →" : "Open →"}
+          </span>
+        </Link>
+      ) : null}
       {toast ? (
         <Link
           href={toast.href}

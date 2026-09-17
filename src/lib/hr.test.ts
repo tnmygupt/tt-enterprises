@@ -1,18 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  advanceExceedsNet,
   computePayroll,
   dateInIst,
   deriveDayAttendance,
   distanceMeters,
+  isHrMonthLocked,
   isWeakGps,
+  leaveHasOverlap,
   leaveOverlapsMonth,
   leaveQuotaBlocked,
   leaveQuotaRemaining,
   matchGeofence,
   mergeHrAdvancesForStaff,
+  punchKindGuard,
+  weekdayIst,
   WEAK_GPS_M,
 } from "./hr";
-import type { HrPunch, HrTerms } from "./types";
+import type { HrLeave, HrPunch, HrTerms } from "./types";
 
 describe("geofence", () => {
   it("marks a punch inside a 150 m factory pin", () => {
@@ -469,5 +474,132 @@ describe("mergeHrAdvancesForStaff", () => {
     expect(out).toHaveLength(1);
     expect(out[0]?.amount).toBe(500);
     expect(out[0]?.status).toBe("issued");
+  });
+});
+
+describe("punch guards, leave overlap, payroll lock", () => {
+  it("uses the civil weekday of an IST calendar date", () => {
+    expect(weekdayIst("2026-09-06")).toBe(0);
+    expect(weekdayIst("2026-09-07")).toBe(1);
+  });
+
+  it("blocks a second in or an out without in", () => {
+    const punches: HrPunch[] = [
+      {
+        id: "1",
+        userId: "u1",
+        kind: "in",
+        at: "2026-09-01T03:40:00.000Z",
+        insideFence: true,
+        createdAt: "2026-09-01T03:40:00.000Z",
+      },
+    ];
+    expect(punchKindGuard(punches, "u1", "in", "2026-09-01T04:00:00.000Z")).toBe(
+      "duplicate_in"
+    );
+    expect(punchKindGuard([], "u1", "out", "2026-09-01T12:00:00.000Z")).toBe(
+      "out_without_in"
+    );
+    expect(punchKindGuard(punches, "u1", "out", "2026-09-01T12:00:00.000Z")).toBe(
+      null
+    );
+  });
+
+  it("detects overlapping open leave", () => {
+    const existing: HrLeave[] = [
+      {
+        id: "l1",
+        userId: "u1",
+        kind: "casual",
+        from: "2026-09-10",
+        to: "2026-09-12",
+        days: 3,
+        status: "approved",
+        createdAt: "2026-09-01T00:00:00.000Z",
+      },
+    ];
+    expect(
+      leaveHasOverlap(existing, {
+        id: "l2",
+        userId: "u1",
+        from: "2026-09-12",
+        to: "2026-09-13",
+        status: "pending",
+      })
+    ).toBe(true);
+    expect(
+      leaveHasOverlap(existing, {
+        id: "l2",
+        userId: "u1",
+        from: "2026-09-13",
+        to: "2026-09-14",
+        status: "pending",
+      })
+    ).toBe(false);
+  });
+
+  it("locks HR after a month-close stamp or an issued payslip", () => {
+    expect(
+      isHrMonthLocked({ month: "2026-08", audits: [{ month: "2026-08" }] })
+    ).toBe(true);
+    expect(
+      isHrMonthLocked({
+        month: "2026-08",
+        userId: "u1",
+        payslips: [
+          {
+            id: "ps1",
+            userId: "u1",
+            month: "2026-08",
+            workingDays: 0,
+            paidDays: 0,
+            presentDays: 0,
+            halfDays: 0,
+            leavePaid: 0,
+            leaveUnpaid: 0,
+            absentDays: 0,
+            lateDays: 0,
+            otMinutes: 0,
+            gross: 0,
+            otPay: 0,
+            advances: 0,
+            net: 100,
+            createdAt: "2026-09-01T00:00:00.000Z",
+            createdBy: "owner",
+          },
+        ],
+      })
+    ).toBe(true);
+    expect(
+      isHrMonthLocked({
+        month: "2026-08",
+        userId: "u1",
+        payslips: [
+          {
+            id: "ps1",
+            userId: "u1",
+            month: "2026-08",
+            workingDays: 0,
+            paidDays: 0,
+            presentDays: 0,
+            halfDays: 0,
+            leavePaid: 0,
+            leaveUnpaid: 0,
+            absentDays: 0,
+            lateDays: 0,
+            otMinutes: 0,
+            gross: 0,
+            otPay: 0,
+            advances: 0,
+            net: 100,
+            voided: true,
+            createdAt: "2026-09-01T00:00:00.000Z",
+            createdBy: "owner",
+          },
+        ],
+      })
+    ).toBe(false);
+    expect(advanceExceedsNet(500, 400)).toBe(true);
+    expect(advanceExceedsNet(400, 400)).toBe(false);
   });
 });

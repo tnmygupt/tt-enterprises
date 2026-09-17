@@ -1,5 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="TT">
-  <rect width="64" height="64" rx="14" fill="#FFFFFF"/>
-  <path d="M14 18h24v5.5H31.5V46h-7V23.5H14V18z" fill="#0B7EA4"/>
-  <path d="M34 18h16v5.5h-5.5V46H38V23.5H34V18z" fill="#0B7EA4"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none" role="img" aria-label="TT">
+  <rect width="512" height="512" rx="96" fill="#FFFFFF"/>
+  <g fill="#FF3131" transform="translate(256 256) skewX(-14) translate(-256 -256)">
+    <rect x="118" y="52" width="188" height="188" rx="38"/>
+    <rect x="324" y="128" width="106" height="112" rx="26"/>
+    <rect x="118" y="260" width="106" height="112" rx="26"/>
+    <rect x="242" y="260" width="188" height="188" rx="38"/>
+  </g>
 </svg>

@@ -10,11 +10,8 @@ import {
 } from "@/lib/server/whatsapp-notify";
 import { tallyWaConfigured } from "@/lib/server/tally-whatsapp";
 import { buildOwnerDailySummary, listStaleEstimates, ownerUsers } from "@/lib/owner-daily-summary";
-import {
-  dateInIst,
-  staffMissingInPunch,
-  suspiciousPunches,
-} from "@/lib/hr";
+import { dateInIst, staffMissingInPunch, suspiciousPunches } from "@/lib/hr";
+import { monthCloseObligation } from "@/lib/month-close-policy";
 import type { AppDatabase } from "@/lib/store/db";
 import type { Locale, Party, UserProfile } from "@/lib/types";
 import { roundMoney } from "@/lib/pricing";
@@ -68,10 +65,11 @@ export type WhatsAppDigestResult = {
   creditStaff: number;
   schemeDealers: number;
   schemeStaff: number;
-  dailyOwners: number;
+    dailyOwners: number;
   staleDealers: number;
   hrMissPunch: number;
   hrFence: number;
+  monthAudit: number;
   skipped: string[];
   dirty: boolean;
 };
@@ -94,6 +92,7 @@ export async function runWhatsAppDigest(
     staleDealers: 0,
     hrMissPunch: 0,
     hrFence: 0,
+    monthAudit: 0,
     skipped: [],
     dirty: false,
   };
@@ -402,6 +401,28 @@ export async function runWhatsAppDigest(
       });
       stamp.hrFenceOn = istToday;
     }
+  }
+
+  if (!digestRecentlySent(stamp.monthAuditOn, istToday, 1)) {
+    const obligation = monthCloseObligation(db);
+    if (obligation.state !== "ok") {
+      const blockers = obligation.blockers.length
+        ? ` Blockers: ${obligation.blockers.join(", ")}.`
+        : "";
+      const override = obligation.override
+        ? ` Override by ${obligation.override.by}.`
+        : "";
+      result.monthAudit = await notifyStaffWhatsAppServer({
+        users: db.users,
+        capability: "view_financials",
+        countryCode: country,
+        enabled,
+        text: `${company}: Monthly audit ${obligation.month} is ${obligation.state}.${blockers}${override} Open /admin/owner#audit`,
+      });
+      if (result.monthAudit > 0) stamp.monthAuditOn = istToday;
+    }
+  } else {
+    result.skipped.push("month audit already sent today");
   }
 
   result.dirty = JSON.stringify(stamp) !== beforeStamp;

@@ -76,7 +76,7 @@ expectTrue("PDF header present", raw.startsWith("%PDF"));
 // jsPDF writes text uncompressed by default, so the strings are greppable.
 expectTrue("no raw rupee sign survived into the document", !raw.includes("\u20B9"));
 expectTrue("company name on the page", raw.includes("T T Enterprises"));
-expectTrue("GSTIN on the letterhead", raw.includes("09ABCDE1234F1Z5"));
+expectTrue("GSTIN omitted from the letterhead", !raw.includes("09ABCDE1234F1Z5"));
 expectTrue("page numbering stamped", raw.includes("Page 1 of"));
 expectTrue("last page numbered too", raw.includes(`Page ${pages} of ${pages}`));
 expectTrue("amounts rendered as Rs.", raw.includes("Rs."));

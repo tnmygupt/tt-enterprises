@@ -35,8 +35,8 @@ export function companyFromSettings(
   };
 }
 
-const BRAND: [number, number, number] = [15, 76, 74];
-const RULE: [number, number, number] = [205, 213, 212];
+const BRAND: [number, number, number] = [194, 24, 24];
+const RULE: [number, number, number] = [234, 220, 218];
 const MUTED = 110;
 
 /**
@@ -120,7 +120,6 @@ export async function renderTablePdf(options: ExportPdfOptions) {
     .map((line) => sanitizePdfText(line))
     .filter(Boolean);
   const contact = [
-    company.gstin ? `GSTIN ${sanitizePdfText(company.gstin)}` : "",
     [company.phone, company.phone2]
       .map((p) => sanitizePdfText(p))
       .filter(Boolean)
@@ -237,6 +236,145 @@ export async function renderTablePdf(options: ExportPdfOptions) {
 /** jsPDF + autotable are ~400 kB — load them only when an export is clicked. */
 export async function exportTablePdf(options: ExportPdfOptions): Promise<void> {
   const doc = await renderTablePdf(options);
+  const safeName = options.filename.replace(/[^\w.-]+/g, "_");
+  doc.save(safeName.endsWith(".pdf") ? safeName : `${safeName}.pdf`);
+}
+
+export type PdfTableSection = {
+  title: string;
+  subtitle?: string;
+  columns: string[];
+  rows: PdfCell[][];
+  foot?: PdfCell[];
+};
+
+export type ExportMultiPdfOptions = {
+  title: string;
+  subtitle?: string;
+  filename: string;
+  companyName?: string;
+  company?: PdfCompany;
+  orientation?: "portrait" | "landscape";
+  sections: PdfTableSection[];
+};
+
+/**
+ * One PDF with a letterhead plus sequential tables (month pack, multi-report).
+ * Each section is one `autoTable` pass so page breaks stay inside a table.
+ */
+export async function renderMultiTablePdf(options: ExportMultiPdfOptions) {
+  if (!options.sections.length) {
+    return renderTablePdf({
+      ...options,
+      columns: ["Section"],
+      rows: [["No data"]],
+    });
+  }
+  const first = options.sections[0]!;
+  const doc = await renderTablePdf({
+    ...options,
+    title: options.title,
+    subtitle: options.subtitle
+      ? `${options.subtitle} — ${first.title}`
+      : first.title,
+    columns: first.columns,
+    rows: first.rows,
+    foot: first.foot,
+  });
+
+  const [{ default: autoTable }] = await Promise.all([
+    import("jspdf-autotable"),
+  ]);
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 14;
+
+  for (const section of options.sections.slice(1)) {
+    doc.addPage();
+    let y = 16;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.setTextColor(20);
+    doc.text(sanitizePdfText(section.title), margin, y);
+    y += 6;
+    if (section.subtitle) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(MUTED);
+      const wrapped = doc.splitTextToSize(
+        sanitizePdfText(section.subtitle),
+        pageW - margin * 2
+      ) as string[];
+      doc.text(wrapped, margin, y);
+      y += wrapped.length * 4 + 2;
+    }
+    const rightAligned = numericColumns(section.columns, section.rows);
+    const columnStyles: Record<number, { halign: "right" }> = {};
+    for (const col of rightAligned) columnStyles[col] = { halign: "right" };
+    autoTable(doc, {
+      startY: y,
+      head: [section.columns.map((c) => sanitizePdfText(c))],
+      body: section.rows.map((r) => r.map((c) => sanitizePdfText(c))),
+      foot: section.foot
+        ? [section.foot.map((c) => sanitizePdfText(c))]
+        : undefined,
+      theme: "grid",
+      styles: {
+        fontSize: 8,
+        cellPadding: 2,
+        lineColor: RULE,
+        lineWidth: 0.1,
+        textColor: 30,
+        overflow: "linebreak",
+      },
+      headStyles: {
+        fillColor: BRAND,
+        textColor: 255,
+        fontStyle: "bold",
+        lineColor: BRAND,
+      },
+      alternateRowStyles: { fillColor: [247, 250, 249] },
+      footStyles: {
+        fillColor: [233, 239, 238],
+        textColor: 20,
+        fontStyle: "bold",
+        lineColor: RULE,
+      },
+      columnStyles,
+      margin: { left: margin, right: margin, bottom: 16 },
+      showHead: "everyPage",
+    });
+  }
+
+  const generated = new Date().toLocaleString("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const company = options.company ?? {};
+  const name = sanitizePdfText(
+    company.name || options.companyName || "T T Enterprises"
+  );
+  const pages = doc.getNumberOfPages();
+  for (let page = 1; page <= pages; page++) {
+    doc.setPage(page);
+    doc.setDrawColor(RULE[0], RULE[1], RULE[2]);
+    doc.setLineWidth(0.2);
+    doc.line(margin, pageH - 12, pageW - margin, pageH - 12);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(MUTED);
+    doc.text(`${name} · ${sanitizePdfText(generated)}`, margin, pageH - 8);
+    doc.text(`Page ${page} of ${pages}`, pageW - margin, pageH - 8, {
+      align: "right",
+    });
+  }
+  return doc;
+}
+
+export async function exportMultiTablePdf(
+  options: ExportMultiPdfOptions
+): Promise<void> {
+  const doc = await renderMultiTablePdf(options);
   const safeName = options.filename.replace(/[^\w.-]+/g, "_");
   doc.save(safeName.endsWith(".pdf") ? safeName : `${safeName}.pdf`);
 }

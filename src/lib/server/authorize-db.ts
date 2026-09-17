@@ -20,6 +20,7 @@ import type {
 } from "@/lib/types";
 import { OWNER_SENSITIVE_ACCOUNTS } from "@/lib/accounting/seed";
 import { isPurchaseCostVoucherType } from "@/lib/owner-sensitive";
+import { resolveUnitWeightKg } from "@/lib/pricing";
 import { trimAccessPlaces } from "@/lib/server/access-log";
 import {
   capabilityContextFrom,
@@ -45,8 +46,8 @@ import {
   restoreStockCountRates,
   stripStockCountRates,
 } from "@/lib/stock-count";
-import type { ServerSession } from "@/lib/server/session";
-import { isStaffRole } from "@/lib/server/session";
+import { liveSessionUser } from "@/lib/server/live-login";
+import { isStaffRole, type ServerSession } from "@/lib/server/session";
 import { calcShippingAmount } from "@/lib/shipping";
 import { roundOffRupees } from "@/lib/pricing";
 import { applyOrderEstimateStock } from "@/lib/inventory";
@@ -560,7 +561,8 @@ export function staffScopedProjection(
   } else if (
     !cap("verify_payment") &&
     !cap("manage_orders") &&
-    !cap("manage_wallet")
+    !cap("manage_wallet") &&
+    !cap("manage_accounts")
   ) {
     out.settings = stripPaymentSettings(out.settings);
   }
@@ -651,10 +653,7 @@ function lookupCatalog(
     ? product.variations.find((v) => v.id === line.variationId)
     : product.variations[0];
   const rate = Number(variation?.rate ?? product.baseRate) || 0;
-  const rawVarWt = Number(variation?.weightKg);
-  const rawBaseWt = Number(product.baseWeightKg);
-  const unitWeightKg =
-    rawVarWt > 0 ? rawVarWt : rawBaseWt > 0 ? rawBaseWt : 0;
+  const unitWeightKg = resolveUnitWeightKg(product, variation);
   return {
     rate,
     unitWeightKg,
@@ -1431,9 +1430,12 @@ export function resolveCloudActor(
   existing: AppDatabase,
   session: ServerSession
 ): { actor: UserProfile; role: UserRole } {
-  const actor = (existing.users ?? []).find((u) => u.id === session.id);
-  if (!actor) throw new Error("Account not found in cloud database");
-  if (!actor.active) throw new Error("Account is disabled");
+  const actor = liveSessionUser(existing, session.id);
+  if (!actor) {
+    const row = (existing.users ?? []).find((u) => u.id === session.id);
+    if (row && !row.active) throw new Error("Account is disabled");
+    throw new Error("Account not found in cloud database");
+  }
   return { actor, role: actor.role };
 }
 

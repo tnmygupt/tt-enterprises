@@ -17,12 +17,17 @@ import { loc } from "@/lib/localized";
 import {
   calcLineTotal,
   formatInr,
+  isPackCountUnit,
   isSqftUnit,
+  pcsPerPacketLabel,
   ratePerPacket,
   ratePerPiece,
+  resolvePcsPerPacket,
   resolveRate,
   resolveSqftPack,
+  resolveUnitWeightKg,
   resolveWeightKg,
+  roundMoney,
   sqftPerPiece,
   unitLabel,
   variationDisplayLabel,
@@ -389,10 +394,27 @@ export default function ProductDetailPage() {
                   spec.pcsPerPacket
                 );
                 const sqft = sqftPerPiece(spec.lengthFt, spec.widthFt);
-                return `${sqft} sqft/pc · ${formatInr(pc, locale)}/pc · ${formatInr(pkt, locale)}/pkt`;
+                const pcs = spec.pcsPerPacket;
+                const pcsBit = pcs > 0 ? ` · ${pcsPerPacketLabel(pcs, locale)}` : "";
+                return `${sqft} sqft/pc${pcsBit} · ${formatInr(pc, locale)}/pc · ${formatInr(pkt, locale)}/pkt`;
               })()}
             </p>
           ) : null}
+          {(() => {
+            const pcs = resolvePcsPerPacket(product, variation);
+            if (!(pcs > 0)) return null;
+            const shipKg = isPackCountUnit(product.unit)
+              ? resolveUnitWeightKg(product, variation)
+              : 0;
+            return (
+              <p className="mt-3 rounded-xl border border-[var(--brand)] bg-[var(--surface-2)] px-3 py-2 text-lg font-bold text-[var(--brand-deep)]">
+                {t("shop.pcsInPacket", { n: pcs })}
+                {shipKg > 0
+                  ? ` · ${t("shop.kgPerPkt", { kg: roundMoney(shipKg) })}`
+                  : ""}
+              </p>
+            );
+          })()}
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
             {product.pricingMode === "bundle"
               ? t("common.bundleHint")
@@ -448,6 +470,22 @@ export default function ProductDetailPage() {
                       <span className="block font-semibold">
                         {loc(v.size, locale) || loc(v.label, locale)}
                       </span>
+                      {(() => {
+                        const pcsLbl = pcsPerPacketLabel(
+                          resolvePcsPerPacket(product, v),
+                          locale
+                        );
+                        if (!pcsLbl) return null;
+                        return (
+                          <span
+                            className={`block text-sm font-bold tabular-nums ${
+                              selected ? "text-white" : "text-[var(--brand)]"
+                            }`}
+                          >
+                            {pcsLbl}
+                          </span>
+                        );
+                      })()}
                       <span
                         className={`block text-xs ${
                           selected ? "text-white/80" : "text-[var(--ink-muted)]"

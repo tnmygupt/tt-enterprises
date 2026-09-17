@@ -108,3 +108,23 @@ export function matchAccountsHotkey(
 
   return null;
 }
+
+export function matchVoucherFormHotkey(
+  e: KeyboardEvent
+): "save" | "add-line" | "remove-line" | null {
+  const key = e.key;
+  const lower = key.length === 1 ? key.toLowerCase() : key;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && lower === "s") return "save";
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && key === "Enter") return "add-line";
+  if (e.altKey && !e.ctrlKey && !e.metaKey && (key === "Insert" || lower === "i")) {
+    return "add-line";
+  }
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && key === "Backspace") {
+    if (isTypingTarget(e.target)) return null;
+    return "remove-line";
+  }
+  if (e.altKey && !e.ctrlKey && !e.metaKey && (key === "Delete" || lower === "d")) {
+    return "remove-line";
+  }
+  return null;
+}
