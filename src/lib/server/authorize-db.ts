@@ -20,6 +20,7 @@ import type {
 } from "@/lib/types";
 import { OWNER_SENSITIVE_ACCOUNTS } from "@/lib/accounting/seed";
 import { isPurchaseCostVoucherType } from "@/lib/owner-sensitive";
+import { resolveUnitWeightKg } from "@/lib/pricing";
 import { trimAccessPlaces } from "@/lib/server/access-log";
 import {
   capabilityContextFrom,
@@ -652,10 +653,7 @@ function lookupCatalog(
     ? product.variations.find((v) => v.id === line.variationId)
     : product.variations[0];
   const rate = Number(variation?.rate ?? product.baseRate) || 0;
-  const rawVarWt = Number(variation?.weightKg);
-  const rawBaseWt = Number(product.baseWeightKg);
-  const unitWeightKg =
-    rawVarWt > 0 ? rawVarWt : rawBaseWt > 0 ? rawBaseWt : 0;
+  const unitWeightKg = resolveUnitWeightKg(product, variation);
   return {
     rate,
     unitWeightKg,

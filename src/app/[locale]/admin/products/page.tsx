@@ -23,8 +23,11 @@ import {
   formatInr,
   isPackCountUnit,
   isSqftUnit,
+  packetWeightKgFromGsm,
+  pieceWeightKgFromGsm,
   ratePerPacket,
   ratePerPiece,
+  resolveGsmPacketWeightKg,
   sqftPerPiece,
   sqftSizeLabel,
 } from "@/lib/pricing";
@@ -68,6 +71,7 @@ function blankVariation(
     | "widthFt"
     | "pcsPerPacket"
     | "ratePerSqft"
+    | "gsm"
   >
 ): ProductVariation {
   const lengthFt = product.lengthFt ?? 0;
@@ -85,9 +89,25 @@ function blankVariation(
     widthFt: product.widthFt,
     pcsPerPacket: product.pcsPerPacket,
     ratePerSqft: product.ratePerSqft ?? product.baseRate,
-    weightKg: product.baseWeightKg ?? 1,
+    weightKg: variationHasGsmPackWeight(product) ? 0 : product.baseWeightKg ?? 1,
     stock: 0,
   };
+}
+
+function variationHasGsmPackWeight(
+  product: Pick<
+    Product,
+    "gsm" | "lengthFt" | "widthFt" | "pcsPerPacket" | "unit"
+  >,
+  variation?: Pick<
+    ProductVariation,
+    "lengthFt" | "widthFt" | "pcsPerPacket"
+  > | null
+): boolean {
+  return (
+    isPackCountUnit(product.unit) &&
+    resolveGsmPacketWeightKg(product, variation) > 0
+  );
 }
 
 /**
@@ -441,10 +461,17 @@ export default function AdminProductsPage() {
             throw new Error("Sq/ft needs ₹ per sqft > 0");
           }
         }
+        const typedWt =
+          v.weightKg != null && v.weightKg > 0 ? v.weightKg : 0;
+        const gsmWt = variationHasGsmPackWeight(editing, v)
+          ? resolveGsmPacketWeightKg(editing, v)
+          : 0;
         const unitWt =
-          v.weightKg != null && v.weightKg > 0
-            ? v.weightKg
-            : editing.baseWeightKg ?? 0;
+          typedWt > 0
+            ? typedWt
+            : gsmWt > 0
+              ? gsmWt
+              : editing.baseWeightKg ?? 0;
         // pkt/pcs/sqft need pack weight for shipping; kg/jhal need it for billing
         if (
           (isPackCountUnit(editing.unit) ||
@@ -455,7 +482,7 @@ export default function AdminProductsPage() {
         ) {
           throw new Error(
             isPackCountUnit(editing.unit)
-              ? "Pkt/pc/sqft needs pack weight (kg) on each size — used for shipping"
+              ? "Pkt/pc/sqft needs pack weight (kg) — or GSM + size (ft) + pcs/pkt so it can auto-calculate"
               : "Each variation needs weight (kg) > 0"
           );
         }
@@ -598,7 +625,9 @@ export default function AdminProductsPage() {
             weightKg:
               v.weightKg != null && v.weightKg > 0
                 ? v.weightKg
-                : editing.baseWeightKg ?? 1,
+                : variationHasGsmPackWeight(editing, v)
+                  ? 0
+                  : editing.baseWeightKg ?? 1,
           };
           return isSqftUnit(editing.unit)
             ? applySqftComputedRate(editing, row)
@@ -1312,7 +1341,9 @@ export default function AdminProductsPage() {
               <div>
                 <label className="tt-label">
                   {isPackCountUnit(editing.unit)
-                    ? "Pack weight for shipping (kg) *"
+                    ? variationHasGsmPackWeight(editing)
+                      ? "Pack weight for shipping (kg)"
+                      : "Pack weight for shipping (kg) *"
                     : "Default weight / bundle (kg)"}
                 </label>
                 <NumberField
@@ -1330,7 +1361,9 @@ export default function AdminProductsPage() {
                 />
                 <p className="mt-1 text-xs text-[var(--ink-muted)]">
                   {isPackCountUnit(editing.unit)
-                    ? "Per pack — bill is qty × rate; shipping uses this × qty on the weight slab"
+                    ? variationHasGsmPackWeight(editing)
+                      ? `Auto ${pieceWeightKgFromGsm(editing.lengthFt ?? 0, editing.widthFt ?? 0, editing.gsm ?? 0)} kg/pc · ${packetWeightKgFromGsm(editing.lengthFt ?? 0, editing.widthFt ?? 0, editing.gsm ?? 0, editing.pcsPerPacket ?? 0)} kg/pkt from GSM × size × pcs — leave pack kg blank unless you want an override`
+                      : "Per pack — bill is qty × rate; shipping uses this × qty on the weight slab. Or fill GSM + size + pcs/pkt to auto-calc."
                     : "Default for new sizes — existing size weights stay independent"}
                 </p>
               </div>
@@ -2185,14 +2218,30 @@ export default function AdminProductsPage() {
                     <div>
                       <label className="tt-label">
                         Weight / bundle (kg)
-                        {editing.pricingMode === "bundle" ? " *" : ""}
+                        {editing.pricingMode === "bundle" ||
+                        ((editing.unit === "kg" || editing.unit === "jhal") &&
+                          !variationHasGsmPackWeight(editing, v))
+                          ? " *"
+                          : isPackCountUnit(editing.unit) &&
+                              !variationHasGsmPackWeight(editing, v)
+                            ? " *"
+                            : ""}
                       </label>
                       <NumberField
                         className="tt-input"
                         step={0.1}
                         min={0}
                         emptyAs={null}
-                        value={v.weightKg ?? 0}
+                        placeholder={
+                          variationHasGsmPackWeight(editing, v)
+                            ? String(resolveGsmPacketWeightKg(editing, v))
+                            : undefined
+                        }
+                        value={
+                          v.weightKg != null && v.weightKg > 0
+                            ? v.weightKg
+                            : ""
+                        }
                         onValueChange={(val) =>
                           updateVariation(i, {
                             weightKg: typeof val === "number" ? val : 0,
@@ -2281,13 +2330,42 @@ export default function AdminProductsPage() {
                           pcs
                         );
                         if (!(sqft > 0 && pcs > 0 && rps > 0)) {
+                          const pcKg = pieceWeightKgFromGsm(
+                            lengthFt,
+                            widthFt,
+                            editing.gsm ?? 0
+                          );
+                          const pktKg = packetWeightKgFromGsm(
+                            lengthFt,
+                            widthFt,
+                            editing.gsm ?? 0,
+                            pcs
+                          );
+                          if (pcKg > 0 && pktKg > 0) {
+                            return `Auto ${pcKg} kg/pc · ${pktKg} kg/pkt from GSM × size × pcs (shipping). Fill ₹/sqft for ₹/pc · ₹/pkt.`;
+                          }
                           return "Enter L, W, pcs/packet and ₹/sqft to see ₹/pc and ₹/pkt.";
                         }
-                        return `${sqftSizeLabel(lengthFt, widthFt)} = ${sqft} sqft/pc · ${formatInr(pc, locale)}/pc · ${formatInr(pkt, locale)}/pkt${
+                        const pcKg = pieceWeightKgFromGsm(
+                          lengthFt,
+                          widthFt,
+                          editing.gsm ?? 0
+                        );
+                        const pktKg = packetWeightKgFromGsm(
+                          lengthFt,
+                          widthFt,
+                          editing.gsm ?? 0,
+                          pcs
+                        );
+                        const gsmBit =
+                          pcKg > 0 && pktKg > 0
+                            ? ` · auto ${pcKg} kg/pc · ${pktKg} kg/pkt`
+                            : "";
+                        const typedBit =
                           (v.weightKg ?? 0) > 0
-                            ? ` · pack ${v.weightKg} kg (shipping)`
-                            : ""
-                        }`;
+                            ? ` · pack ${v.weightKg} kg (shipping override)`
+                            : "";
+                        return `${sqftSizeLabel(lengthFt, widthFt)} = ${sqft} sqft/pc · ${formatInr(pc, locale)}/pc · ${formatInr(pkt, locale)}/pkt${gsmBit}${typedBit}`;
                       })()}
                     </p>
                   ) : v.rate > 0 && (v.weightKg ?? 0) > 0 ? (
@@ -2295,6 +2373,26 @@ export default function AdminProductsPage() {
                       {editing.pricingMode === "bundle"
                         ? `1 bundle ≈ ${formatInr(v.rate * (v.weightKg || 0), locale)} (${formatInr(v.rate, locale)} × ${v.weightKg} kg)`
                         : `1 pc = ${formatInr(v.rate, locale)} · wt ${v.weightKg} kg (shipping)`}
+                    </p>
+                  ) : variationHasGsmPackWeight(editing, v) ? (
+                    <p className="mt-2 text-xs text-[var(--ink-muted)]">
+                      {(() => {
+                        const lengthFt = v.lengthFt ?? editing.lengthFt ?? 0;
+                        const widthFt = v.widthFt ?? editing.widthFt ?? 0;
+                        const pcs = v.pcsPerPacket ?? editing.pcsPerPacket ?? 0;
+                        const pcKg = pieceWeightKgFromGsm(
+                          lengthFt,
+                          widthFt,
+                          editing.gsm ?? 0
+                        );
+                        const pktKg = packetWeightKgFromGsm(
+                          lengthFt,
+                          widthFt,
+                          editing.gsm ?? 0,
+                          pcs
+                        );
+                        return `Auto ${pcKg} kg/pc · ${pktKg} kg/pkt from GSM × size × pcs (shipping)`;
+                      })()}
                     </p>
                   ) : null}
                 </div>

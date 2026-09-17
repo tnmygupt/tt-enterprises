@@ -17,12 +17,17 @@ import { loc } from "@/lib/localized";
 import {
   calcLineTotal,
   formatInr,
+  isPackCountUnit,
   isSqftUnit,
+  pcsPerPacketLabel,
   ratePerPacket,
   ratePerPiece,
+  resolvePcsPerPacket,
   resolveRate,
   resolveSqftPack,
+  resolveUnitWeightKg,
   resolveWeightKg,
+  roundMoney,
   sqftPerPiece,
   unitLabel,
   variationDisplayLabel,
@@ -393,6 +398,21 @@ export default function ProductDetailPage() {
               })()}
             </p>
           ) : null}
+          {(() => {
+            const pcs = resolvePcsPerPacket(product, variation);
+            if (!(pcs > 0)) return null;
+            const shipKg = isPackCountUnit(product.unit)
+              ? resolveUnitWeightKg(product, variation)
+              : 0;
+            return (
+              <p className="mt-2 text-base font-semibold text-[var(--brand-deep)]">
+                {t("shop.pcsInPacket", { n: pcs })}
+                {shipKg > 0
+                  ? ` · ${t("shop.kgPerPkt", { kg: roundMoney(shipKg) })}`
+                  : ""}
+              </p>
+            );
+          })()}
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
             {product.pricingMode === "bundle"
               ? t("common.bundleHint")
@@ -447,6 +467,13 @@ export default function ProductDetailPage() {
                     >
                       <span className="block font-semibold">
                         {loc(v.size, locale) || loc(v.label, locale)}
+                        {(() => {
+                          const pcsLbl = pcsPerPacketLabel(
+                            resolvePcsPerPacket(product, v),
+                            locale
+                          );
+                          return pcsLbl ? ` · ${pcsLbl}` : "";
+                        })()}
                       </span>
                       <span
                         className={`block text-xs ${

@@ -17,6 +17,7 @@ import {
   schemeRewardLabel,
 } from "@/lib/schemes";
 import { OrderDiscountExplain } from "@/components/OrderDiscountExplain";
+import { PacketWeightCalculator } from "@/components/PacketWeightCalculator";
 import { resolveHomeNewProducts, resolveHomePromoProducts } from "@/lib/home-merch";
 import {
   checkCapability,
@@ -503,6 +504,8 @@ function LoggedInHome() {
           </div>
         </div>
 
+        <PacketWeightCalculator />
+
         <MyOrdersSection orders={myOrders} />
         <SchemesSection
           schemes={schemes}
@@ -987,6 +990,8 @@ function AuthLanding() {
             )}
           </div>
         </div>
+
+        <PacketWeightCalculator />
 
         <MoreInfoSection />
       </div>

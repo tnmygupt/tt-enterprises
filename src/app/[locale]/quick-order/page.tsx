@@ -12,6 +12,8 @@ import {
   catalogFromRate,
   calcLineTotal,
   formatInr,
+  pcsPerPacketLabel,
+  resolvePcsPerPacket,
   resolveRate,
   resolveSqftPack,
   resolveWeightKg,
@@ -63,6 +65,20 @@ function productThumb(product: Product): string {
     product.media?.find((m) => m.type === "image" && m.url)?.url ||
     ""
   );
+}
+
+function productPcsPktLabel(
+  product: Product,
+  locale: "en" | "hi"
+): string {
+  const fromVars = (product.variations ?? [])
+    .map((v) => resolvePcsPerPacket(product, v))
+    .filter((n) => n > 0);
+  const pcs =
+    fromVars.length && fromVars.every((n) => n === fromVars[0])
+      ? fromVars[0]
+      : resolvePcsPerPacket(product);
+  return pcsPerPacketLabel(pcs, locale);
 }
 
 function rateUnitSuffix(product: Product, locale: "en" | "hi"): string {
@@ -983,6 +999,10 @@ export default function QuickOrderPage() {
                       <strong>{p.name[locale]}</strong>
                       <small>
                         {productRateLabel(p, locale)}
+                        {(() => {
+                          const pcsLbl = productPcsPktLabel(p, locale);
+                          return pcsLbl ? ` · ${pcsLbl}` : "";
+                        })()}
                         {outOfStock
                           ? locale === "hi"
                             ? " · स्टॉक खत्म"
@@ -1022,6 +1042,14 @@ export default function QuickOrderPage() {
                         {c.variation
                           ? variationDisplayLabel(c.variation, locale)
                           : ""}
+                        {(() => {
+                          if (!c.product) return "";
+                          const pcsLbl = pcsPerPacketLabel(
+                            resolvePcsPerPacket(c.product, c.variation),
+                            locale
+                          );
+                          return pcsLbl ? ` · ${pcsLbl}` : "";
+                        })()}
                         {c.color ? ` · ${c.color.name[locale]}` : ""}
                         {(() => {
                           if (!(c.rate > 0) || !c.product) return "";
@@ -1215,6 +1243,13 @@ export default function QuickOrderPage() {
                         onClick={() => toggleSheetSize(v.id)}
                       >
                         {variationDisplayLabel(v, locale)}
+                        {(() => {
+                          const pcsLbl = pcsPerPacketLabel(
+                            resolvePcsPerPacket(sheetProduct, v),
+                            locale
+                          );
+                          return pcsLbl ? ` · ${pcsLbl}` : "";
+                        })()}
                         {vRate > 0
                           ? ` · ${formatInr(vRate, locale)}${rateUnitSuffix(sheetProduct, locale)}`
                           : ""}
@@ -1292,6 +1327,16 @@ export default function QuickOrderPage() {
                     <div key={key} className="tt-qo-sheet-draft-row">
                       <p className="tt-qo-sheet-draft-size">
                         {variationDisplayLabel(line.variation, locale)}
+                        {(() => {
+                          const pcsLbl = pcsPerPacketLabel(
+                            resolvePcsPerPacket(
+                              sheetProduct,
+                              line.variation
+                            ),
+                            locale
+                          );
+                          return pcsLbl ? ` · ${pcsLbl}` : "";
+                        })()}
                         {line.color ? ` · ${line.color.name[locale]}` : ""}
                         <span>
                           {line.max <= 0

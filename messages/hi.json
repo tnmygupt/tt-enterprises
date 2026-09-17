@@ -60,7 +60,20 @@
     "step3Title": "पेमेंट और ट्रैक",
     "step3Body": "UPI QR या बैंक से भुगतान करें, प्रूफ अपलोड करें, फिर LR और डिलीवरी ट्रैक करें।",
     "contactTitle": "संपर्क",
-    "loginToOrder": "ऑर्डर के लिए लॉगिन करें"
+    "loginToOrder": "ऑर्डर के लिए लॉगिन करें",
+    "packetCalcKicker": "सिलपॉलिन / तिरपाल",
+    "packetCalcTitle": "पैकेट वजन कैलकुलेटर",
+    "packetCalcHint": "GSM, साइज़ (फीट) और पीस/पैकेट से प्रति पीस और प्रति पैकेट किलो निकालें। पैक किलो खाली हो तो शिपिंग भी यही गणना इस्तेमाल करती है।",
+    "packetCalcGsm": "GSM",
+    "packetCalcLength": "लंबाई (फीट)",
+    "packetCalcWidth": "चौड़ाई (फीट)",
+    "packetCalcPackets": "पैकेट",
+    "packetCalcPcs": "पीस / पैकेट",
+    "packetCalcPcsInPkt": "1 पैकेट में पीस",
+    "packetCalcKgPc": "किग्रा / पीस",
+    "packetCalcKgPkt": "किग्रा / पैकेट",
+    "packetCalcTotalKg": "कुल किग्रा",
+    "packetCalcFormula": "किग्रा/पीस = (लंबाई × चौड़ाई × GSM) ÷ {n} · किग्रा/पैकेट = किग्रा/पीस × पीस · शिपिंग किग्रा = किग्रा/पैकेट × पैकेट"
   },
   "common": {
     "addToCart": "ऑर्डर में डालें",
@@ -1465,6 +1478,8 @@
     "noImage": "कोई इमेज नहीं",
     "brand": "ब्रांड",
     "stock": "स्टॉक",
-    "addedToCart": "ऑर्डर में जोड़ा गया"
+    "addedToCart": "ऑर्डर में जोड़ा गया",
+    "pcsInPacket": "{n} पीस 1 पैकेट में",
+    "kgPerPkt": "~{kg} किग्रा/पैकेट"
   }
 }

@@ -60,7 +60,20 @@
     "step3Title": "Pay & track",
     "step3Body": "Pay via UPI QR or bank transfer, upload proof, then track LR and delivery.",
     "contactTitle": "Contact",
-    "loginToOrder": "Login to order"
+    "loginToOrder": "Login to order",
+    "packetCalcKicker": "Silpauline / tirpal",
+    "packetCalcTitle": "Packet weight calculator",
+    "packetCalcHint": "Find kg per piece and per packet from GSM, size in feet, and pcs/pkt. Shipping uses this same math when pack kg is blank.",
+    "packetCalcGsm": "GSM",
+    "packetCalcLength": "Length (ft)",
+    "packetCalcWidth": "Width (ft)",
+    "packetCalcPcs": "Pcs / packet",
+    "packetCalcPackets": "Packets",
+    "packetCalcPcsInPkt": "Pcs in 1 pkt",
+    "packetCalcKgPc": "kg / pc",
+    "packetCalcKgPkt": "kg / pkt",
+    "packetCalcTotalKg": "Total kg",
+    "packetCalcFormula": "kg/pc = (L × W × GSM) ÷ {n} · kg/pkt = kg/pc × pcs · shipping kg = kg/pkt × packets"
   },
   "common": {
     "addToCart": "Add to order",
@@ -1465,6 +1478,8 @@
     "noImage": "No image",
     "brand": "Brand",
     "stock": "Stock",
-    "addedToCart": "Added to order"
+    "addedToCart": "Added to order",
+    "pcsInPacket": "{n} pieces in 1 packet",
+    "kgPerPkt": "~{kg} kg/pkt"
   }
 }
