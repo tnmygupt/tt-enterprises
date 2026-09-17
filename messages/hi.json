@@ -62,18 +62,14 @@
     "contactTitle": "संपर्क",
     "loginToOrder": "ऑर्डर के लिए लॉगिन करें",
     "packetCalcKicker": "सिलपॉलिन / तिरपाल",
-    "packetCalcTitle": "पैकेट वजन कैलकुलेटर",
-    "packetCalcHint": "GSM, साइज़ (फीट) और पीस/पैकेट से प्रति पीस और प्रति पैकेट किलो निकालें। पैक किलो खाली हो तो शिपिंग भी यही गणना इस्तेमाल करती है।",
+    "packetCalcTitle": "GSM वजन कैलकुलेटर",
+    "packetCalcHint": "GSM और साइज़ (फीट) से वजन निकालें।",
     "packetCalcGsm": "GSM",
     "packetCalcLength": "लंबाई (फीट)",
     "packetCalcWidth": "चौड़ाई (फीट)",
-    "packetCalcPackets": "पैकेट",
-    "packetCalcPcs": "पीस / पैकेट",
-    "packetCalcPcsInPkt": "1 पैकेट में पीस",
-    "packetCalcKgPc": "किग्रा / पीस",
-    "packetCalcKgPkt": "किग्रा / पैकेट",
-    "packetCalcTotalKg": "कुल किग्रा",
-    "packetCalcFormula": "किग्रा/पीस = (लंबाई × चौड़ाई × GSM) ÷ {n} · किग्रा/पैकेट = किग्रा/पीस × पीस · शिपिंग किग्रा = किग्रा/पैकेट × पैकेट"
+    "packetCalcKg": "वजन (किग्रा)",
+    "packetCalcG": "वजन (ग्राम)",
+    "packetCalcFormula": "किग्रा = (लंबाई × चौड़ाई × GSM × {n}) / 1000 · ग्राम = लंबाई × चौड़ाई × GSM × {n}"
   },
   "common": {
     "addToCart": "ऑर्डर में डालें",

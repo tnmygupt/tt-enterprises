@@ -62,18 +62,14 @@
     "contactTitle": "Contact",
     "loginToOrder": "Login to order",
     "packetCalcKicker": "Silpauline / tirpal",
-    "packetCalcTitle": "Packet weight calculator",
-    "packetCalcHint": "Find kg per piece and per packet from GSM, size in feet, and pcs/pkt. Shipping uses this same math when pack kg is blank.",
+    "packetCalcTitle": "GSM weight calculator",
+    "packetCalcHint": "Weight from GSM and size in feet.",
     "packetCalcGsm": "GSM",
     "packetCalcLength": "Length (ft)",
     "packetCalcWidth": "Width (ft)",
-    "packetCalcPcs": "Pcs / packet",
-    "packetCalcPackets": "Packets",
-    "packetCalcPcsInPkt": "Pcs in 1 pkt",
-    "packetCalcKgPc": "kg / pc",
-    "packetCalcKgPkt": "kg / pkt",
-    "packetCalcTotalKg": "Total kg",
-    "packetCalcFormula": "kg/pc = (L × W × GSM) ÷ {n} · kg/pkt = kg/pc × pcs · shipping kg = kg/pkt × packets"
+    "packetCalcKg": "Weight (kg)",
+    "packetCalcG": "Weight (g)",
+    "packetCalcFormula": "kg = (L × W × GSM × {n}) / 1000 · g = L × W × GSM × {n}"
   },
   "common": {
     "addToCart": "Add to order",

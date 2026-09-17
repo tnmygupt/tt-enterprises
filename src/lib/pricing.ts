@@ -89,10 +89,10 @@ export function resolveRate(
   return variation?.rate ?? product.baseRate;
 }
 
-/** Indian HDPE / silpauline: kg/pc = (L ft × W ft × GSM) / 15500 */
-export const GSM_FT_DIVISOR = 15500;
+/** 1 ft² = 0.092903 m². kg = L(ft) × W(ft) × GSM × 0.092903 / 1000 */
+export const SQFT_TO_SQM = 0.092903;
 
-export function pieceWeightKgFromGsm(
+export function pieceWeightGFromGsm(
   lengthFt: number,
   widthFt: number,
   gsm: number
@@ -101,7 +101,17 @@ export function pieceWeightKgFromGsm(
   const w = Number(widthFt) || 0;
   const g = Number(gsm) || 0;
   if (!(l > 0) || !(w > 0) || !(g > 0)) return 0;
-  return roundMoney((l * w * g) / GSM_FT_DIVISOR);
+  return roundMoney(l * w * g * SQFT_TO_SQM);
+}
+
+export function pieceWeightKgFromGsm(
+  lengthFt: number,
+  widthFt: number,
+  gsm: number
+): number {
+  const grams = pieceWeightGFromGsm(lengthFt, widthFt, gsm);
+  if (!(grams > 0)) return 0;
+  return roundMoney(grams / 1000);
 }
 
 export function packetWeightKgFromGsm(
@@ -115,8 +125,7 @@ export function packetWeightKgFromGsm(
   const g = Number(gsm) || 0;
   const pcs = Number(pcsPerPacket) || 0;
   if (!(l > 0) || !(w > 0) || !(g > 0) || !(pcs > 0)) return 0;
-  // Round the packet total (not rounded kg/pc × pcs) so 12×18×120×10 → 16.72
-  return roundMoney((l * w * g * pcs) / GSM_FT_DIVISOR);
+  return roundMoney((l * w * g * pcs * SQFT_TO_SQM) / 1000);
 }
 
 export function piecesInPacketLine(

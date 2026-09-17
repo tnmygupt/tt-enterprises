@@ -4,40 +4,29 @@ import { useMemo, useState } from "react";
 import { useTranslations } from "next-intl";
 import { NumberField } from "@/components/NumberField";
 import {
-  GSM_FT_DIVISOR,
-  packetWeightKgFromGsm,
+  SQFT_TO_SQM,
+  pieceWeightGFromGsm,
   pieceWeightKgFromGsm,
-  roundMoney,
 } from "@/lib/pricing";
-
-function kgLabel(n: number): string {
-  if (!(n > 0)) return "—";
-  return `${n.toFixed(2)} kg`;
-}
 
 export function PacketWeightCalculator() {
   const t = useTranslations();
   const [gsm, setGsm] = useState<number | "">("");
   const [lengthFt, setLengthFt] = useState<number | "">("");
   const [widthFt, setWidthFt] = useState<number | "">("");
-  const [pcs, setPcs] = useState<number | "">("");
-  const [packets, setPackets] = useState<number | "">(1);
 
   const gsmN = Number(gsm) || 0;
   const lengthN = Number(lengthFt) || 0;
   const widthN = Number(widthFt) || 0;
-  const pcsN = Number(pcs) || 0;
-  const pktN = Number(packets) > 0 ? Number(packets) : 1;
 
-  const pcKg = useMemo(
+  const grams = useMemo(
+    () => pieceWeightGFromGsm(lengthN, widthN, gsmN),
+    [lengthN, widthN, gsmN]
+  );
+  const kg = useMemo(
     () => pieceWeightKgFromGsm(lengthN, widthN, gsmN),
     [lengthN, widthN, gsmN]
   );
-  const pktKg = useMemo(
-    () => packetWeightKgFromGsm(lengthN, widthN, gsmN, pcsN),
-    [lengthN, widthN, gsmN, pcsN]
-  );
-  const totalKg = pktKg > 0 ? roundMoney(pktKg * pktN) : 0;
 
   return (
     <section className="tt-panel p-5 sm:p-6">
@@ -51,7 +40,7 @@ export function PacketWeightCalculator() {
         {t("home.packetCalcHint")}
       </p>
 
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="mt-5 grid gap-3 sm:grid-cols-3">
         <label className="block">
           <span className="tt-label">{t("home.packetCalcGsm")}</span>
           <NumberField
@@ -87,70 +76,29 @@ export function PacketWeightCalculator() {
             onValueChange={setWidthFt}
           />
         </label>
-        <label className="block">
-          <span className="tt-label">{t("home.packetCalcPcs")}</span>
-          <NumberField
-            className="tt-input"
-            emptyAs={null}
-            integer
-            min={0}
-            placeholder="10"
-            value={pcs}
-            onValueChange={setPcs}
-          />
-        </label>
-        <label className="block">
-          <span className="tt-label">{t("home.packetCalcPackets")}</span>
-          <NumberField
-            className="tt-input"
-            emptyAs={1}
-            integer
-            min={1}
-            value={packets}
-            onValueChange={(v) => setPackets(v === "" ? 1 : v)}
-          />
-        </label>
       </div>
 
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-5 grid gap-3 sm:grid-cols-2">
         <div className="rounded-xl border border-[var(--line)] bg-[var(--surface-2)] p-4">
           <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-            {t("home.packetCalcPcsInPkt")}
+            {t("home.packetCalcKg")}
           </p>
           <p className="mt-1 text-2xl font-bold tabular-nums text-[var(--brand-deep)]">
-            {pcsN > 0 ? pcsN : "—"}
+            {kg > 0 ? `${kg.toFixed(2)} kg` : "—"}
           </p>
         </div>
         <div className="rounded-xl border border-[var(--line)] bg-[var(--surface-2)] p-4">
           <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-            {t("home.packetCalcKgPc")}
+            {t("home.packetCalcG")}
           </p>
           <p className="mt-1 text-2xl font-bold tabular-nums text-[var(--brand-deep)]">
-            {kgLabel(pcKg)}
+            {grams > 0 ? `${grams.toFixed(2)} g` : "—"}
           </p>
         </div>
-        <div className="rounded-xl border border-[var(--line)] bg-[var(--surface-2)] p-4">
-          <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-            {t("home.packetCalcKgPkt")}
-          </p>
-          <p className="mt-1 text-2xl font-bold tabular-nums text-[var(--brand-deep)]">
-            {kgLabel(pktKg)}
-          </p>
-        </div>
-        {pktN > 1 ? (
-          <div className="rounded-xl border border-[var(--brand)] bg-white p-4 sm:col-span-2 lg:col-span-1">
-            <p className="text-xs font-bold uppercase tracking-wide text-[var(--brand)]">
-              {t("home.packetCalcTotalKg")}
-            </p>
-            <p className="mt-1 text-2xl font-bold tabular-nums text-[var(--brand-deep)]">
-              {kgLabel(totalKg)}
-            </p>
-          </div>
-        ) : null}
       </div>
 
       <p className="mt-4 text-xs text-[var(--ink-muted)]">
-        {t("home.packetCalcFormula", { n: GSM_FT_DIVISOR.toLocaleString("en-IN") })}
+        {t("home.packetCalcFormula", { n: String(SQFT_TO_SQM) })}
       </p>
     </section>
   );

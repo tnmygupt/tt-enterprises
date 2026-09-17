@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   calcLineTotal,
-  GSM_FT_DIVISOR,
   packetWeightKgFromGsm,
   pcsPerPacketLabel,
   piecesInPacketLine,
+  pieceWeightGFromGsm,
   pieceWeightKgFromGsm,
   ratePerPacket,
   ratePerPiece,
@@ -104,19 +104,22 @@ describe("GSM packet weight", () => {
     baseWeightKg: 1,
   } as Product;
 
-  it("uses (L × W × GSM) / 15500 for kg/pc", () => {
-    expect(GSM_FT_DIVISOR).toBe(15500);
-    expect(pieceWeightKgFromGsm(12, 18, 120)).toBe(
-      roundMoney((12 * 18 * 120) / 15500)
+  it("uses L × W × GSM × 0.092903 for grams and /1000 for kg", () => {
+    expect(pieceWeightGFromGsm(12, 18, 120)).toBe(
+      roundMoney(12 * 18 * 120 * 0.092903)
     );
-    expect(pieceWeightKgFromGsm(12, 18, 120)).toBe(1.67);
+    expect(pieceWeightGFromGsm(12, 18, 120)).toBe(2408.05);
+    expect(pieceWeightKgFromGsm(12, 18, 120)).toBe(
+      roundMoney((12 * 18 * 120 * 0.092903) / 1000)
+    );
+    expect(pieceWeightKgFromGsm(12, 18, 120)).toBe(2.41);
   });
 
-  it("uses kg/pc × pcs for kg/pkt without compounding rounding", () => {
+  it("multiplies sheet kg by pcs for kg/pkt without compounding rounding", () => {
     expect(packetWeightKgFromGsm(12, 18, 120, 10)).toBe(
-      roundMoney((12 * 18 * 120 * 10) / 15500)
+      roundMoney((12 * 18 * 120 * 10 * 0.092903) / 1000)
     );
-    expect(packetWeightKgFromGsm(12, 18, 120, 10)).toBe(16.72);
+    expect(packetWeightKgFromGsm(12, 18, 120, 10)).toBe(24.08);
   });
 
   it("resolveWeightKg uses GSM when pack kg is blank", () => {
@@ -127,8 +130,8 @@ describe("GSM packet weight", () => {
       widthFt: 18,
       pcsPerPacket: 10,
     } as ProductVariation;
-    expect(resolveUnitWeightKg(silpauline, variation)).toBe(16.72);
-    expect(resolveWeightKg(silpauline, variation, 2)).toBe(33.44);
+    expect(resolveUnitWeightKg(silpauline, variation)).toBe(24.08);
+    expect(resolveWeightKg(silpauline, variation, 2)).toBe(48.16);
     expect(pcsPerPacketLabel(10, "en")).toBe("10 pcs/pkt");
     expect(pcsPerPacketLabel(10, "hi")).toBe("10 पीस/पैकेट");
     expect(piecesInPacketLine(10, "en")).toBe("10 pieces in 1 packet");
@@ -182,7 +185,7 @@ describe("GSM packet weight", () => {
       pcsPerPacket: 10,
       weightKg: 1,
     } as ProductVariation;
-    expect(resolveUnitWeightKg(silpauline, variation)).toBe(16.72);
+    expect(resolveUnitWeightKg(silpauline, variation)).toBe(24.08);
   });
 });
 
