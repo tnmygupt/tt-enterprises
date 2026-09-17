@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyContractUsage,
   reverseContractUsage,
+  contractHeadroomQty,
   contractQtyLeft,
   contractValueLeft,
 } from "./contracts";
@@ -65,5 +66,23 @@ describe("contracts", () => {
     applyContractUsage(c, 50, 100);
     expect(c.usedQty).toBe(10);
     expect(contractQtyLeft(c)).toBe(0);
+  });
+
+  it("caps a suggested lift to remaining qty or value", () => {
+    expect(contractHeadroomQty(qtyContract({ usedQty: 90 }), 20, 100)).toEqual({
+      qty: 10,
+      capped: true,
+      exhausted: false,
+    });
+    expect(contractHeadroomQty(qtyContract({ usedQty: 100 }), 20, 100)).toEqual({
+      qty: 0,
+      capped: true,
+      exhausted: true,
+    });
+    expect(contractHeadroomQty(valueContract({ usedValue: 9500 }), 20, 100)).toEqual({
+      qty: 5,
+      capped: true,
+      exhausted: false,
+    });
   });
 });

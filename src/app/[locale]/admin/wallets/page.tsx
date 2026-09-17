@@ -232,7 +232,56 @@ export default function AdminWalletsPage() {
         </div>
       ) : null}
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-acct-cards mt-5 sm:hidden">
+        {dealers.map((u) => (
+          <div key={u.id} className="tt-panel tt-acct-card space-y-2">
+            <div>
+              <p className="font-semibold">{u.name}</p>
+              <p className="text-xs text-[var(--ink-muted)]">
+                {u.company || u.phone || u.email || "—"}
+              </p>
+            </div>
+            <p className="text-sm font-semibold tabular-nums text-[var(--brand-deep)]">
+              {formatInr(u.walletBalance, locale)}
+              <span className="ml-2 text-xs font-normal text-[var(--ink-muted)]">
+                {u.liftingProgressKg} kg
+              </span>
+            </p>
+            <p className="text-xs text-[var(--ink-muted)]">
+              {u.assignedSchemeIds
+                .map(
+                  (id) =>
+                    db?.schemes.find((s) => s.id === id)?.name[locale] ?? id
+                )
+                .join(", ") || "—"}
+            </p>
+            {canWallet ? (
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline px-3 py-1.5 text-xs"
+                onClick={() => {
+                  setForm((f) => ({
+                    ...f,
+                    userId: u.id,
+                    amount: Math.abs(f.amount) || 500,
+                    reason: f.reason || "Wallet deposit",
+                  }));
+                  document
+                    .getElementById("wallet-deposit-form")
+                    ?.scrollIntoView({ behavior: "smooth" });
+                }}
+              >
+                {locale === "hi" ? "जमा" : "Deposit"}
+              </button>
+            ) : null}
+          </div>
+        ))}
+        {!dealers.length ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+        ) : null}
+      </div>
+
+      <div className="tt-panel mt-5 hidden overflow-x-auto sm:block">
         <table className="tt-table min-w-[800px]">
           <thead>
             <tr>
@@ -413,7 +462,39 @@ export default function AdminWalletsPage() {
           ({ledger.length})
         </span>
       </h2>
-      <div className="tt-panel mt-3 overflow-x-auto">
+      <div className="tt-acct-cards mt-3 sm:hidden">
+        {ledger.slice(0, 40).map((tx) => {
+          const user = db?.users.find((u) => u.id === tx.userId);
+          return (
+            <div key={tx.id} className="tt-panel tt-acct-card space-y-1">
+              <p className="text-xs text-[var(--ink-muted)]">
+                {new Date(tx.createdAt).toLocaleString(
+                  locale === "hi" ? "hi-IN" : "en-IN"
+                )}
+              </p>
+              <p className="text-sm font-medium">{user?.name ?? tx.userId}</p>
+              <p
+                className={
+                  tx.type === "credit"
+                    ? "text-sm tabular-nums text-[var(--ok)]"
+                    : "text-sm tabular-nums text-[var(--danger)]"
+                }
+              >
+                {tx.type === "credit" ? "+" : "-"}
+                {formatInr(tx.amount, locale)}
+                <span className="ml-2 capitalize text-[var(--ink-muted)]">
+                  {tx.type}
+                </span>
+              </p>
+              <p className="text-xs text-[var(--ink-muted)]">{tx.reason}</p>
+            </div>
+          );
+        })}
+        {!ledger.length ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+        ) : null}
+      </div>
+      <div className="tt-panel mt-3 hidden overflow-x-auto sm:block">
         <table className="tt-table min-w-[720px]">
           <thead>
             <tr>

@@ -1,6 +1,4 @@
 import {
-  ACCT,
-  accountBalance,
   allOpenPayables,
   allOpenReceivables,
   fyBounds,
@@ -8,6 +6,7 @@ import {
   salesAnalysis,
   stockValuation,
 } from "@/lib/accounting";
+import { bankBooksTotal, cashInHand } from "@/lib/bank-accounts";
 import {
   parseSeasonMonths,
   stockAlertsFromDb,
@@ -206,9 +205,6 @@ export function computeCommandDesk(
   const parties = db.parties ?? [];
   const allocations = db.billAllocations ?? [];
   const products = db.products ?? [];
-
-  const cashAcct = accounts.find((a) => a.id === ACCT.cash);
-  const bankAcct = accounts.find((a) => a.id === ACCT.bank);
   const openRx = allOpenReceivables(parties, vouchers, allocations, today);
   const receivables = roundMoney(
     openRx.reduce((s, r) => s + r.outstanding, 0)
@@ -340,8 +336,8 @@ export function computeCommandDesk(
     ),
     salesFy: sumVouchers(vouchers, fy.from, today, signedSales),
     purchaseMtd: sumVouchers(vouchers, mtdFrom, today, signedPurchase),
-    cash: cashAcct ? accountBalance(cashAcct, entries, today) : 0,
-    bank: bankAcct ? accountBalance(bankAcct, entries, today) : 0,
+    cash: cashInHand(accounts, entries, today),
+    bank: bankBooksTotal(accounts, entries, today),
     receivables,
     overdueReceivables,
     payables,

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { confirmDraftPurchaseOrder } from "./purchase-orders";
+import {
+  cancelDraftPurchaseOrder,
+  confirmDraftPurchaseOrder,
+} from "./purchase-orders";
 import type { PurchaseOrder } from "./types";
 
 const draft: PurchaseOrder = {
@@ -22,6 +25,18 @@ describe("confirmDraftPurchaseOrder", () => {
   it("refuses a PO that is already ordered", () => {
     expect(() =>
       confirmDraftPurchaseOrder({ ...draft, status: "ordered" })
+    ).toThrow(/draft/i);
+  });
+});
+
+describe("cancelDraftPurchaseOrder", () => {
+  it("cancels a draft", () => {
+    expect(cancelDraftPurchaseOrder(draft).status).toBe("cancelled");
+  });
+
+  it("refuses a PO that is already ordered", () => {
+    expect(() =>
+      cancelDraftPurchaseOrder({ ...draft, status: "ordered" })
     ).toThrow(/draft/i);
   });
 });

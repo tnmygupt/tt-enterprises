@@ -1,10 +1,9 @@
 import {
-  ACCT,
-  accountBalance,
   allOpenPayables,
   allOpenReceivables,
   creditorsClosingList,
 } from "@/lib/accounting";
+import { bankBooksTotal, cashInHand } from "@/lib/bank-accounts";
 import { stockAlertsFromDb } from "@/lib/accounting/analysis";
 import { getAdminQueues } from "@/lib/admin-queues";
 import { formatInr, roundMoney } from "@/lib/pricing";
@@ -188,14 +187,8 @@ export function buildOwnerDailySummary(input: {
   const creditorTotal = roundMoney(
     creditors.reduce((s, r) => s + r.closing, 0)
   );
-  const cash = db.accounts.find((a) => a.id === ACCT.cash);
-  const bank = db.accounts.find((a) => a.id === ACCT.bank);
-  const cashBal = cash
-    ? accountBalance(cash, db.ledgerEntries, today)
-    : 0;
-  const bankBal = bank
-    ? accountBalance(bank, db.ledgerEntries, today)
-    : 0;
+  const cashBal = cashInHand(db.accounts, db.ledgerEntries, today);
+  const bankBal = bankBooksTotal(db.accounts, db.ledgerEntries, today);
   const salesToday = db.vouchers
     .filter((v) => v.type === "sale" && !v.voided && v.date.slice(0, 10) === today)
     .reduce((s, v) => s + v.total, 0);

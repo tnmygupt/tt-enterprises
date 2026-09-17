@@ -1,6 +1,4 @@
 import {
-  ACCT,
-  accountBalance,
   allOpenPayables,
   allOpenReceivables,
   profitAndLoss,
@@ -15,6 +13,7 @@ import {
   lineVariance,
   shortageValue,
 } from "@/lib/stock-count";
+import { bankBooksTotal, cashInHand } from "@/lib/bank-accounts";
 import { roundMoney } from "@/lib/pricing";
 import type { AppDatabase } from "@/lib/store/db";
 import type { CashCount, HrPunch, MonthlyAudit, StockCount, UserProfile } from "@/lib/types";
@@ -236,8 +235,6 @@ export function buildMonthlyAuditReport(
   absenteeism.sort((a, b) => b.absentDays - a.absentDays);
 
   const pl = profitAndLoss(db.accounts, db.ledgerEntries, from, to);
-  const cashAcct = db.accounts.find((a) => a.id === ACCT.cash);
-  const bankAcct = db.accounts.find((a) => a.id === ACCT.bank);
   const today = to;
   const arRows = allOpenReceivables(
     db.parties,
@@ -291,12 +288,8 @@ export function buildMonthlyAuditReport(
       expense: pl.totalExpense,
       net: pl.netProfit,
     },
-    cashClose: cashAcct
-      ? accountBalance(cashAcct, db.ledgerEntries, to)
-      : 0,
-    bankClose: bankAcct
-      ? accountBalance(bankAcct, db.ledgerEntries, to)
-      : 0,
+    cashClose: cashInHand(db.accounts, db.ledgerEntries, to),
+    bankClose: bankBooksTotal(db.accounts, db.ledgerEntries, to),
     ar: roundMoney(arRows.reduce((s, r) => s + r.outstanding, 0)),
     ap: roundMoney(apRows.reduce((s, r) => s + r.outstanding, 0)),
     overdueAr: roundMoney(

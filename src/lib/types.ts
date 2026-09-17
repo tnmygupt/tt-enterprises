@@ -673,6 +673,8 @@ export interface BankAccountDetails {
   active?: boolean;
   /** Marks the account shown first in the picker. */
   isDefault?: boolean;
+  /** Linked cash/bank ledger (`Account.id`) for books, BRS, and receipts. */
+  ledgerId?: string;
 }
 
 /** Weight slab: ≤minKg → flat X; above min → X + steps × (X × fraction) */
@@ -761,6 +763,8 @@ export interface AppSettings {
     hrMissPunchOn?: string;
     /** Last owner digest of GPS punches outside the fence. */
     hrFenceOn?: string;
+    /** Last owner monthly-audit reminder (YYYY-MM-DD). Daily cooldown. */
+    monthAuditOn?: string;
   };
   tallyLastSyncAt?: string;
   tallySyncStatus?: "idle" | "ok" | "error";
@@ -816,7 +820,27 @@ export interface AppSettings {
   homeNewProductIds?: string[];
   /** Ordered product ids shown as promo / offer cards on home. */
   homePromoProductIds?: string[];
+  /**
+   * How strictly the last-week / month-end audit is enforced.
+   * escalating (default): remind in the last week, then block new-month postings.
+   * hard: block as soon as the prior month is unstamped.
+   * reminder: banner + WhatsApp only, never block billing.
+   */
+  monthAuditPolicy?: MonthAuditPolicy;
+  /** Extra IST calendar days after month-end before escalating blocks (default 0). */
+  monthAuditGraceDays?: number;
+  /** Owner escape hatch so a pending audit cannot brick billing. */
+  monthAuditOverrides?: MonthAuditOverride[];
 }
+
+export type MonthAuditPolicy = "escalating" | "hard" | "reminder";
+
+export type MonthAuditOverride = {
+  month: string;
+  by: string;
+  at: string;
+  reason: string;
+};
 
 export interface CartItem {
   key: string;
@@ -871,6 +895,10 @@ export interface Party {
   gstin?: string;
   /** Max receivable (customers) or payable exposure (suppliers) */
   creditLimit?: number;
+  /** Supplier default MOQ when the product has none */
+  minOrderQty?: number;
+  /** Supplier default lead time (days) when the product has none */
+  leadTimeDays?: number;
   active: boolean;
   createdAt: string;
   /**
@@ -1279,7 +1307,7 @@ export type HrPayBasis = "monthly" | "daily" | "hourly";
 
 export type HrPunchKind = "in" | "out";
 export type HrLeaveKind = "casual" | "sick" | "unpaid";
-export type HrLeaveStatus = "pending" | "approved" | "rejected";
+export type HrLeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type StockCountStatus = "draft" | "submitted" | "owner_reviewed";
 export type CountLineDecision = "pending" | "approved" | "rejected";
 
@@ -1338,6 +1366,10 @@ export interface HrPunch {
   photoUrl?: string;
   userAgent?: string;
   weakGps?: boolean;
+  /** Clock-in saved without a GPS fix (owner-visible fallback). */
+  gpsFallback?: boolean;
+  note?: string;
+  correctedBy?: string;
   createdAt: string;
 }
 
@@ -1395,6 +1427,9 @@ export interface HrPayslip {
   advances: number;
   net: number;
   expenseVoucherId?: string;
+  voided?: boolean;
+  voidedAt?: string;
+  voidedBy?: string;
   createdAt: string;
   createdBy: string;
 }

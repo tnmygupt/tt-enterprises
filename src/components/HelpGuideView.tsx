@@ -70,7 +70,7 @@ function WalkthroughPlayer({
           className="absolute inset-0 opacity-40"
           style={{
             background:
-              "radial-gradient(ellipse at 20% 20%, #1a6b52 0%, transparent 55%), radial-gradient(ellipse at 80% 80%, #0b3d2e 0%, #06261c 70%)",
+              "radial-gradient(ellipse at 20% 20%, #ff3131 0%, transparent 55%), radial-gradient(ellipse at 80% 80%, #c21818 0%, #4a0d0d 70%)",
           }}
         />
         <div className="relative z-[1] flex h-full flex-col justify-between p-5 sm:p-8">

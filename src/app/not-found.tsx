@@ -9,14 +9,14 @@ export default function RootNotFound() {
           minHeight: "100vh",
           alignItems: "center",
           justifyContent: "center",
-          background: "#f7f5f0",
-          color: "#0b3d2e",
+          background: "#faf6f5",
+          color: "#c21818",
         }}
       >
         <main style={{ maxWidth: 420, padding: 24, textAlign: "center" }}>
           <p style={{ fontSize: 44, fontWeight: 700, margin: 0 }}>404</p>
           <h1 style={{ fontSize: 22, margin: "8px 0" }}>Page not found</h1>
-          <p style={{ fontSize: 14, color: "#5c6b66", marginBottom: 20 }}>
+          <p style={{ fontSize: 14, color: "#7a6565", marginBottom: 20 }}>
             The link you opened has moved or no longer exists.
           </p>
           {/* Root 404 renders its own document — plain anchor, no router. */}
@@ -24,7 +24,7 @@ export default function RootNotFound() {
           <a
             href="/en"
             style={{
-              background: "#0b3d2e",
+              background: "#c21818",
               color: "#fff",
               borderRadius: 6,
               padding: "10px 18px",

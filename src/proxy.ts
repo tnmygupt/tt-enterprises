@@ -8,6 +8,7 @@ import {
   isStaffRole,
   verifySessionToken,
 } from "./lib/server/session";
+import { wwwApexRedirect } from "./lib/server/public-origin";
 
 const handleI18nRouting = createMiddleware(routing);
 
@@ -20,6 +21,9 @@ const ADMIN_PATH = /^\/(en|hi)\/admin(?:\/|$)/;
  * on every request. Fails closed: an unreadable cookie sends the user home.
  */
 export default function proxy(req: NextRequest) {
+  const apex = wwwApexRedirect(req);
+  if (apex) return apex;
+
   const adminMatch = req.nextUrl.pathname.match(ADMIN_PATH);
   if (adminMatch) {
     const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;

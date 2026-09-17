@@ -21,6 +21,7 @@ import {
 import { stripPrePurgeOps } from "@/lib/ops-purge";
 import { getDbApiKey, isSupabaseConfigured } from "@/lib/supabase/config";
 import { getRealtimePublicConfig } from "@/lib/supabase/live";
+import { publicDatabaseMessage } from "@/lib/server/host-sql";
 import { notifyStaffNewEstimateServer } from "@/lib/server/whatsapp-notify";
 
 function jsonNoStore(data: unknown, status = 200): NextResponse {
@@ -62,7 +63,7 @@ export async function GET(req: NextRequest) {
   if (req.nextUrl.searchParams.get("probe") === "1") {
     const probe = await cloudGetAppDbUpdatedAt();
     if (probe.error) {
-      return jsonNoStore({ error: probe.error }, 500);
+      return jsonNoStore({ error: publicDatabaseMessage(probe.error) }, 500);
     }
     const session = readSessionCookie(req);
     return jsonNoStore({
@@ -75,7 +76,7 @@ export async function GET(req: NextRequest) {
 
   const { db, updatedAt, error } = await cloudGetAppDb();
   if (error) {
-    return jsonNoStore({ error }, 500);
+    return jsonNoStore({ error: publicDatabaseMessage(error) }, 500);
   }
   if (!db?.users && !db?.products) {
     return new NextResponse(null, {
@@ -133,7 +134,7 @@ export async function GET(req: NextRequest) {
         role,
         locale: actor.locale === "hi" ? "hi" : "en",
       });
-      const cookie = sessionCookieOptions(token);
+      const cookie = sessionCookieOptions(token, req);
       res.cookies.set(cookie.name, cookie.value, cookie);
       return res;
     };
@@ -194,7 +195,10 @@ export async function PUT(req: NextRequest) {
 
   const existing = await cloudGetAppDb();
   if (existing.error) {
-    return NextResponse.json({ error: existing.error }, { status: 500 });
+    return NextResponse.json(
+      { error: publicDatabaseMessage(existing.error) },
+      { status: 500 }
+    );
   }
 
   const session = readSessionCookie(req);

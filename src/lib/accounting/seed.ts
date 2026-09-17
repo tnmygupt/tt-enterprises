@@ -68,6 +68,19 @@ export function cashBankAccounts<
   return accounts.filter((a) => isCashBankAccount(a));
 }
 
+/** Cash/bank ledgers except petty cash — extra current accounts live here. */
+export function bankBookAccounts<
+  T extends {
+    id: string;
+    type: string;
+    active?: boolean;
+    bankBook?: boolean;
+    name: { en: string; hi?: string };
+  },
+>(accounts: T[]): T[] {
+  return cashBankAccounts(accounts).filter((a) => a.id !== ACCT.cash);
+}
+
 /** One-tap expense presets (operating spend). */
 export const EXPENSE_PRESETS: {
   id: string;
@@ -122,6 +135,7 @@ export const SEED_ACCOUNTS: Account[] = [
     type: "asset",
     openingBalance: 0,
     active: true,
+    bankBook: true,
   },
   {
     id: ACCT.debtors,

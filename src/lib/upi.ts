@@ -47,27 +47,52 @@ export function paymentAmountDue(order: {
 }
 
 /**
+ * Stored payment accounts, or a one-row fallback from the legacy singleton.
+ * Pass `{ includeInactive: true }` for the admin editor so deactivated rows
+ * are not dropped on the next save.
+ */
+export function listStoredPayableAccounts(
+  settings: AppSettings,
+  opts?: { includeInactive?: boolean }
+): BankAccountDetails[] {
+  const stored = (settings.bankAccounts ?? []).filter(Boolean);
+  let rows: BankAccountDetails[];
+  if (stored.length) {
+    rows = stored.map((a) => hydrateAccount(a, settings));
+  } else {
+    const legacy = settings.bankAccount;
+    if (legacy && (legacy.accountNumber?.trim() || settings.upiId?.trim())) {
+      rows = [
+        hydrateAccount(
+          {
+            ...legacy,
+            id: legacy.id || "bank_legacy",
+            ledgerId: legacy.ledgerId || "acct_bank",
+            isDefault: true,
+            active: true,
+          },
+          settings
+        ),
+      ];
+    } else {
+      rows = [];
+    }
+  }
+  if (opts?.includeInactive) return rows;
+  return rows.filter((a) => a.active !== false);
+}
+
+/**
  * Return every payable bank account, migrating the legacy singleton
  * `settings.bankAccount` + `settings.upiId` combo when the multi-account
  * array is empty. Result is always in "preferred first" order (default → rest).
  */
 export function listPayableAccounts(settings: AppSettings): BankAccountDetails[] {
-  const explicit = (settings.bankAccounts ?? []).filter(
-    (a) => a && a.active !== false
-  );
-  if (explicit.length) {
-    const sorted = [...explicit].sort((a, b) => {
-      if (!!b.isDefault !== !!a.isDefault) return b.isDefault ? 1 : -1;
-      return 0;
-    });
-    return sorted.map((a) => hydrateAccount(a, settings));
-  }
-  // Fallback: derive one account from legacy fields.
-  const legacy = settings.bankAccount;
-  if (legacy && (legacy.accountNumber?.trim() || settings.upiId?.trim())) {
-    return [hydrateAccount(legacy, settings)];
-  }
-  return [];
+  const explicit = listStoredPayableAccounts(settings);
+  return [...explicit].sort((a, b) => {
+    if (!!b.isDefault !== !!a.isDefault) return b.isDefault ? 1 : -1;
+    return 0;
+  });
 }
 
 function hydrateAccount(

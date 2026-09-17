@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { useRouter } from "@/i18n/routing";
@@ -47,6 +47,12 @@ function VouchersInner() {
   const partyPrefill = search.get("party") || "";
   const listQ = search.get("q") || "";
 
+  useEffect(() => {
+    if (formType === "journal") {
+      router.replace("/admin/accounts/journal");
+    }
+  }, [formType, router]);
+
   const viewing = useMemo(
     () =>
       viewId && db ? db.vouchers.find((v) => v.id === viewId) || null : null,
@@ -77,6 +83,10 @@ function VouchersInner() {
     setError("");
     router.replace(`/admin/accounts/vouchers?id=${encodeURIComponent(id)}`);
   };
+
+  if (formType === "journal") {
+    return <p className="mt-5 text-sm">{t("common.loading")}</p>;
+  }
 
   if (formType && isOwnerOnlyType(formType) && !showPurchaseRates) {
     return (

@@ -7,12 +7,11 @@ import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import {
-  ACCT,
-  accountBalance,
   allOpenPayables,
   allOpenReceivables,
   leftoverReceipts,
 } from "@/lib/accounting";
+import { bankBooksTotal, cashInHand } from "@/lib/bank-accounts";
 import { getAdminQueues } from "@/lib/admin-queues";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
@@ -103,8 +102,6 @@ export default function AccountsHomePage() {
 
   const stats = useMemo(() => {
     if (!db) return null;
-    const cash = db.accounts.find((a) => a.id === ACCT.cash);
-    const bank = db.accounts.find((a) => a.id === ACCT.bank);
     const salesToday = db.vouchers
       .filter((v) => v.type === "sale" && !v.voided && v.date === today)
       .reduce((s, v) => s + v.total, 0);
@@ -137,8 +134,8 @@ export default function AccountsHomePage() {
     ).length;
     const posted = db.vouchers.filter((v) => !v.voided).length;
     return {
-      cash: cash ? accountBalance(cash, db.ledgerEntries, today) : 0,
-      bank: bank ? accountBalance(bank, db.ledgerEntries, today) : 0,
+      cash: cashInHand(db.accounts, db.ledgerEntries, today),
+      bank: bankBooksTotal(db.accounts, db.ledgerEntries, today),
       salesToday,
       toCollect,
       toPay,
@@ -254,6 +251,21 @@ export default function AccountsHomePage() {
   return (
     <AccountsShell>
       <AccountsPageHeader home title={t("homeTitle")} hint={t("homeHint")} />
+
+      <div className="tt-panel mt-3 p-4 text-sm">
+        <p className="font-semibold text-[var(--brand-deep)]">Which entry?</p>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-[var(--ink-muted)]">
+          <li>
+            Selling a dealer order: <Link href="/admin/orders/new" className="font-semibold text-[var(--brand)]">/admin/orders/new</Link> (F8). The sale voucher is a secondary path.
+          </li>
+          <li>
+            Stock in from a PO: <Link href="/admin/accounts/goods-received" className="font-semibold text-[var(--brand)]">GRN</Link> (F9), then bill.
+          </li>
+          <li>
+            Money in / out: receipt (F6) and payment (F5). Journal (F7) is for transfers, not sales.
+          </li>
+        </ul>
+      </div>
 
       {(stats?.posted ?? 0) === 0 ? (
         <div className="mt-3 rounded-lg border border-[var(--brand)] bg-[var(--brand-soft)] px-4 py-3">

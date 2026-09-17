@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { liveLoginUser, liveSessionUser } from "./live-login";
+import { resolveCloudActor } from "./authorize-db";
+import type { ServerSession } from "./session";
 import type { AppDatabase } from "@/lib/store/db";
 import type { UserProfile } from "@/lib/types";
 
@@ -89,5 +91,42 @@ describe("liveLoginUser", () => {
     doc.deletedUserIds = ["old"];
     doc.deletedUserAt = { old: "2026-08-21T11:00:00.000Z" };
     expect(liveLoginUser(doc, "1234567890")?.id).toBe("new");
+  });
+});
+
+function sessionFor(id: string): ServerSession {
+  return {
+    id,
+    phone: "9250205615",
+    name: "N",
+    role: "customer",
+    locale: "en",
+    exp: Math.floor(Date.now() / 1000) + 3600,
+  };
+}
+
+describe("resolveCloudActor", () => {
+  it("refuses tombstoned sessions the same way login GET does", () => {
+    const dealer = user({
+      id: "gone",
+      role: "customer",
+    });
+    const doc = db([dealer]);
+    doc.deletedUserIds = ["gone"];
+    doc.deletedUserAt = { gone: "2026-08-21T11:01:43.557Z" };
+    expect(() => resolveCloudActor(doc, sessionFor("gone"))).toThrow(
+      /Account not found/
+    );
+  });
+
+  it("refuses disabled accounts", () => {
+    const staff = user({
+      id: "s1",
+      role: "sales",
+      active: false,
+    });
+    expect(() => resolveCloudActor(db([staff]), sessionFor("s1"))).toThrow(
+      /disabled/
+    );
   });
 });

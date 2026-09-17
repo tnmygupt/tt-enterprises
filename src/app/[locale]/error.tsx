@@ -24,7 +24,7 @@ export default function LocaleError({
 
   return (
     <main className="mx-auto flex min-h-[60vh] max-w-lg flex-col items-center justify-center gap-4 px-6 py-16 text-center">
-      <h1 className="text-2xl font-bold text-[var(--brand-deep,#0b3d2e)]">
+      <h1 className="text-2xl font-bold text-[var(--brand-deep,#c21818)]">
         {hi ? "यह पेज लोड नहीं हो सका" : "This page couldn't load"}
       </h1>
       <p className="text-sm text-[var(--ink-muted,#5c6b66)]">
@@ -40,7 +40,7 @@ export default function LocaleError({
       <div className="mt-2 flex flex-wrap items-center justify-center gap-3">
         <button
           type="button"
-          className="rounded-md bg-[var(--brand-deep,#0b3d2e)] px-4 py-2 text-sm font-semibold text-white"
+          className="rounded-md bg-[var(--brand-deep,#c21818)] px-4 py-2 text-sm font-semibold text-white"
           onClick={() => {
             try {
               unstable_retry();

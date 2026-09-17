@@ -36,6 +36,11 @@ import {
   type PartyCsvRow,
   type StockCsvRow,
 } from "../accounting";
+import { assertPriorMonthAudited } from "../month-close-policy";
+import {
+  draftCompanyBankAccount,
+  type NewCompanyBankInput,
+} from "../bank-accounts";
 import type {
   Account,
   AppSettings,
@@ -61,6 +66,7 @@ import type {
   BatchConsumption,
   StatementMatch,
   StatementMatchExtra,
+  BankAccountDetails,
   BankRecon,
   BankReconExtra,
   SupplierContract,
@@ -113,12 +119,20 @@ import {
   roundOffRupees,
 } from "../pricing";
 import { calcShippingAmount } from "@/lib/shipping";
+import { shouldRetrySessionCookieCheck } from "@/lib/sync-errors";
 import { buildDraftPosFromAlerts } from "@/lib/reorder-po";
-import { confirmDraftPurchaseOrder } from "@/lib/purchase-orders";
+import { confirmDraftPurchaseOrder, cancelDraftPurchaseOrder } from "@/lib/purchase-orders";
 import { placeEstimateOnDatabase } from "@/lib/place-estimate";
 import { stockAlertsFromDb } from "@/lib/accounting/analysis";
 import { normalizeProductLocalized } from "@/lib/localized";
-import { buildHrPunch, ensureHrAuditCollections } from "@/lib/hr";
+import {
+  buildHrPunch,
+  dateInIst,
+  ensureHrAuditCollections,
+  ensureStaffHrTerms,
+  isHrMonthLocked,
+  punchKindGuard,
+} from "@/lib/hr";
 import {
   adjustmentsFromApprovedLines,
   canEnterPhysicalCount,
@@ -1053,6 +1067,28 @@ export async function syncSessionFromServer(): Promise<SessionUser | null> {
       return data.user;
     }
     if (res.status === 401) {
+      if (shouldRetrySessionCookieCheck(res.status, data.error, Boolean(getSession()))) {
+        await new Promise((r) => setTimeout(r, 300));
+        if (gen !== sessionSyncGen) return getSession();
+        const retry = await fetch("/api/account/login", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const retryData = (await retry.json().catch(() => ({}))) as {
+          user?: SessionUser | null;
+          error?: string;
+        };
+        if (gen !== sessionSyncGen) return getSession();
+        if (retry.ok && retryData.user) {
+          setSession(retryData.user);
+          return retryData.user;
+        }
+        if (retry.status === 401 && (retryData.error || getSession())) {
+          setSession(null);
+          return null;
+        }
+        return getSession();
+      }
       // Deleted / disabled account: always drop leftover local session.
       // Missing cookie (no error): also drop leftover local session so the
       // login form is visible — in-flight GETs after login are ignored via gen.
@@ -4009,6 +4045,7 @@ export function createStaffUser(input: {
     createdAt: new Date().toISOString(),
   };
   db.users.push(user);
+  ensureStaffHrTerms(db, db.users);
   saveDb(db);
   return user;
 }
@@ -4770,6 +4807,33 @@ export function upsertAccount(account: Account): void {
   saveDb(db);
 }
 
+/** Add another company bank: ledger in Cash/Bank book plus a dealer payment row. */
+export function addCompanyBankAccount(input: NewCompanyBankInput): {
+  account: Account;
+  payable: BankAccountDetails;
+} {
+  const label =
+    input.label.trim() ||
+    input.bankName?.trim() ||
+    input.accountName?.trim() ||
+    "";
+  if (!label) {
+    throw new Error("Enter a bank name or nickname");
+  }
+  const db = loadDb();
+  const drafted = draftCompanyBankAccount({
+    ledgerId: `acct_bank_${crypto.randomUUID()}`,
+    payableId: `bank_${crypto.randomUUID()}`,
+    accounts: db.accounts,
+    settings: db.settings,
+    input: { ...input, label },
+  });
+  db.accounts.push(drafted.account);
+  db.settings = { ...db.settings, bankAccounts: drafted.bankAccounts };
+  saveDb(db);
+  return { account: drafted.account, payable: drafted.payable };
+}
+
 export function upsertParty(party: Party): void {
   const db = loadDb();
   const i = db.parties.findIndex((p) => p.id === party.id);
@@ -5321,6 +5385,7 @@ export function createVoucher(input: {
 }): Voucher {
   const db = loadDb();
   assertPeriodOpen(input.date, db.settings);
+  assertPriorMonthAudited(input.date, db);
   if (input.linkedOrderId && input.type === "sale") {
     const exists = db.vouchers.some(
       (v) =>
@@ -6004,12 +6069,36 @@ export function clockStaffPunch(input: {
   accuracyM?: number;
   photoUrl?: string;
   userAgent?: string;
+  gpsFallback?: boolean;
+  at?: string;
+  skipKindGuard?: boolean;
+  correctedBy?: string;
+  note?: string;
 }): HrPunch {
   const db = loadDb();
   ensureHrAuditCollections(db);
+  const at = input.at || new Date().toISOString();
+  const month = dateInIst(at).slice(0, 7);
+  if (
+    isHrMonthLocked({
+      month,
+      userId: input.userId,
+      audits: db.monthlyAudits,
+      payslips: db.hrPayslips,
+    })
+  ) {
+    throw new Error("Payroll locked for this month");
+  }
+  if (!input.skipKindGuard) {
+    const guard = punchKindGuard(db.hrPunches ?? [], input.userId, input.kind, at);
+    if (guard === "duplicate_in") throw new Error("Already clocked in today");
+    if (guard === "duplicate_out") throw new Error("Already clocked out today");
+    if (guard === "out_without_in") throw new Error("Clock in before clocking out");
+  }
   const terms = (db.hrTerms ?? []).find((t) => t.userId === input.userId);
   const punch = buildHrPunch({
     ...input,
+    at,
     sites: db.hrSites ?? [],
     siteIds: terms?.siteIds,
   });
@@ -6624,6 +6713,59 @@ export function markPurchaseOrderOrdered(
   const po = db.purchaseOrders.find((p) => p.id === poId);
   if (!po) throw new Error("PO not found");
   Object.assign(po, confirmDraftPurchaseOrder(po));
+  saveDb(db);
+  return po;
+}
+
+export function updateDraftPurchaseOrder(
+  poId: string,
+  byUserId: string,
+  patch: { lines?: PurchaseOrder["lines"]; narration?: string }
+): PurchaseOrder {
+  const db = loadDb();
+  const actor = db.users.find((u) => u.id === byUserId);
+  if (
+    !actor ||
+    (!actorCan(actor, "manage_reorder", db) &&
+      !actorCan(actor, "manage_accounts", db))
+  ) {
+    throw new Error("Not allowed to edit purchase orders");
+  }
+  const po = db.purchaseOrders.find((p) => p.id === poId);
+  if (!po) throw new Error("PO not found");
+  if (po.status !== "draft") {
+    throw new Error("Only draft purchase orders can be edited");
+  }
+  if (patch.lines) {
+    po.lines = patch.lines
+      .filter((l) => l.qty > 0)
+      .map((l) => ({
+        ...l,
+        amount: roundMoney((Number(l.qty) || 0) * (Number(l.rate) || 0)),
+      }));
+    po.total = roundMoney(po.lines.reduce((s, l) => s + l.amount, 0));
+  }
+  if (patch.narration !== undefined) po.narration = patch.narration;
+  saveDb(db);
+  return po;
+}
+
+export function cancelPurchaseOrder(
+  poId: string,
+  byUserId: string
+): PurchaseOrder {
+  const db = loadDb();
+  const actor = db.users.find((u) => u.id === byUserId);
+  if (
+    !actor ||
+    (!actorCan(actor, "manage_reorder", db) &&
+      !actorCan(actor, "manage_accounts", db))
+  ) {
+    throw new Error("Not allowed to cancel purchase orders");
+  }
+  const po = db.purchaseOrders.find((p) => p.id === poId);
+  if (!po) throw new Error("PO not found");
+  Object.assign(po, cancelDraftPurchaseOrder(po));
   saveDb(db);
   return po;
 }

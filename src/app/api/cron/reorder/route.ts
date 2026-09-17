@@ -4,7 +4,7 @@ import { buildDraftPosFromAlerts } from "@/lib/reorder-po";
 import { authorizeCron } from "@/lib/server/cron-auth";
 import { cloudGetAppDb, cloudPutAppDb } from "@/lib/server/app-db";
 import { notifyStaffWhatsAppServer } from "@/lib/server/whatsapp-notify";
-import { capabilityContextFrom } from "@/lib/capabilities";
+import { capabilityContextFrom, staffMatchingAnyCap } from "@/lib/capabilities";
 import {
   removePushEndpoint,
   sendWebPushToSubs,
@@ -96,7 +96,11 @@ export async function POST(req: NextRequest) {
       }
     }
     waSent = await notifyStaffWhatsAppServer({
-      users: db.users,
+      users: staffMatchingAnyCap(
+        db.users,
+        ["manage_orders", "manage_reorder"],
+        capabilityContextFrom(db),
+      ),
       countryCode: whatsappCountryCode(db.settings),
       enabled: db.settings.whatsappNotifyEnabled,
       text: lowStockStaffWhatsAppText({

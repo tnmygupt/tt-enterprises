@@ -715,6 +715,14 @@ export default function OrderDetailPage() {
                             ? "यह ऑर्डर रद्द है।"
                             : "This order was cancelled."}
             </p>
+            {order.status === "payment_pending" ? (
+              <a
+                href="#pay-now"
+                className="tt-btn tt-btn-dark mt-4 inline-flex w-full justify-center lg:hidden"
+              >
+                {locale === "hi" ? "पेमेंट करें" : "Pay now"}
+              </a>
+            ) : null}
           </div>
           {isOwner && order.lines.length ? (
             <button
@@ -1570,6 +1578,7 @@ export default function OrderDetailPage() {
             </div>
           ) : null}
 
+          <div id="pay-now" className="scroll-mt-24 space-y-6">
           {(isOwner || canManage) &&
           (order.status === "payment_pending" ||
             order.status === "payment_verified") &&
@@ -2003,6 +2012,7 @@ export default function OrderDetailPage() {
               </div>
             );
           })()}
+          </div>
 
           {canManage ? (
             <div className="rounded-2xl border-2 border-[var(--line)] bg-white p-4 space-y-3">
