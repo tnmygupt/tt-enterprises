@@ -129,10 +129,32 @@ export function piecesInPacketLine(
 }
 
 export function resolvePcsPerPacket(
-  product?: Pick<Product, "pcsPerPacket"> | null,
-  variation?: Pick<ProductVariation, "pcsPerPacket"> | null
+  product?: Pick<
+    Product,
+    "pcsPerPacket" | "unit" | "lengthFt" | "widthFt" | "ratePerSqft" | "baseRate"
+  > | null,
+  variation?: Pick<
+    ProductVariation,
+    "pcsPerPacket" | "lengthFt" | "widthFt" | "ratePerSqft" | "rate"
+  > | null
 ): number {
-  return Number(variation?.pcsPerPacket ?? product?.pcsPerPacket) || 0;
+  const fromVar = Number(variation?.pcsPerPacket);
+  if (fromVar > 0) return Math.round(fromVar);
+  const fromProd = Number(product?.pcsPerPacket);
+  if (fromProd > 0) return Math.round(fromProd);
+  if (!product) return 0;
+  const lengthFt = Number(variation?.lengthFt ?? product.lengthFt) || 0;
+  const widthFt = Number(variation?.widthFt ?? product.widthFt) || 0;
+  const rps =
+    Number(variation?.ratePerSqft ?? product.ratePerSqft ?? product.baseRate) ||
+    0;
+  const pc = ratePerPiece(rps, lengthFt, widthFt);
+  const pkt = Number(variation?.rate) || 0;
+  if (pc > 0 && pkt > 0) {
+    const inferred = Math.round(pkt / pc);
+    if (inferred > 0) return inferred;
+  }
+  return 0;
 }
 
 export function pcsPerPacketLabel(
@@ -378,17 +400,21 @@ export type SqftPackSpec = {
 export function resolveSqftPack(
   product: Pick<
     Product,
-    "lengthFt" | "widthFt" | "pcsPerPacket" | "ratePerSqft" | "baseRate"
+    | "lengthFt"
+    | "widthFt"
+    | "pcsPerPacket"
+    | "ratePerSqft"
+    | "baseRate"
+    | "unit"
   >,
   variation?: Pick<
     ProductVariation,
-    "lengthFt" | "widthFt" | "pcsPerPacket" | "ratePerSqft"
+    "lengthFt" | "widthFt" | "pcsPerPacket" | "ratePerSqft" | "rate"
   > | null
 ): SqftPackSpec {
   const lengthFt = Number(variation?.lengthFt ?? product.lengthFt) || 0;
   const widthFt = Number(variation?.widthFt ?? product.widthFt) || 0;
-  const pcsPerPacket =
-    Number(variation?.pcsPerPacket ?? product.pcsPerPacket) || 0;
+  const pcsPerPacket = resolvePcsPerPacket(product, variation);
   const ratePerSqft =
     Number(variation?.ratePerSqft ?? product.ratePerSqft ?? product.baseRate) ||
     0;

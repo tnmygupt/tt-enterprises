@@ -8,6 +8,7 @@ import {
   pieceWeightKgFromGsm,
   ratePerPacket,
   ratePerPiece,
+  resolvePcsPerPacket,
   resolveRate,
   resolveUnitWeightKg,
   resolveWeightKg,
@@ -132,6 +133,31 @@ describe("GSM packet weight", () => {
     expect(pcsPerPacketLabel(10, "hi")).toBe("10 पीस/पैकेट");
     expect(piecesInPacketLine(10, "en")).toBe("10 pieces in 1 packet");
     expect(piecesInPacketLine(10, "hi")).toBe("10 पीस 1 पैकेट में");
+  });
+
+  it("uses product pcs when variation pcs is 0, and infers from pkt/pc rates", () => {
+    expect(
+      resolvePcsPerPacket(
+        { pcsPerPacket: 12 } as Product,
+        { pcsPerPacket: 0 } as ProductVariation
+      )
+    ).toBe(12);
+    expect(
+      resolvePcsPerPacket(
+        {
+          unit: "sqft",
+          ratePerSqft: 4,
+          lengthFt: 12,
+          widthFt: 15,
+        } as Product,
+        {
+          rate: 8640,
+          lengthFt: 12,
+          widthFt: 15,
+          ratePerSqft: 4,
+        } as ProductVariation
+      )
+    ).toBe(12);
   });
 
   it("keeps a typed pack-kg override", () => {
