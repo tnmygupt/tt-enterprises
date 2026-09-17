@@ -129,14 +129,20 @@ export function piecesInPacketLine(
 }
 
 export function resolvePcsPerPacket(
-  product?: Pick<
-    Product,
-    "pcsPerPacket" | "unit" | "lengthFt" | "widthFt" | "ratePerSqft" | "baseRate"
-  > | null,
-  variation?: Pick<
-    ProductVariation,
-    "pcsPerPacket" | "lengthFt" | "widthFt" | "ratePerSqft" | "rate"
-  > | null
+  product?: {
+    pcsPerPacket?: number;
+    lengthFt?: number;
+    widthFt?: number;
+    ratePerSqft?: number;
+    baseRate?: number;
+  } | null,
+  variation?: {
+    pcsPerPacket?: number;
+    lengthFt?: number;
+    widthFt?: number;
+    ratePerSqft?: number;
+    rate?: number;
+  } | null
 ): number {
   const fromVar = Number(variation?.pcsPerPacket);
   if (fromVar > 0) return Math.round(fromVar);
@@ -400,12 +406,7 @@ export type SqftPackSpec = {
 export function resolveSqftPack(
   product: Pick<
     Product,
-    | "lengthFt"
-    | "widthFt"
-    | "pcsPerPacket"
-    | "ratePerSqft"
-    | "baseRate"
-    | "unit"
+    "lengthFt" | "widthFt" | "pcsPerPacket" | "ratePerSqft" | "baseRate"
   >,
   variation?: Pick<
     ProductVariation,
