@@ -274,7 +274,6 @@ export function SiteFooter() {
   const phone = settings?.phone?.trim() || "";
   const phone2 = settings?.phone2?.trim() || "";
   const address = settings?.address?.trim() || "";
-  const gstin = settings?.gstin?.trim() || "";
   const loggedIn = ready && !!session;
 
   return (
@@ -284,9 +283,6 @@ export function SiteFooter() {
           <BrandLockup />
           {address ? (
             <p className="max-w-xs text-[var(--ink-muted)]">{address}</p>
-          ) : null}
-          {gstin ? (
-            <p className="text-xs text-[var(--ink-muted)]">GSTIN: {gstin}</p>
           ) : null}
         </div>
 
