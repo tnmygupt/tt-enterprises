@@ -120,7 +120,6 @@ export async function renderTablePdf(options: ExportPdfOptions) {
     .map((line) => sanitizePdfText(line))
     .filter(Boolean);
   const contact = [
-    company.gstin ? `GSTIN ${sanitizePdfText(company.gstin)}` : "",
     [company.phone, company.phone2]
       .map((p) => sanitizePdfText(p))
       .filter(Boolean)
