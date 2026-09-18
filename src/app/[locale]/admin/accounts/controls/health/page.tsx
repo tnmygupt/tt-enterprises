@@ -73,7 +73,7 @@ export default function HealthCheckPage() {
           ? ` · ${result.salesFailed.length} sale(s) still failing`
           : "";
       setRepairMsg(
-        `Repaired: ${result.salesCreated} sale voucher(s), ${result.receiptsSynced} new receipt(s), openings synced${failBit}`
+        `Repaired: ${result.salesCreated} sale voucher(s), ${result.receiptsSynced} new receipt(s), ${result.cancelledVoided} cancelled bill(s) voided, openings synced${failBit}`
       );
       if (result.salesFailed.length) {
         setRepairErr(result.salesFailed.slice(0, 5).join(" · "));

@@ -131,7 +131,8 @@ export function VoucherForm({
         db.vouchers,
         db.billAllocations ?? [],
         date,
-        "sale"
+        "sale",
+        db.orders
       );
     }
     if (type === "payment" || type === "debit_note") {

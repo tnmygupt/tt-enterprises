@@ -6,6 +6,11 @@ import type {
 } from "../types";
 import { roundMoney } from "../pricing";
 import { partyBalance } from "./engine";
+import {
+  cancelledOrderIdSet,
+  invoiceLinkedToCancelledOrder,
+  type CancelledOrderRef,
+} from "./cancelled-order-books";
 
 export type AgingBucketKey =
   | "current"
@@ -149,16 +154,19 @@ export function openInvoicesForParty(
   vouchers: Voucher[],
   allocations: BillAllocation[],
   asOf: string,
-  kind: "sale" | "purchase" = "sale"
+  kind: "sale" | "purchase" = "sale",
+  orders?: CancelledOrderRef[]
 ): OpenInvoice[] {
   const asOfD = asOf.slice(0, 10);
+  const cancelledIds = cancelledOrderIdSet(orders);
   return vouchers
     .filter(
       (v) =>
         !v.voided &&
         v.type === kind &&
         v.partyId === partyId &&
-        v.date.slice(0, 10) <= asOfD
+        v.date.slice(0, 10) <= asOfD &&
+        !invoiceLinkedToCancelledOrder(v, cancelledIds)
     )
     .map((voucher) => {
       const outstanding = invoiceOutstanding(voucher, vouchers, allocations);
@@ -180,9 +188,17 @@ export function partyAging(
   vouchers: Voucher[],
   allocations: BillAllocation[],
   asOf: string,
-  kind: "sale" | "purchase" = "sale"
+  kind: "sale" | "purchase" = "sale",
+  orders?: CancelledOrderRef[]
 ): AgingBuckets {
-  const open = openInvoicesForParty(partyId, vouchers, allocations, asOf, kind);
+  const open = openInvoicesForParty(
+    partyId,
+    vouchers,
+    allocations,
+    asOf,
+    kind,
+    orders
+  );
   const buckets: AgingBuckets = {
     current: 0,
     d1_30: 0,
@@ -202,13 +218,21 @@ export function allOpenReceivables(
   parties: Party[],
   vouchers: Voucher[],
   allocations: BillAllocation[],
-  asOf: string
+  asOf: string,
+  orders?: CancelledOrderRef[]
 ): OpenInvoice[] {
   const customers = parties.filter((p) => p.active && p.type === "customer");
   const rows: OpenInvoice[] = [];
   for (const p of customers) {
     rows.push(
-      ...openInvoicesForParty(p.id, vouchers, allocations, asOf, "sale")
+      ...openInvoicesForParty(
+        p.id,
+        vouchers,
+        allocations,
+        asOf,
+        "sale",
+        orders
+      )
     );
   }
   return rows.sort((a, b) => a.voucher.date.localeCompare(b.voucher.date));

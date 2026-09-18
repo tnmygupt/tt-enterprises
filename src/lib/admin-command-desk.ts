@@ -209,7 +209,13 @@ export function computeCommandDesk(
 
   const cashAcct = accounts.find((a) => a.id === ACCT.cash);
   const bankAcct = accounts.find((a) => a.id === ACCT.bank);
-  const openRx = allOpenReceivables(parties, vouchers, allocations, today);
+  const openRx = allOpenReceivables(
+    parties,
+    vouchers,
+    allocations,
+    today,
+    db.orders
+  );
   const receivables = roundMoney(
     openRx.reduce((s, r) => s + r.outstanding, 0)
   );

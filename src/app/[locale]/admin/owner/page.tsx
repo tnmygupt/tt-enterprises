@@ -46,7 +46,8 @@ export default function OwnerTrackingPage() {
       db.parties,
       db.vouchers,
       db.billAllocations ?? [],
-      today
+      today,
+      db.orders
     ).reduce((s, r) => s + r.outstanding, 0);
     const toPay = allOpenPayables(
       db.parties,

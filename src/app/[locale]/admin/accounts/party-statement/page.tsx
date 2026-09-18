@@ -120,7 +120,8 @@ function PartyStatementInner() {
       db.vouchers,
       allocations,
       to,
-      party.type === "supplier" ? "purchase" : "sale"
+      party.type === "supplier" ? "purchase" : "sale",
+      db.orders
     );
   }, [db, party, to, allocations]);
 
@@ -131,7 +132,8 @@ function PartyStatementInner() {
       db.vouchers,
       allocations,
       to,
-      party.type === "supplier" ? "purchase" : "sale"
+      party.type === "supplier" ? "purchase" : "sale",
+      db.orders
     );
   }, [db, party, to, allocations]);
 
@@ -147,7 +149,7 @@ function PartyStatementInner() {
 
   const goods = useMemo(() => {
     if (!db || !party || blocked) return [];
-    return partyGoodsLines(party, db.vouchers, from, to);
+    return partyGoodsLines(party, db.vouchers, from, to, db.orders);
   }, [blocked, db, from, party, to]);
 
   const openContracts = useMemo(() => {

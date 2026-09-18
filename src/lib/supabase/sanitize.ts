@@ -1,8 +1,10 @@
 import type { AppDatabase } from "@/lib/store/db";
+import { voidBooksForCancelledOrders } from "@/lib/accounting/cancelled-order-books";
 
 /**
  * Strip plaintext admin-visible passwords + unrehostable blobs before cloud write.
  * Keeps passwordHash so server login / merge still work.
+ * Also voids sale bills still linked to cancelled orders so party overdue matches the site.
  */
 export function sanitizeDbForCloud(db: AppDatabase): AppDatabase {
   const clone = JSON.parse(JSON.stringify(db)) as AppDatabase;
@@ -72,6 +74,12 @@ export function sanitizeDbForCloud(db: AppDatabase): AppDatabase {
       }
     }
   }
+
+  if (!clone.orders) clone.orders = [];
+  if (!clone.vouchers) clone.vouchers = [];
+  if (!clone.ledgerEntries) clone.ledgerEntries = [];
+  if (!clone.billAllocations) clone.billAllocations = [];
+  voidBooksForCancelledOrders(clone, "system");
 
   return clone;
 }
