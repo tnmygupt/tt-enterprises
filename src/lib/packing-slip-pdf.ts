@@ -287,12 +287,11 @@ function renderSlipPdf(
   doc.text("Om Ganeshaya Namah", pageW - M, y + 4, { align: "right" });
   y += 8;
 
-  // Address / GSTIN / phone come from admin settings so the slip stays a
+  // Address / phone come from admin settings so the slip stays a
   // valid business document when those details change.
   const letterhead = [
     [company.address, company.address2].filter(Boolean).join(", "),
     [
-      company.gstin ? `GSTIN ${company.gstin}` : "",
       [company.phone, company.phone2].filter(Boolean).join(", "),
     ]
       .filter(Boolean)
@@ -337,7 +336,7 @@ function renderSlipPdf(
     `PARTY: ${slip.partyName || order.checkoutName || order.userName || "-"}`,
     `PHONE: ${slip.partyPhone || order.phone || "-"}`,
     `ADDRESS: ${slip.partyAddress || order.deliveryAddress || "-"}`,
-    `GST/ID: ${slip.partyGstin || order.gstOrAadhar || "-"}`,
+    `ID: ${slip.partyGstin || order.gstOrAadhar || "-"}`,
   ].flatMap((line) => doc.splitTextToSize(line, W - 4));
   const partyH = Math.max(14, partyLines.length * 3.2 + 3);
   y = need(partyH + 3);

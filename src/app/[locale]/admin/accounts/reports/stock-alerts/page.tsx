@@ -6,6 +6,7 @@ import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { ExportButtons } from "@/components/ExportButtons";
 import { NumberField } from "@/components/NumberField";
 import { stockAlertsFromDb } from "@/lib/accounting";
@@ -247,7 +248,7 @@ export default function StockAlertsPage() {
         <p className="mt-2 text-sm text-[var(--brand-deep)]">{msg}</p>
       ) : null}
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <TableWrap className="tt-panel mt-5">
         <table className="tt-table min-w-[1180px]">
           <thead>
             <tr>
@@ -386,7 +387,7 @@ export default function StockAlertsPage() {
               : "No alerts. Set min stock on products, or wait for sales velocity."}
           </p>
         ) : null}
-      </div>
+      </TableWrap>
     </AccountsShell>
   );
 }

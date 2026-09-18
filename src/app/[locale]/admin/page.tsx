@@ -4,7 +4,9 @@ import { useMemo } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AccountsHotkeys } from "@/components/AccountsHotkeys";
-import { AccountsPageHeader } from "@/components/AccountsPageHeader";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { EmptyState } from "@/components/admin/EmptyState";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { AdminShell } from "@/components/AdminShell";
 import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import {
@@ -13,7 +15,11 @@ import {
   type MonthlyPair,
   type ReorderMix,
 } from "@/lib/admin-command-desk";
-import { getAdminQueues, orderNextAction } from "@/lib/admin-queues";
+import {
+  getAdminQueues,
+  orderNextActionHref,
+  orderNextActionLabelKey,
+} from "@/lib/admin-queues";
 import { inRange } from "@/lib/date-range";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
@@ -154,29 +160,29 @@ export default function AdminDashboardPage() {
   }[] = [
     {
       key: "need_confirm",
-      title: locale === "hi" ? "नए अनुमान" : "New estimates",
-      desc: locale === "hi" ? "पुष्टि या बिल अपलोड करें" : "Confirm or set final kg",
+      title: t("admin.queueEstimates"),
+      desc: t("admin.queueEstimatesDesc"),
       items: queues.needConfirm,
       href: "/admin/orders?filter=estimate",
     },
     {
       key: "need_bill",
-      title: locale === "hi" ? "बिल बाकी" : "Bill pending",
-      desc: locale === "hi" ? "असली kg डालें — बिल अपने आप" : "Enter final kg — bill auto-calculates",
+      title: t("admin.queueNeedBill"),
+      desc: t("admin.queueNeedBillDesc"),
       items: queues.needBill,
       href: "/admin/orders?filter=need_bill",
     },
     {
       key: "need_verify",
-      title: locale === "hi" ? "पेमेंट जाँच" : "Verify payment",
-      desc: locale === "hi" ? "डीलर ने प्रूफ भेजा है" : "Dealer uploaded payment proof",
+      title: t("admin.queueVerifyPay"),
+      desc: t("admin.queueVerifyPayDesc"),
       items: queues.needVerifyPayment,
       href: "/admin/orders?filter=need_verify",
     },
     {
       key: "need_lr",
-      title: locale === "hi" ? "LR बाकी" : "Pending LR",
-      desc: locale === "hi" ? "डिस्पैच हो चुका — LR अपलोड बाकी" : "Dispatched — LR upload still pending",
+      title: t("admin.queueNeedLr"),
+      desc: t("admin.queueNeedLrDesc"),
       items: queues.needLr,
       href: "/admin/orders?filter=need_lr",
     },
@@ -224,8 +230,7 @@ export default function AdminDashboardPage() {
   return (
     <AdminShell wide>
       {books ? <AccountsHotkeys /> : null}
-      <AccountsPageHeader
-        home
+      <AdminPageHeader
         title={t("admin.dashboard")}
         hint={salesDesk ? t("admin.salesDeskHint") : t("admin.deskHint")}
         actions={
@@ -370,12 +375,6 @@ export default function AdminDashboardPage() {
               {t("admin.deskUnpriced")} <strong>{desk.unpricedGrns}</strong>
             </Link>
           ) : null}
-          {queues.counts.need_verify_payment > 0 && books ? (
-            <Link href="/admin/orders?filter=need_verify" className="tt-chip">
-              {locale === "hi" ? "पेमेंट जाँच" : "Verify payment"}{" "}
-              <strong>{queues.counts.need_verify_payment}</strong>
-            </Link>
-          ) : null}
         </div>
       ) : null}
 
@@ -391,9 +390,9 @@ export default function AdminDashboardPage() {
             {owner ? (
               <p className="mt-2 text-[11px] text-[var(--ink-muted)]">
                 <span className="mr-3 inline-block h-2 w-2 rounded-sm bg-[var(--brand)]" />
-                {locale === "hi" ? "बिक्री" : "Sales"}
+                {t("admin.deskSales")}
                 <span className="ml-4 mr-3 inline-block h-2 w-2 rounded-sm bg-[var(--ok)]" />
-                {locale === "hi" ? "खरीद" : "Purchase"}
+                {t("admin.deskPurchase")}
               </p>
             ) : null}
           </div>
@@ -453,13 +452,13 @@ export default function AdminDashboardPage() {
                 {t("admin.stockAlerts")} →
               </Link>
             </div>
-            <div className="overflow-x-auto">
+            <TableWrap>
               <table className="tt-table min-w-[420px]">
                 <thead>
                   <tr>
-                    <th>{locale === "hi" ? "आइटम" : "Item"}</th>
-                    <th>{locale === "hi" ? "स्टॉक" : "On hand"}</th>
-                    <th>{locale === "hi" ? "सुझाव" : "Suggest"}</th>
+                    <th>{t("admin.colItem")}</th>
+                    <th>{t("admin.colOnHand")}</th>
+                    <th>{t("admin.colSuggest")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -480,9 +479,9 @@ export default function AdminDashboardPage() {
                 </tbody>
               </table>
               {!desk.reorders.length ? (
-                <p className="p-4 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+                <EmptyState message={t("common.empty")} />
               ) : null}
-            </div>
+            </TableWrap>
           </div>
         </section>
       ) : null}
@@ -521,11 +520,7 @@ export default function AdminDashboardPage() {
           <p className="mt-1 text-xs text-[var(--ink-muted)]">{t("admin.deskWorkHint")}</p>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             {workQueues.map((q) => (
-              <Link
-                key={q.key}
-                href={q.href}
-                className="tt-panel block p-4 transition hover:border-[var(--brand)]"
-              >
+              <div key={q.key} className="tt-panel flex flex-col p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h3 className="font-semibold text-[var(--ink)]">{q.title}</h3>
@@ -536,22 +531,26 @@ export default function AdminDashboardPage() {
                   </span>
                 </div>
                 {q.items.slice(0, 3).map((o) => (
-                  <div
+                  <Link
                     key={o.id}
-                    className="mt-3 flex items-center justify-between border-t border-[var(--line)] pt-2 text-sm"
+                    href={orderNextActionHref(o)}
+                    className="mt-3 flex items-center justify-between border-t border-[var(--line)] pt-2 text-sm hover:text-[var(--brand-deep)]"
                   >
                     <span className="font-mono text-xs text-[var(--brand-deep)]">{o.orderNumber}</span>
                     <span className="truncate text-[var(--ink-muted)]">{o.userName}</span>
-                  </div>
+                  </Link>
                 ))}
-              </Link>
+                <Link href={q.href} className="tt-btn tt-btn-dark mt-4 min-h-11 w-full sm:w-auto">
+                  {t("admin.queueOpen")}
+                </Link>
+              </div>
             ))}
           </div>
 
           {queues.fullTruck.length > 0 ? (
             <div className="tt-panel mt-5 border-[var(--brand)] p-4">
               <h3 className="font-semibold">
-                {locale === "hi" ? "फुल ट्रक अनुरोध" : "Full truck requests"} (
+                {t("admin.fullTruckRequests")} (
                 {queues.fullTruck.length})
               </h3>
               <ul className="mt-2 space-y-1 text-sm">
@@ -571,14 +570,14 @@ export default function AdminDashboardPage() {
             {t("admin.deskPeriodOrders")}
             <span className="ml-2 font-normal normal-case">({periodOrders.length})</span>
           </h2>
-          <div className="tt-panel mt-3 overflow-x-auto">
+          <TableWrap className="tt-panel mt-3">
             <table className="tt-table min-w-[720px]">
               <thead>
                 <tr>
-                  <th>Order</th>
-                  <th>Customer</th>
+                  <th>{t("admin.colOrder")}</th>
+                  <th>{t("admin.colCustomer")}</th>
                   <th>{t("common.status")}</th>
-                  <th>{locale === "hi" ? "अगला कदम" : "Next action"}</th>
+                  <th>{t("admin.colNext")}</th>
                   <th>{t("common.total")}</th>
                 </tr>
               </thead>
@@ -596,7 +595,14 @@ export default function AdminDashboardPage() {
                         {t(`orderStatus.${o.status}` as "orderStatus.estimate")}
                       </span>
                     </td>
-                    <td className="text-sm text-[var(--ink-muted)]">{orderNextAction(o)}</td>
+                    <td>
+                      <Link
+                        href={orderNextActionHref(o)}
+                        className="text-sm font-semibold text-[var(--brand-deep)]"
+                      >
+                        {t(`admin.${orderNextActionLabelKey(o)}` as "admin.nextActionOpen")}
+                      </Link>
+                    </td>
                     <td className="tabular-nums">
                       {formatInr(o.actualBillAmount ?? o.estimatedTotal, locale)}
                     </td>
@@ -605,9 +611,9 @@ export default function AdminDashboardPage() {
               </tbody>
             </table>
             {!periodOrders.length ? (
-              <p className="p-5 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+              <EmptyState message={t("common.empty")} />
             ) : null}
-          </div>
+          </TableWrap>
         </>
       ) : null}
     </AdminShell>

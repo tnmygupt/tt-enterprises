@@ -199,7 +199,7 @@ systemctl restart tt-enterprises
 
 ---
 
-## Auto reorder cron (weekly draft POs)
+## Auto reorder cron (weekly ordered POs, owner WhatsApp)
 
 Enable **Admin → Settings → Auto reorder**, set preferred suppliers on products, and add `CRON_SECRET` to the Node env (same as `.env.example`).
 
@@ -217,7 +217,7 @@ Or with query secret (if headers are awkward in the panel):
 curl -fsS "https://tanmayphotos.space/api/cron/reorder?secret=YOUR_CRON_SECRET"
 ```
 
-The endpoint skips when `autoReorderEnabled` is off, groups reorder alerts by preferred supplier, and creates **draft** POs. Suggested qty uses sales velocity × (lead + safety days), plus open estimates, minus remaining qty on open POs. Staff still confirm before the supplier is told. Staff with `manage_orders` get a web push when VAPID is configured, and a WhatsApp when the Tally instance is on.
+The endpoint skips when `autoReorderEnabled` is off, groups reorder alerts by preferred supplier, and creates **ordered** POs. Suggested qty uses sales velocity × (lead + safety days), plus open estimates, minus remaining qty on open POs. The mill is **not** WhatsApped — only `super_admin` owners get WhatsApp (and web push when VAPID is on). Staff can still message a mill from Purchases → Confirm.
 
 ## WhatsApp digest cron (overdue / credit / schemes / stale estimates / daily owner summary)
 

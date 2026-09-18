@@ -96,7 +96,7 @@ export default function TrialBalancePage() {
         </button>
         <ExportButtons options={exportOptions} disabled={!report} />
       </div>
-      <div className="tt-panel mt-4 overflow-x-auto">
+      <div className="tt-panel mt-4 tt-acct-table-wrap">
         <table className="tt-table min-w-[640px]">
           <thead>
             <tr>

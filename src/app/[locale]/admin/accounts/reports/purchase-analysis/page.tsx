@@ -100,7 +100,7 @@ export default function PurchaseAnalysisPage() {
         </div>
       </div>
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-panel mt-5 tt-acct-table-wrap">
         <table className="tt-table min-w-[560px]">
           <thead>
             <tr>

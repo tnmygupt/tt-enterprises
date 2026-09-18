@@ -1,12 +1,13 @@
 "use client";
 
 import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { useTranslations } from "next-intl";
+import { useTranslations, useLocale } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { StatusBadge } from "@/components/admin/StatusBadge";
 import { ExportButtons } from "@/components/ExportButtons";
 import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
@@ -22,6 +23,7 @@ import {
   parseCatalogRowValue,
 } from "@/lib/inventory";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
+import { formatInr } from "@/lib/pricing";
 import {
   listOpenPurchaseOrders,
   poLineRemaining,
@@ -95,6 +97,7 @@ export default function GoodsReceivedPage() {
 
 function GoodsReceivedInner() {
   const t = useTranslations();
+  const locale = useLocale() as "en" | "hi";
   const search = useSearchParams();
   const highlightId = search.get("id") || "";
   const { session } = useSession();
@@ -297,8 +300,7 @@ function GoodsReceivedInner() {
 
       {unpriced.length > 0 ? (
         <p className="mt-3 rounded-lg bg-[var(--brand-soft)] px-3 py-2 text-sm text-[var(--brand-deep)]">
-          {unpriced.length} receipt{unpriced.length === 1 ? "" : "s"} waiting
-          for the owner to set rates
+          {t("admin.grnUnpricedBanner", { count: unpriced.length })}
           {isOwner ? (
             <>
               {" · "}
@@ -306,7 +308,7 @@ function GoodsReceivedInner() {
                 href="/admin/accounts/needs-pricing"
                 className="font-semibold underline"
               >
-                Open queue
+                {t("admin.grnOpenQueue")}
               </Link>
             </>
           ) : null}
@@ -326,9 +328,9 @@ function GoodsReceivedInner() {
       ) : null}
 
       {openPos.length ? (
-        <div className="tt-panel mt-5 overflow-x-auto">
+        <div className="tt-panel mt-5 tt-acct-table-wrap">
           <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
-            Open purchase orders
+            {t("admin.grnOpenPos")}
           </p>
           <table className="tt-table min-w-[560px]">
             <thead>
@@ -652,7 +654,7 @@ function GoodsReceivedInner() {
       </form>
 
       <div className="mt-6 space-y-2 sm:hidden">
-        <p className="text-sm font-semibold">Recent receipts</p>
+        <p className="text-sm font-semibold">{t("admin.grnRecent")}</p>
         {recent.map((g) => {
           const po = db?.purchaseOrders.find((p) => p.id === g.poId);
           const supplier =
@@ -682,6 +684,13 @@ function GoodsReceivedInner() {
                   <span className="text-[var(--danger)]">Voided</span>
                 ) : billed ? (
                   <span className="text-[var(--ok)]">Priced</span>
+                ) : (g.accruedAmount || 0) > 0.009 ? (
+                  <span className="font-semibold text-[var(--brand-deep)]">
+                    {t("accounts.grniOpen")}
+                    {isOwner
+                      ? ` · ${formatInr(g.accruedAmount || 0, locale)}`
+                      : ""}
+                  </span>
                 ) : (
                   <span className="font-semibold text-[var(--brand-deep)]">
                     Needs pricing
@@ -738,9 +747,9 @@ function GoodsReceivedInner() {
         ) : null}
       </div>
 
-      <div className="tt-panel mt-6 hidden overflow-x-auto sm:block">
+      <div className="tt-panel mt-6 hidden sm:block tt-acct-table-wrap">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
-          Recent receipts
+          {t("admin.grnRecent")}
         </p>
         <table className="tt-table min-w-[720px]">
           <thead>
@@ -796,13 +805,18 @@ function GoodsReceivedInner() {
                   </td>
                   <td>
                     {g.voided ? (
-                      <span className="text-[var(--danger)]">Voided</span>
+                      <StatusBadge tone="danger">{t("admin.statusVoided")}</StatusBadge>
                     ) : billed ? (
-                      <span className="text-[var(--ok)]">Priced</span>
+                      <StatusBadge tone="ok">{t("admin.statusBilled")}</StatusBadge>
+                    ) : (g.accruedAmount || 0) > 0.009 ? (
+                      <StatusBadge tone="pending">
+                        {t("accounts.grniOpen")}
+                        {isOwner
+                          ? ` · ${formatInr(g.accruedAmount || 0, locale)}`
+                          : ""}
+                      </StatusBadge>
                     ) : (
-                      <span className="font-semibold text-[var(--brand-deep)]">
-                        Needs pricing
-                      </span>
+                      <StatusBadge tone="pending">{t("admin.statusOpen")}</StatusBadge>
                     )}
                   </td>
                   <td>

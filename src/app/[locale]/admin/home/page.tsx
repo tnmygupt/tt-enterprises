@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { AdminShell } from "@/components/AdminShell";
 import { SearchSelect } from "@/components/SearchSelect";
 import { useDb, useSession } from "@/lib/hooks";
@@ -157,17 +158,15 @@ export default function AdminHomeMerchPage() {
 
   return (
     <AdminShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">{t("admin.homePage")}</h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {t("admin.homePageHint")}
-          </p>
-        </div>
-        <Link href="/" className="tt-btn tt-btn-outline">
-          {t("nav.home")}
-        </Link>
-      </div>
+      <AdminPageHeader
+        title={t("admin.homePage")}
+        hint={t("admin.homePageHint")}
+        actions={
+          <Link href="/" className="tt-btn tt-btn-outline">
+            {t("nav.home")}
+          </Link>
+        }
+      />
 
       {msg ? (
         <p className="mt-4 rounded-xl bg-[#e8f2ea] p-3 text-sm text-[var(--ok)]">

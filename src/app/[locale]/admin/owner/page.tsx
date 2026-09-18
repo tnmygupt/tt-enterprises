@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { AdminShell } from "@/components/AdminShell";
 import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import {
@@ -213,29 +214,23 @@ export default function OwnerTrackingPage() {
 
   return (
     <AdminShell wide>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold text-[var(--ink)]">
-            {locale === "hi" ? "ओनर डैशबोर्ड" : "Owner dashboard"}
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "नकद, बिक्री, खरीद, बकाया और ऑर्डर — पूरा व्यवसाय एक नज़र में"
-              : "Cash, sales, purchases, dues & orders — full business at a glance"}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className="tt-btn tt-btn-dark" onClick={exportPdf}>
-            {locale === "hi" ? "PDF निर्यात" : "Export PDF"}
-          </button>
-          <Link href="/admin/owner/monthly-audit" className="tt-btn tt-btn-outline">
-            {locale === "hi" ? "मासिक ऑडिट" : "Monthly audit"}
-          </Link>
-          <Link href="/admin/accounts" className="tt-btn tt-btn-outline">
-            {locale === "hi" ? "अकाउंट्स" : "Accounts"}
-          </Link>
-        </div>
-      </div>
+      <AdminPageHeader
+        title={t("admin.ownerTitle")}
+        hint={t("admin.ownerHint")}
+        actions={
+          <>
+            <button type="button" className="tt-btn tt-btn-dark" onClick={exportPdf}>
+              {t("admin.exportPdf")}
+            </button>
+            <Link href="/admin/owner/monthly-audit" className="tt-btn tt-btn-outline">
+              {t("admin.monthlyAudit")}
+            </Link>
+            <Link href="/admin/accounts" className="tt-btn tt-btn-outline">
+              {t("admin.accountsBook")}
+            </Link>
+          </>
+        }
+      />
 
       <DateRangeBar value={range} onChange={setRange} className="mt-4" />
 
@@ -351,7 +346,7 @@ export default function OwnerTrackingPage() {
           <h2 className="text-sm font-bold uppercase tracking-wide text-[var(--ink-muted)]">
             {locale === "hi" ? "फनल" : "Funnel"}
           </h2>
-          <div className="tt-panel mt-3 overflow-x-auto">
+          <div className="tt-panel mt-3 tt-acct-table-wrap">
             <table className="tt-table min-w-[420px]">
               <thead>
                 <tr>
@@ -379,7 +374,7 @@ export default function OwnerTrackingPage() {
           <h2 className="text-sm font-bold uppercase tracking-wide text-[var(--ink-muted)]">
             {locale === "hi" ? "एजिंग" : "Aging"}
           </h2>
-          <div className="tt-panel mt-3 overflow-x-auto">
+          <div className="tt-panel mt-3 tt-acct-table-wrap">
             <table className="tt-table min-w-[360px]">
               <thead>
                 <tr>
@@ -403,7 +398,7 @@ export default function OwnerTrackingPage() {
       <h2 className="mt-8 text-sm font-bold uppercase tracking-wide text-[var(--ink-muted)]">
         {locale === "hi" ? "टॉप डीलर" : "Top dealers"}
       </h2>
-      <div className="tt-panel mt-3 overflow-x-auto">
+      <div className="tt-panel mt-3 tt-acct-table-wrap">
         <table className="tt-table min-w-[720px]">
           <thead>
             <tr>
@@ -436,7 +431,7 @@ export default function OwnerTrackingPage() {
       <h2 className="mt-8 text-sm font-bold uppercase tracking-wide text-[var(--ink-muted)]">
         {locale === "hi" ? "दैनिक श्रृंखला" : "Daily series"}
       </h2>
-      <div className="tt-panel mt-3 overflow-x-auto">
+      <div className="tt-panel mt-3 tt-acct-table-wrap">
         <table className="tt-table min-w-[480px]">
           <thead>
             <tr>

@@ -3,6 +3,8 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { AdminShell } from "@/components/AdminShell";
 import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
 import { NumberField } from "@/components/NumberField";
@@ -115,22 +117,18 @@ export default function AdminWalletsPage() {
 
   return (
     <AdminShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">{t("admin.wallets")}</h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "डीलर वॉलेट में पैसे जमा करें, स्कीम असाइन, लेजर"
-              : "Deposit money to dealer wallets, assign schemes, ledger"}
-          </p>
-        </div>
-        <input
-          className="tt-input max-w-xs"
-          placeholder={t("common.search")}
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-      </div>
+      <AdminPageHeader
+        title={t("admin.wallets")}
+        hint={t("admin.walletsHint")}
+        actions={
+          <input
+            className="tt-input max-w-xs"
+            placeholder={t("common.search")}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+        }
+      />
 
       <DateRangeBar value={range} onChange={setRange} className="mt-4" />
 
@@ -232,7 +230,7 @@ export default function AdminWalletsPage() {
         </div>
       ) : null}
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <TableWrap className="tt-panel mt-5">
         <table className="tt-table min-w-[800px]">
           <thead>
             <tr>
@@ -292,7 +290,7 @@ export default function AdminWalletsPage() {
         {!dealers.length ? (
           <p className="p-6 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
         ) : null}
-      </div>
+      </TableWrap>
 
       {canWallet ? (
         <div className="mt-6 grid gap-4 lg:grid-cols-2">
@@ -413,7 +411,7 @@ export default function AdminWalletsPage() {
           ({ledger.length})
         </span>
       </h2>
-      <div className="tt-panel mt-3 overflow-x-auto">
+      <TableWrap className="tt-panel mt-3">
         <table className="tt-table min-w-[720px]">
           <thead>
             <tr>
@@ -455,7 +453,7 @@ export default function AdminWalletsPage() {
         {!ledger.length ? (
           <p className="p-6 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
         ) : null}
-      </div>
+      </TableWrap>
     </AdminShell>
   );
 }

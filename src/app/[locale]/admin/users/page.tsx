@@ -4,6 +4,12 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { TransportInput } from "@/components/TransportInput";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { EmptyState } from "@/components/admin/EmptyState";
+import { FilterChips } from "@/components/admin/FilterChips";
+import { PageTabs } from "@/components/admin/PageTabs";
+import { StatusBadge } from "@/components/admin/StatusBadge";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { AdminShell } from "@/components/AdminShell";
 import { NumberField } from "@/components/NumberField";
 import { PeopleJobsTab } from "@/components/admin/PeopleJobsTab";
@@ -965,7 +971,7 @@ export default function AdminUsersPage() {
         value: u.pincode || "—",
       },
       {
-        label: locale === "hi" ? "GST / आधार" : "GST / Aadhaar",
+        label: t("checkout.gstAadhar"),
         value: u.gstOrAadhar || "—",
       },
       {
@@ -1059,56 +1065,58 @@ export default function AdminUsersPage() {
 
   return (
     <AdminShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">{t("admin.users")}</h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {canManageStaff
-              ? t("admin.usersHint")
-              : t("admin.usersHintDealers")}
-            {pulling ? ` · ${t("admin.peopleRefreshing")}` : ""}
-          </p>
-        </div>
-        {tab === "staff" && canManageStaff ? (
-          <button
-            type="button"
-            className="tt-btn tt-btn-dark"
-            onClick={() => {
-              document.getElementById("create-staff-form")?.scrollIntoView({
-                behavior: "smooth",
-              });
-            }}
-          >
-            {t("admin.createStaff")}
-          </button>
-        ) : null}
-        {tab === "jobs" && isOwner ? (
-          <button
-            type="button"
-            className="tt-btn tt-btn-dark"
-            onClick={() => {
-              document.getElementById("create-job-form")?.scrollIntoView({
-                behavior: "smooth",
-              });
-            }}
-          >
-            {t("admin.peopleNewJob")}
-          </button>
-        ) : null}
-        {tab === "dealers" && canManageStaff ? (
-          <button
-            type="button"
-            className="tt-btn tt-btn-dark"
-            onClick={() => {
-              document
-                .getElementById("create-dealer-form")
-                ?.scrollIntoView({ behavior: "smooth" });
-            }}
-          >
-            {t("admin.peopleCreateDealer")}
-          </button>
-        ) : null}
-      </div>
+      <AdminPageHeader
+        title={t("admin.users")}
+        hint={
+          (canManageStaff
+            ? t("admin.usersHint")
+            : t("admin.usersHintDealers")) +
+          (pulling ? ` · ${t("admin.peopleRefreshing")}` : "")
+        }
+        actions={
+          <>
+            {tab === "staff" && canManageStaff ? (
+              <button
+                type="button"
+                className="tt-btn tt-btn-dark"
+                onClick={() => {
+                  document.getElementById("create-staff-form")?.scrollIntoView({
+                    behavior: "smooth",
+                  });
+                }}
+              >
+                {t("admin.createStaff")}
+              </button>
+            ) : null}
+            {tab === "jobs" && isOwner ? (
+              <button
+                type="button"
+                className="tt-btn tt-btn-dark"
+                onClick={() => {
+                  document.getElementById("create-job-form")?.scrollIntoView({
+                    behavior: "smooth",
+                  });
+                }}
+              >
+                {t("admin.peopleNewJob")}
+              </button>
+            ) : null}
+            {tab === "dealers" && canManageStaff ? (
+              <button
+                type="button"
+                className="tt-btn tt-btn-dark"
+                onClick={() => {
+                  document
+                    .getElementById("create-dealer-form")
+                    ?.scrollIntoView({ behavior: "smooth" });
+                }}
+              >
+                {t("admin.peopleCreateDealer")}
+              </button>
+            ) : null}
+          </>
+        }
+      />
 
       {msg ? (
         <p
@@ -1326,27 +1334,16 @@ export default function AdminUsersPage() {
         </div>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap gap-2">
-        {tabs.map((f) => (
-          <button
-            key={f.key}
-            type="button"
-            onClick={() => setTab(f.key)}
-            className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
-              tab === f.key
-                ? "tt-selected bg-[var(--brand-deep)] text-white"
-                : "border border-[var(--line)] bg-white text-[var(--ink-muted)]"
-            }`}
-          >
-            {f.label}
-            {f.key === "dealers" && pending.length ? (
-              <span className="ml-1.5 rounded bg-amber-400 px-1.5 py-0.5 text-xs text-amber-950">
-                {pending.length}
-              </span>
-            ) : null}
-          </button>
-        ))}
-      </div>
+      <PageTabs
+        className="mt-4"
+        value={tab}
+        onChange={(id) => setTab(id as PeopleTab)}
+        tabs={tabs.map((f) => ({
+          id: f.key,
+          label: f.label,
+          count: f.key === "dealers" ? pending.length : undefined,
+        }))}
+      />
 
       {canManageStaff && passwordRequests.length ? (
         <div className="mt-5 rounded-2xl border border-sky-300 bg-sky-50 p-5">
@@ -1451,27 +1448,25 @@ export default function AdminUsersPage() {
                 value={dealerSearch}
                 onChange={(e) => setDealerSearch(e.target.value)}
               />
-              {(
+            <FilterChips
+              items={(
                 [
                   ["all", t("common.all")],
                   ["pending", t("admin.peopleFilterPending")],
                   ["approved", t("admin.peopleFilterApproved")],
                   ["revoked", t("admin.peopleFilterRevoked")],
                 ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setDealerFilter(key)}
-                  className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
-                    dealerFilter === key
-                      ? "tt-selected bg-[var(--brand-deep)] text-white"
-                      : "border border-[var(--line)] bg-white text-[var(--ink-muted)]"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
+              ).map(([key, label]) => ({
+                id: key,
+                label,
+                active: dealerFilter === key,
+              }))}
+              onSelect={(id) =>
+                setDealerFilter(
+                  id as "all" | "pending" | "approved" | "revoked"
+                )
+              }
+            />
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-[var(--ink-muted)]">
@@ -1520,7 +1515,51 @@ export default function AdminUsersPage() {
             </div>
           </div>
 
-          <div className="tt-panel mt-5 overflow-x-auto">
+          <div className="mt-5 space-y-2 sm:hidden">
+            {visibleDealers.map((u) => (
+              <div key={u.id} className="tt-panel p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <button
+                    type="button"
+                    className="text-left"
+                    onClick={() => setViewUserId(u.id)}
+                  >
+                    <p className="font-semibold text-[var(--brand)]">{u.name}</p>
+                    <p className="text-xs text-[var(--ink-muted)]">
+                      {u.phone}
+                      {u.company ? ` · ${u.company}` : ""}
+                    </p>
+                  </button>
+                  <StatusBadge
+                    tone={
+                      !u.active ? "danger" : u.approved ? "ok" : "pending"
+                    }
+                  >
+                    {!u.active
+                      ? t("admin.peopleRevoked")
+                      : u.approved
+                        ? t("admin.peopleApprovedShort")
+                        : t("admin.peoplePendingShort")}
+                  </StatusBadge>
+                </div>
+                {!u.active || u.approved ? null : (
+                  <button
+                    type="button"
+                    className="tt-btn tt-btn-dark mt-3 min-h-11 w-full"
+                    disabled={reviewBusyId === u.id}
+                    onClick={() => void reviewDealerCloud(u, "approve")}
+                  >
+                    {t("admin.approve")}
+                  </button>
+                )}
+              </div>
+            ))}
+            {!visibleDealers.length ? (
+              <EmptyState message={t("common.empty")} />
+            ) : null}
+          </div>
+
+          <TableWrap className="tt-panel mt-5 hidden sm:block">
             <table className="tt-table min-w-[1200px]">
               <thead>
                 <tr>
@@ -1587,23 +1626,13 @@ export default function AdminUsersPage() {
                     <td className="font-mono text-sm">{u.phone}</td>
                     <td>
                       {!u.active ? (
-                        <span
-                          className="text-xs font-semibold text-[var(--danger)]"
-                          title={
-                            u.revokedReason ||
-                            (u.revokedAt
-                              ? `Revoked ${new Date(u.revokedAt).toLocaleString(
-                                  locale === "hi" ? "hi-IN" : "en-IN"
-                                )}`
-                              : "")
-                          }
-                        >
+                        <StatusBadge tone="danger">
                           {t("admin.peopleRevoked")}
-                        </span>
+                        </StatusBadge>
                       ) : u.approved ? (
-                        <span className="text-xs font-semibold text-[var(--ok)]">
+                        <StatusBadge tone="ok">
                           {t("admin.peopleApproved")}
-                        </span>
+                        </StatusBadge>
                       ) : (
                         <div className="flex flex-wrap gap-1.5">
                           <button
@@ -1688,11 +1717,9 @@ export default function AdminUsersPage() {
               </tbody>
             </table>
             {!visibleDealers.length ? (
-              <p className="p-6 text-sm text-[var(--ink-muted)]">
-                {t("common.empty")}
-              </p>
+              <EmptyState message={t("common.empty")} />
             ) : null}
-          </div>
+          </TableWrap>
 
           {canManageStaff ? (
           <form
@@ -1782,9 +1809,11 @@ export default function AdminUsersPage() {
                 }
               />
             </div>
-            <button type="submit" className="tt-btn tt-btn-dark">
-              {t("admin.peopleCreateDealer")}
-            </button>
+            <div className="tt-sticky-bar">
+              <button type="submit" className="tt-btn tt-btn-dark">
+                {t("admin.peopleCreateDealer")}
+              </button>
+            </div>
           </form>
           ) : null}
         </>
@@ -1838,7 +1867,7 @@ export default function AdminUsersPage() {
               />
             </div>
           ) : null}
-          <div className="tt-panel mt-5 overflow-x-auto">
+          <div className="tt-panel mt-5 tt-acct-table-wrap">
             <table className="tt-table min-w-[1100px]">
               <thead>
                 <tr>
@@ -2079,13 +2108,15 @@ export default function AdminUsersPage() {
                 onChange={(caps) => setForm({ ...form, caps })}
               />
             ) : null}
-            <button
-              type="submit"
-              className="tt-btn tt-btn-dark"
-              disabled={createBusy || !isOwner}
-            >
-              {t("admin.createStaff")}
-            </button>
+            <div className="tt-sticky-bar">
+              <button
+                type="submit"
+                className="tt-btn tt-btn-dark"
+                disabled={createBusy || !isOwner}
+              >
+                {t("admin.createStaff")}
+              </button>
+            </div>
           </form>
         </>
       ) : null}
@@ -2224,7 +2255,7 @@ export default function AdminUsersPage() {
       ) : null}
 
       {tab === "log" && canManageStaff ? (
-        <div className="tt-panel mt-5 overflow-x-auto">
+        <div className="tt-panel mt-5 tt-acct-table-wrap">
           <div className="border-b border-[var(--line)] px-4 py-3">
             <h2 className="font-semibold">{t("admin.tabPeopleLog")}</h2>
             <p className="text-xs text-[var(--ink-muted)]">

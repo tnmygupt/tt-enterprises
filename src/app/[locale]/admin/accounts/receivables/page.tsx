@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Suspense, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
+import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { VoucherNumberLink } from "@/components/VoucherNumberLink";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
@@ -10,6 +11,7 @@ import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import {
   allOpenReceivables,
+  creditLimitBreach,
   invoiceSettlementLines,
   leftoverReceipts,
   partyAging,
@@ -27,24 +29,50 @@ function lastReceiptForInvoice(db: AppDatabase, invoiceId: string) {
     .find((s) => s.kind === "receipt" || s.kind === "payment");
 }
 
+function partyIsOverLimit(db: AppDatabase, partyId?: string) {
+  if (!partyId) return false;
+  const party = db.parties.find((p) => p.id === partyId);
+  if (!party) return false;
+  const recv = partyBalance(party, db.ledgerEntries);
+  return !creditLimitBreach(party, recv, 0).ok;
+}
+
 export default function ReceivablesPage() {
+  return (
+    <Suspense
+      fallback={
+        <AccountsShell>
+          <p>Loading…</p>
+        </AccountsShell>
+      }
+    >
+      <ReceivablesInner />
+    </Suspense>
+  );
+}
+
+function ReceivablesInner() {
   const t = useTranslations();
   const locale = useLocale() as "en" | "hi";
   const { session } = useSession();
   const { db } = useDb();
+  const search = useSearchParams();
   const [partyId, setPartyId] = useState("");
+  const [overdueOnly, setOverdueOnly] = useState(search.get("overdue") === "1");
   const asOf = new Date().toISOString().slice(0, 10);
 
   const open = useMemo(() => {
     if (!db) return [];
-    const rows = allOpenReceivables(
+    let rows = allOpenReceivables(
       db.parties,
       db.vouchers,
       db.billAllocations ?? [],
       asOf
     );
-    return partyId ? rows.filter((r) => r.voucher.partyId === partyId) : rows;
-  }, [db, partyId, asOf]);
+    if (partyId) rows = rows.filter((r) => r.voucher.partyId === partyId);
+    if (overdueOnly) rows = rows.filter((r) => r.daysOverdue > 0);
+    return rows;
+  }, [db, partyId, asOf, overdueOnly]);
 
   const leftoverByParty = useMemo(() => {
     const map = new Map<string, number>();
@@ -173,6 +201,14 @@ export default function ReceivablesPage() {
             ))}
           </select>
         </div>
+        <label className="flex min-h-11 items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={overdueOnly}
+            onChange={(e) => setOverdueOnly(e.target.checked)}
+          />
+          {t("accounts.overdueOnly")}
+        </label>
         <button
           type="button"
           className="tt-btn tt-btn-outline"
@@ -260,7 +296,14 @@ export default function ReceivablesPage() {
                   number={row.voucher.number}
                 />
               </p>
-              <p className="text-sm">{party?.name || "—"}</p>
+              <p className="text-sm">
+                {party?.name || "—"}
+                {db && partyIsOverLimit(db, party?.id) ? (
+                  <span className="ml-2 rounded-full bg-[var(--brand-soft)] px-2 py-0.5 text-xs font-semibold text-[var(--danger)]">
+                    {t("accounts.overLimitBadge")}
+                  </span>
+                ) : null}
+              </p>
               <p className="mt-1 text-xs text-[var(--ink-muted)]">
                 {row.voucher.date} · due {row.voucher.dueDate || row.voucher.date}
               </p>
@@ -322,7 +365,14 @@ export default function ReceivablesPage() {
                   <td className="font-mono text-sm"><VoucherNumberLink id={row.voucher.id} number={row.voucher.number} /></td>
                   <td>{row.voucher.date}</td>
                   <td>{row.voucher.dueDate || row.voucher.date}</td>
-                  <td>{party?.name || "—"}</td>
+                  <td>
+                    {party?.name || "—"}
+                    {db && partyIsOverLimit(db, party?.id) ? (
+                      <span className="ml-2 rounded-full bg-[var(--brand-soft)] px-2 py-0.5 text-xs font-semibold text-[var(--danger)]">
+                        {t("accounts.overLimitBadge")}
+                      </span>
+                    ) : null}
+                  </td>
                   <td>{formatInr(row.voucher.total, locale)}</td>
                   <td className="font-semibold">
                     {formatInr(row.outstanding, locale)}

@@ -6,8 +6,8 @@ import { useLocale, useTranslations } from "next-intl";
 import { useParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { AdminShell } from "@/components/AdminShell";
-import { BackToBooksBar } from "@/components/AccountsShell";
 import { NumberField } from "@/components/NumberField";
 import { useDb, useSession } from "@/lib/hooks";
 import { StaffBillDiscountFields } from "@/components/StaffBillDiscountFields";
@@ -74,6 +74,7 @@ export default function AdminPackingSlipPage() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmFinalize, setConfirmFinalize] = useState(false);
+  const [allowOverCredit, setAllowOverCredit] = useState(false);
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const canManage =
@@ -617,6 +618,7 @@ export default function AdminPackingSlipPage() {
           discKind === "percent" || discKind === "flat" ? discKind : undefined,
         manualDiscountValue:
           discKind && Number(discValue) > 0 ? Number(discValue) : undefined,
+        allowOverCredit,
       });
       let billed = done;
       try {
@@ -766,97 +768,90 @@ export default function AdminPackingSlipPage() {
 
   return (
     <AdminShell wide>
-      <BackToBooksBar />
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 print:hidden">
-        <div>
-          <Link
-            href={`/orders/${order.id}`}
-            className="text-sm text-[var(--brand)] hover:underline"
-          >
-            ← {order.orderNumber}
-          </Link>
-          <h1 className="tt-display mt-1 text-3xl text-[var(--brand-deep)]">
-            {hi ? "पैकिंग स्लिप" : "Packing slip"}
-          </h1>
-          <p className="mt-1 max-w-xl text-xs text-[var(--ink-muted)]">
-            {hi
-              ? "हर पंक्ति = एक बंडल · सेल में उसी बंडल का वजन (kg) लिखें · भरे बंडलों की गिनती ऑटो"
-              : "Each row = one bundle · enter that bundle’s weight (kg) in the cell · filled bundles count auto"}
-          </p>
-          {!locked ? (
-            <p className="mt-2 text-xs">
-              <Link
-                href={`/orders/${order.id}`}
-                className="font-semibold text-[var(--brand)] hover:underline"
-              >
-                {hi
-                  ? "← बिल से पहले ऑर्डर एडिट करें (बंडल / आइटम)"
-                  : "← Edit order before bill (bundles / items)"}
-              </Link>
-            </p>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap gap-2 print:hidden">
-          <button
-            type="button"
-            className="tt-btn tt-btn-outline"
-            onClick={onPrint}
-          >
-            {hi ? "प्रिंट" : "Print"}
-          </button>
-          {!locked ? (
-            <>
-              <button
-                type="button"
-                className="tt-btn tt-btn-outline"
-                onClick={onRefreshCols}
-              >
-                {hi ? "कॉलम रीफ्रेश" : "Refresh columns"}
-              </button>
-              <button
-                type="button"
-                className="tt-btn tt-btn-outline"
-                onClick={onSave}
-              >
-                {hi ? "ड्राफ्ट सेव" : "Save draft"}
-              </button>
-              <button
-                type="button"
-                className="tt-btn tt-btn-dark"
-                disabled={busy}
-                onClick={onFinalize}
-              >
-                {hi ? "फाइनल करें" : "Finalize"}
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="tt-btn tt-btn-outline"
-                disabled={busy}
-                onClick={() => void onDownloadPdf()}
-              >
-                {hi ? "स्लिप सेव / शेयर" : "Save / share slip"}
-              </button>
-              <button
-                type="button"
-                className="tt-btn tt-btn-dark"
-                disabled={busy}
-                onClick={() => void onWhatsAppPdf()}
-              >
-                {hi ? "WhatsApp स्लिप + पेमेंट" : "WhatsApp slip + pay"}
-              </button>
-              <button
-                type="button"
-                className="tt-btn tt-btn-outline"
-                onClick={onReopen}
-              >
-                {hi ? "फिर खोलें" : "Reopen"}
-              </button>
-            </>
-          )}
-        </div>
+      <AdminPageHeader
+        title={t("admin.packingTitle")}
+        hint={t("admin.packingHint")}
+        extra={
+          <>
+            <Link
+              href={`/orders/${order.id}`}
+              className="text-sm text-[var(--brand)] hover:underline"
+            >
+              ← {order.orderNumber}
+            </Link>
+            {!locked ? (
+              <p className="mt-2 text-xs">
+                <Link
+                  href={`/orders/${order.id}`}
+                  className="font-semibold text-[var(--brand)] hover:underline"
+                >
+                  ← {t("admin.editOrderBeforeBill")}
+                </Link>
+              </p>
+            ) : null}
+          </>
+        }
+      />
+      <div className="tt-sticky-bar print:hidden">
+        <button
+          type="button"
+          className="tt-btn tt-btn-outline"
+          onClick={onPrint}
+        >
+          {t("admin.print")}
+        </button>
+        {!locked ? (
+          <>
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              onClick={onRefreshCols}
+            >
+              {t("admin.refreshColumns")}
+            </button>
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              onClick={onSave}
+            >
+              {t("admin.saveDraft")}
+            </button>
+            <button
+              type="button"
+              className="tt-btn tt-btn-dark"
+              disabled={busy}
+              onClick={onFinalize}
+            >
+              {t("admin.finalize")}
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              disabled={busy}
+              onClick={() => void onDownloadPdf()}
+            >
+              {t("admin.saveShareSlip")}
+            </button>
+            <button
+              type="button"
+              className="tt-btn tt-btn-dark"
+              disabled={busy}
+              onClick={() => void onWhatsAppPdf()}
+            >
+              {t("admin.whatsappSlipPay")}
+            </button>
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              onClick={onReopen}
+            >
+              {t("admin.reopen")}
+            </button>
+          </>
+        )}
       </div>
 
       {confirmFinalize && !locked ? (
@@ -864,8 +859,20 @@ export default function AdminPackingSlipPage() {
           <p className="text-sm font-semibold text-[var(--brand-deep)]">
             {hi
               ? "फाइनल करें? असली वजन, शिपिंग और बिल ऑर्डर में लग जाएगा।"
-              : "Finalize? Actual weights, shipping and bill will be applied to the order."}
+              : t("admin.finalizeConfirm")}
           </p>
+          {session &&
+          (checkCapability(session, db, "manage_accounts") ||
+            checkCapability(session, db, "view_financials")) ? (
+            <label className="mt-3 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={allowOverCredit}
+                onChange={(e) => setAllowOverCredit(e.target.checked)}
+              />
+              {t("accounts.allowOverCreditBill")}
+            </label>
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               type="button"
@@ -873,13 +880,7 @@ export default function AdminPackingSlipPage() {
               disabled={busy}
               onClick={() => void runFinalize()}
             >
-              {busy
-                ? hi
-                  ? "सेव हो रहा…"
-                  : "Saving…"
-                : hi
-                  ? "हाँ, फाइनल करें"
-                  : "Yes, finalize"}
+              {busy ? t("common.saving") : t("admin.yesFinalize")}
             </button>
             <button
               type="button"
@@ -1014,7 +1015,7 @@ export default function AdminPackingSlipPage() {
             />
           </label>
           <label className="flex items-center gap-2">
-            <span className="w-20 shrink-0 font-bold">GST/ID</span>
+            <span className="w-20 shrink-0 font-bold">ID</span>
             <input
               className="min-w-0 flex-1 border-0 bg-transparent outline-none"
               disabled={locked}

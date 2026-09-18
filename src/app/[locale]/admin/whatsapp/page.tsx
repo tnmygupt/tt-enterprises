@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { StatusBadge } from "@/components/admin/StatusBadge";
 import { AdminShell } from "@/components/AdminShell";
 import { WhatsAppTemplateEditor } from "@/components/WhatsAppTemplateEditor";
 import { toDateInputValue } from "@/lib/date-range";
@@ -199,12 +201,19 @@ export default function WhatsAppDeskPage() {
 
   return (
     <AdminShell>
-      <h1 className="tt-display text-2xl sm:text-4xl text-[var(--brand-deep)]">
-        {t("title")}
-      </h1>
-      <p className="mt-1 max-w-2xl text-sm text-[var(--ink-muted)]">
-        {t("hint")}
-      </p>
+      <AdminPageHeader
+        title={t("title")}
+        hint={t("hint")}
+        extra={
+          <StatusBadge tone={waConfigured ? "ok" : "muted"}>
+            {waConfigured == null
+              ? "…"
+              : waConfigured
+                ? t("gatewayOn")
+                : t("gatewayOff")}
+          </StatusBadge>
+        }
+      />
 
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
         <div className="tt-panel p-4 text-sm">
@@ -328,11 +337,16 @@ export default function WhatsAppDeskPage() {
         {t("dueTitle")} · {overdue.length} · {formatInr(overdueTotal, locale)}
       </h2>
       <p className="mt-1 text-sm text-[var(--ink-muted)]">{t("dueHint")}</p>
-      <ul className="mt-2 max-h-64 space-y-1 overflow-auto text-sm">
+      <ul className="mt-2 grid gap-2 sm:grid-cols-2">
         {overdue.map((r) => (
-          <li key={r.party.id}>
-            {r.party.name} · {formatInr(r.total, locale)}
-            {r.phone ? "" : ` · ${t("noPhone")}`}
+          <li key={r.party.id} className="tt-panel p-3 text-sm">
+            <p className="font-semibold">{r.party.name}</p>
+            <p className="tabular-nums text-[var(--danger)]">
+              {formatInr(r.total, locale)}
+            </p>
+            {r.phone ? null : (
+              <p className="text-xs text-[var(--ink-muted)]">{t("noPhone")}</p>
+            )}
           </li>
         ))}
       </ul>

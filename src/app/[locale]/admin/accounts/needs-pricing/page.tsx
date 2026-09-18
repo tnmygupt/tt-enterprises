@@ -23,7 +23,6 @@ type ExpenseDraft = {
   itemLabel: string;
   accountId: string;
   amount: number | "";
-  taxPercent: number | "";
 };
 
 function blankExpense(): ExpenseDraft {
@@ -34,7 +33,6 @@ function blankExpense(): ExpenseDraft {
     itemLabel: preset.label,
     accountId: preset.accountId,
     amount: "",
-    taxPercent: 0,
   };
 }
 
@@ -44,7 +42,6 @@ export default function NeedsPricingPage() {
   const { db, refresh } = useDb();
   const [activeId, setActiveId] = useState<string>("");
   const [rates, setRates] = useState<Record<string, string>>({});
-  const [taxPercent, setTaxPercent] = useState("0");
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [expenses, setExpenses] = useState<ExpenseDraft[]>([]);
   const [error, setError] = useState("");
@@ -163,17 +160,14 @@ export default function NeedsPricingPage() {
   const goodsSubtotal = roundMoney(
     linePreview.reduce((s, l) => s + l.amount, 0)
   );
-  const taxN = Number(taxPercent) || 0;
-  const goodsTax = roundMoney(goodsSubtotal * (taxN / 100));
 
   const expensePreview = expenses
     .map((e) => {
       const amount = typeof e.amount === "number" ? e.amount : 0;
-      const expTaxPct = typeof e.taxPercent === "number" ? e.taxPercent : 0;
       return {
         ...e,
         amount,
-        tax: roundMoney(amount * (expTaxPct / 100)),
+        tax: 0,
       };
     })
     .filter((e) => e.amount > 0);
@@ -181,12 +175,8 @@ export default function NeedsPricingPage() {
   const expenseSubtotal = roundMoney(
     expensePreview.reduce((s, e) => s + e.amount, 0)
   );
-  const expenseTax = roundMoney(
-    expensePreview.reduce((s, e) => s + e.tax, 0)
-  );
   const previewSubtotal = roundMoney(goodsSubtotal + expenseSubtotal);
-  const previewTax = roundMoney(goodsTax + expenseTax);
-  const exactTotal = roundMoney(previewSubtotal + previewTax);
+  const exactTotal = previewSubtotal;
   const previewTotal = roundOffRupees(exactTotal);
   const previewRoundOff = roundMoney(previewTotal - exactTotal);
 
@@ -225,8 +215,7 @@ export default function NeedsPricingPage() {
           itemLabel: exp.itemLabel.trim() || "Expense",
           accountId: exp.accountId,
           amount: typeof exp.amount === "number" ? exp.amount : 0,
-          taxPercent:
-            typeof exp.taxPercent === "number" ? exp.taxPercent : 0,
+          taxPercent: 0,
         }))
         .filter((x) => x.amount > 0);
       const v = priceGoodsReceived({
@@ -234,8 +223,8 @@ export default function NeedsPricingPage() {
         date,
         createdBy: session.id,
         rates: rateNums,
-        taxPercent: taxN,
-        expenses: expenseLines,
+        taxPercent: 0,
+        expenses: expenseLines.map((x) => ({ ...x, taxPercent: 0 })),
       });
       setMsg(
         `Purchase bill ${v.number} posted · ${formatInr(v.total)}. Stock was already in.`
@@ -421,17 +410,6 @@ export default function NeedsPricingPage() {
                       required
                     />
                   </div>
-                  <div>
-                    <label className="tt-label">Tax % on goods</label>
-                    <NumberField
-                      className="tt-input"
-                      value={taxN}
-                      emptyAs={0}
-                      onValueChange={(v) =>
-                        setTaxPercent(String(typeof v === "number" ? v : 0))
-                      }
-                    />
-                  </div>
                 </div>
               </div>
 
@@ -542,7 +520,6 @@ export default function NeedsPricingPage() {
                               itemLabel: p.label,
                               accountId: p.accountId,
                               amount: "",
-                              taxPercent: 0,
                             },
                           ])
                         }
@@ -556,7 +533,7 @@ export default function NeedsPricingPage() {
                     {expenses.map((exp, i) => (
                       <div
                         key={exp.id}
-                        className="grid gap-3 rounded-lg border border-[var(--line)] bg-[var(--surface-2)]/50 p-3 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_7rem_6rem_auto]"
+                        className="grid gap-3 rounded-lg border border-[var(--line)] bg-[var(--surface-2)]/50 p-3 md:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_7rem_auto]"
                       >
                         <div>
                           <label className="tt-label">Type</label>
@@ -615,22 +592,6 @@ export default function NeedsPricingPage() {
                             required
                           />
                         </div>
-                        <div>
-                          <label className="tt-label">Tax %</label>
-                          <NumberField
-                            className="tt-input"
-                            value={exp.taxPercent}
-                            emptyAs={0}
-                            onValueChange={(v) => {
-                              const next = [...expenses];
-                              next[i] = {
-                                ...exp,
-                                taxPercent: typeof v === "number" ? v : 0,
-                              };
-                              setExpenses(next);
-                            }}
-                          />
-                        </div>
                         <button
                           type="button"
                           className="self-end pb-2 text-sm text-[var(--danger)]"
@@ -671,10 +632,6 @@ export default function NeedsPricingPage() {
                       </span>
                     </p>
                   ) : null}
-                  <p className="flex justify-between gap-8">
-                    <span className="text-[var(--ink-muted)]">Tax</span>
-                    <span className="tabular-nums">{formatInr(previewTax)}</span>
-                  </p>
                   {Math.abs(previewRoundOff) >= 0.005 ? (
                     <p className="flex justify-between gap-8">
                       <span className="text-[var(--ink-muted)]">Round off</span>

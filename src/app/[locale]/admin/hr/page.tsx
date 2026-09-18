@@ -6,6 +6,8 @@ import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsEmpty } from "@/components/AccountsEmpty";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
+import { PageTabs } from "@/components/admin/PageTabs";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { AdminShell } from "@/components/AdminShell";
 import { NumberField } from "@/components/NumberField";
 import { ACCT } from "@/lib/accounting";
@@ -122,44 +124,41 @@ export default function HrDeskPage() {
         backLabel={t("admin.backToAdmin")}
         actions={punchBtn}
       />
-      <div className="mt-4 flex flex-wrap gap-2 print:hidden">
-        {tabs.map((id) => (
-          <button
-            key={id}
-            type="button"
-            className={`tt-btn ${tab === id ? "tt-btn-dark" : "tt-btn-outline"}`}
-            onClick={() => {
-              setTab(id);
-              setDetailUserId(null);
-            }}
-          >
-            {t(
-              id === "people"
-                ? "admin.hrPeople"
-                : id === "shifts"
-                  ? "admin.hrShifts"
-                  : id === "sites"
-                    ? "admin.hrSites"
-                    : id === "attendance"
-                      ? "admin.hrAttendance"
-                      : id === "leave"
-                        ? "admin.hrLeave"
-                        : "admin.hrPay"
-            )}
-          </button>
-        ))}
-        <input
-          className="tt-input"
-          type="month"
-          value={month}
-          onChange={(e) => setMonth(e.target.value)}
-        />
-      </div>
+      <PageTabs
+        className="mt-4"
+        value={tab}
+        onChange={(id) => {
+          setTab(id as Tab);
+          setDetailUserId(null);
+        }}
+        tabs={tabs.map((id) => ({
+          id,
+          label: t(
+            id === "people"
+              ? "admin.hrPeople"
+              : id === "shifts"
+                ? "admin.hrShifts"
+                : id === "sites"
+                  ? "admin.hrSites"
+                  : id === "attendance"
+                    ? "admin.hrAttendance"
+                    : id === "leave"
+                      ? "admin.hrLeave"
+                      : "admin.hrPay"
+          ),
+        }))}
+      />
+      <input
+        className="tt-input mt-3 print:hidden"
+        type="month"
+        value={month}
+        onChange={(e) => setMonth(e.target.value)}
+      />
       {msg ? <p className="mt-2 text-sm print:hidden">{msg}</p> : null}
 
       {tab === "people" ? (
         staff.length ? (
-          <div className="tt-panel tt-acct-table-wrap mt-4">
+          <TableWrap className="tt-panel mt-4">
             <table className="tt-table">
               <thead>
                 <tr>
@@ -323,7 +322,7 @@ export default function HrDeskPage() {
                 })}
               </tbody>
             </table>
-          </div>
+          </TableWrap>
         ) : (
           <AccountsEmpty
             message={t("admin.hrEmptyPeople")}
@@ -493,7 +492,7 @@ function OwnerAttendance({
         <h2 className="font-semibold">
           {detail.name} · {t("admin.hrDailyPunches")}
         </h2>
-        <div className="tt-panel tt-acct-table-wrap mt-3">
+        <TableWrap className="tt-panel mt-3">
           <table className="tt-table">
             <thead>
               <tr>
@@ -541,7 +540,7 @@ function OwnerAttendance({
               })}
             </tbody>
           </table>
-        </div>
+        </TableWrap>
       </div>
     );
   }
@@ -575,7 +574,7 @@ function OwnerAttendance({
           {t("admin.hrPdfRegister")}
         </button>
       </div>
-      <div className="tt-panel tt-acct-table-wrap">
+      <TableWrap className="tt-panel">
         <table className="tt-table">
           <thead>
             <tr>
@@ -636,7 +635,7 @@ function OwnerAttendance({
             })}
           </tbody>
         </table>
-      </div>
+      </TableWrap>
     </div>
   );
 }
@@ -957,17 +956,13 @@ function StaffSelfHr({
           </Link>
         }
       />
-      <div className="mt-4 flex flex-wrap gap-2 print:hidden">
-        {tabs.map(([id, key]) => (
-          <button
-            key={id}
-            type="button"
-            className={`tt-btn ${tab === id ? "tt-btn-dark" : "tt-btn-outline"}`}
-            onClick={() => setTab(id)}
-          >
-            {t(key)}
-          </button>
-        ))}
+      <PageTabs
+        className="mt-4"
+        value={tab}
+        onChange={(id) => setTab(id as typeof tab)}
+        tabs={tabs.map(([id, key]) => ({ id, label: t(key) }))}
+      />
+      <div className="mt-3 flex flex-wrap gap-2 print:hidden">
         <input
           className="tt-input"
           type="month"
@@ -1058,7 +1053,7 @@ function StaffSelfHr({
       </div>
 
       {tab === "attendance" ? (
-        <div className="tt-panel tt-acct-table-wrap mt-4 print:hidden">
+        <TableWrap className="tt-panel mt-4 print:hidden">
           <table className="tt-table">
             <thead>
               <tr>
@@ -1083,7 +1078,7 @@ function StaffSelfHr({
               ))}
             </tbody>
           </table>
-        </div>
+        </TableWrap>
       ) : null}
 
       {tab === "overtime" ? (
@@ -1095,7 +1090,7 @@ function StaffSelfHr({
             </p>
           </div>
           {otDays.length ? (
-            <div className="tt-panel tt-acct-table-wrap">
+            <TableWrap className="tt-panel">
               <table className="tt-table">
                 <thead>
                   <tr>
@@ -1112,7 +1107,7 @@ function StaffSelfHr({
                   ))}
                 </tbody>
               </table>
-            </div>
+            </TableWrap>
           ) : (
             <AccountsEmpty message={t("admin.hrNoOvertime")} />
           )}

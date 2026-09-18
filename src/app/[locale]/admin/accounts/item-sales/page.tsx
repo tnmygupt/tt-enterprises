@@ -91,7 +91,7 @@ export default function ItemSalesPurchaseReportPage() {
           {t("accounts.salesAnalysis")}
         </Link>
       </div>
-      <div className="tt-panel mt-4 overflow-x-auto">
+      <div className="tt-panel mt-4 tt-acct-table-wrap">
         <table className="tt-table min-w-[640px]">
           <thead>
             <tr>

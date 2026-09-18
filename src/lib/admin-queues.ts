@@ -109,25 +109,77 @@ export function getAdminQueues(
   };
 }
 
-export function orderNextAction(order: Order): string {
-  if (order.status === "cancelled") return "Cancelled";
-  if (order.status === "delivered") return "Done";
-  if (order.status === "estimate") return "Confirm / upload bill";
+export type OrderNextActionKey =
+  | "cancelled"
+  | "done"
+  | "confirmBill"
+  | "uploadBill"
+  | "verifyPayment"
+  | "dispatchLr"
+  | "uploadLr"
+  | "markDelivered"
+  | "waitProof"
+  | "open";
+
+export function orderNextActionKey(order: Order): OrderNextActionKey {
+  if (order.status === "cancelled") return "cancelled";
+  if (order.status === "delivered") return "done";
+  if (order.status === "estimate") return "confirmBill";
   if (order.status === "confirmed" && order.actualBillAmount == null) {
-    return "Upload bill";
+    return "uploadBill";
   }
   if (order.paymentProof && !order.paymentProof.verified) {
-    return "Verify payment";
+    return "verifyPayment";
   }
-  if (order.status === "payment_verified") {
-    return "Dispatch or upload LR → delivered";
-  }
-  if (order.status === "dispatched" && !orderHasLr(order)) {
-    return "Upload LR → delivered";
-  }
-  if (order.status === "dispatched") return "Mark delivered";
+  if (order.status === "payment_verified") return "dispatchLr";
+  if (order.status === "dispatched" && !orderHasLr(order)) return "uploadLr";
+  if (order.status === "dispatched") return "markDelivered";
   if (order.status === "payment_pending" && !order.paymentProof) {
-    return "Waiting for payment proof";
+    return "waitProof";
   }
-  return "Open order";
+  return "open";
+}
+
+const NEXT_ACTION_EN: Record<OrderNextActionKey, string> = {
+  cancelled: "Cancelled",
+  done: "Done",
+  confirmBill: "Confirm / upload bill",
+  uploadBill: "Upload bill",
+  verifyPayment: "Verify payment",
+  dispatchLr: "Dispatch or upload LR → delivered",
+  uploadLr: "Upload LR → delivered",
+  markDelivered: "Mark delivered",
+  waitProof: "Waiting for payment proof",
+  open: "Open order",
+};
+
+const NEXT_ACTION_MSG: Record<OrderNextActionKey, string> = {
+  cancelled: "nextActionCancelled",
+  done: "nextActionDone",
+  confirmBill: "nextActionConfirmBill",
+  uploadBill: "nextActionUploadBill",
+  verifyPayment: "nextActionVerifyPayment",
+  dispatchLr: "nextActionDispatchLr",
+  uploadLr: "nextActionUploadLr",
+  markDelivered: "nextActionMarkDelivered",
+  waitProof: "nextActionWaitProof",
+  open: "nextActionOpen",
+};
+
+export function orderNextActionLabelKey(order: Order): string {
+  return NEXT_ACTION_MSG[orderNextActionKey(order)];
+}
+
+/** English fallback for stored tracking rows; UI should prefer `orderNextActionKey`. */
+export function orderNextAction(order: Order): string {
+  return NEXT_ACTION_EN[orderNextActionKey(order)];
+}
+
+/** Where the desk should send staff for the current next action. */
+export function orderNextActionHref(order: Pick<Order, "id"> & Order): string {
+  const key = orderNextActionKey(order);
+  if (key === "confirmBill" || key === "uploadBill") {
+    return `/admin/orders/${order.id}/packing-slip`;
+  }
+  return `/orders/${order.id}`;
 }
