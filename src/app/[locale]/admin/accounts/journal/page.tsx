@@ -371,7 +371,7 @@ export default function JournalPage() {
         </button>
       </form>
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-panel mt-5 tt-acct-table-wrap">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
           {t("accounts.journalRecent")}
         </p>

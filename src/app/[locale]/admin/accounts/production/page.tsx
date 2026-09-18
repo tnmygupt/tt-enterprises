@@ -7,6 +7,7 @@ import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsEmpty } from "@/components/AccountsEmpty";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { PageTabs } from "@/components/admin/PageTabs";
 import { NumberField } from "@/components/NumberField";
 import { SearchSelect } from "@/components/SearchSelect";
 import { ACCT, accountBalance } from "@/lib/accounting";
@@ -307,21 +308,16 @@ export default function ProductionPage() {
         <p className="mt-3 text-sm text-[var(--danger)]">{error}</p>
       ) : null}
 
-      <div className="mt-4 flex flex-wrap gap-2 print:hidden">
-        <button
-          type="button"
-          className={`tt-btn ${tab === "jobs" ? "tt-btn-dark" : "tt-btn-outline"}`}
-          onClick={() => setTab("jobs")}
-        >
-          {t("jobCards")}
-        </button>
-        <button
-          type="button"
-          className={`tt-btn ${tab === "bom" ? "tt-btn-dark" : "tt-btn-outline"}`}
-          onClick={() => setTab("bom")}
-        >
-          {t("bom")}
-        </button>
+      <PageTabs
+        className="mt-4"
+        value={tab}
+        onChange={(id) => setTab(id as "jobs" | "bom")}
+        tabs={[
+          { id: "jobs", label: t("jobCards") },
+          { id: "bom", label: t("bom") },
+        ]}
+      />
+      <div className="mt-3 flex flex-wrap gap-2 print:hidden">
         <Link href="/admin/accounts/inventory" className="tt-btn tt-btn-outline">
           {t("stock")}
         </Link>
@@ -406,7 +402,7 @@ export default function ProductionPage() {
             </button>
           </form>
 
-          <div className="tt-panel mt-6 overflow-x-auto">
+          <div className="tt-panel mt-6 tt-acct-table-wrap">
             <table className="tt-table min-w-[640px]">
               <thead>
                 <tr>
@@ -555,7 +551,7 @@ export default function ProductionPage() {
             </button>
           </form>
 
-          <div className="tt-panel mt-6 overflow-x-auto">
+          <div className="tt-panel mt-6 tt-acct-table-wrap">
             <table className="tt-table min-w-[720px]">
               <thead>
                 <tr>

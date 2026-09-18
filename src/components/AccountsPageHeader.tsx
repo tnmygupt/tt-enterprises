@@ -38,7 +38,7 @@ export function AccountsPageHeader({
       )}
       <div className="tt-acct-header">
         <div className="min-w-0">
-          <h1 className="tt-display text-2xl sm:text-4xl print:text-2xl">
+          <h1 className="tt-display text-2xl sm:text-3xl print:text-2xl">
             {title}
           </h1>
           {hint ? (

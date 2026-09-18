@@ -260,7 +260,7 @@ export default function AccountsPartiesPage() {
         />
       </div>
 
-      <div className="tt-panel mt-6 overflow-x-auto">
+      <div className="tt-panel mt-6 tt-acct-table-wrap">
         <table className="tt-table min-w-[820px]">
           <thead>
             <tr>

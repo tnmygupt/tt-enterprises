@@ -99,7 +99,7 @@ export default function AccountsBalanceSheetPage() {
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <div className="tt-panel overflow-x-auto">
+        <div className="tt-panel tt-acct-table-wrap">
           <div className="border-b border-[var(--line)] bg-[var(--brand-deep)] px-4 py-3 font-semibold text-white">
             {locale === "hi" ? "संपत्ति" : "Assets"}
           </div>
@@ -124,7 +124,7 @@ export default function AccountsBalanceSheetPage() {
             </tfoot>
           </table>
         </div>
-        <div className="tt-panel overflow-x-auto">
+        <div className="tt-panel tt-acct-table-wrap">
           <div className="border-b border-[var(--line)] bg-[var(--brand-deep)] px-4 py-3 font-semibold text-white">
             {locale === "hi" ? "देनदारियाँ + पूंजी" : "Liabilities + Equity"}
           </div>

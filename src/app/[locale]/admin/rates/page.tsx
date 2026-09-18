@@ -4,6 +4,9 @@ import { useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { EmptyState } from "@/components/admin/EmptyState";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { AdminShell } from "@/components/AdminShell";
 import { NumberField } from "@/components/NumberField";
 import { categoryLabel } from "@/lib/categories";
@@ -208,44 +211,27 @@ export default function AdminRatesPage() {
 
   return (
     <AdminShell wide>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-            Super admin
-          </p>
-          <h1 className="tt-h2 mt-1">
-            {locale === "hi" ? "रेट एडिटर" : "Quick rate editor"}
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "एक ही नाम + एक ही रेट वाले साइज़ एक ग्रुप में — एक बार रेट बदलें। पुराने ऑर्डर पर पुराना रेट ही रहेगा; नए ऑर्डर पर नया रेट लगेगा।"
-              : "Same product name + same rate are clubbed — change once. Existing orders keep their old rate; only new orders get the new rate."}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Link href="/admin/products" className="tt-btn tt-btn-outline">
-            {t("admin.products")}
-          </Link>
-          <button
-            type="button"
-            className="tt-btn tt-btn-outline"
-            disabled={cleaning}
-            onClick={cleanDuplicateSizes}
-          >
-            {locale === "hi" ? "डुप्लिकेट साइज़ हटाएँ" : "Remove duplicate sizes"}
-          </button>
-          <button
-            type="button"
-            className="tt-btn tt-btn-dark"
-            disabled={dirtyCount === 0}
-            onClick={saveAll}
-          >
-            {locale === "hi"
-              ? `सेव (${dirtyCount})`
-              : `Save changes (${dirtyCount})`}
-          </button>
-        </div>
-      </div>
+      <AdminPageHeader
+        title={t("admin.rates")}
+        hint={t("admin.ratesHint")}
+        actions={
+          <>
+            <Link href="/admin/products" className="tt-btn tt-btn-outline">
+              {t("admin.products")}
+            </Link>
+            <button
+              type="button"
+              className="tt-btn tt-btn-dark"
+              disabled={dirtyCount === 0}
+              onClick={saveAll}
+            >
+              {locale === "hi"
+                ? `सेव (${dirtyCount})`
+                : `Save changes (${dirtyCount})`}
+            </button>
+          </>
+        }
+      />
 
       <div className="mt-4 flex flex-wrap gap-2">
         <input
@@ -264,32 +250,20 @@ export default function AdminRatesPage() {
         <p className="mt-3 text-sm font-medium text-[var(--brand-deep)]">{msg}</p>
       ) : null}
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <TableWrap className="tt-panel mt-5">
         <table className="tt-table min-w-[920px]">
           <thead>
             <tr>
-              <th>{locale === "hi" ? "कैटेगरी" : "Category"}</th>
-              <th>{locale === "hi" ? "आइटम" : "Item"}</th>
-              <th>{locale === "hi" ? "साइज़ (क्लब)" : "Sizes (clubbed)"}</th>
+              <th>{t("admin.colCategory")}</th>
+              <th>{t("admin.colItem")}</th>
+              <th>{t("admin.colSizes")}</th>
               <th>{locale === "hi" ? "कितने" : "Count"}</th>
-              <th>
-                {locale === "hi" ? "रेट (₹)" : "Rate (₹)"}
-                <span className="block text-[10px] font-normal normal-case text-[var(--ink-muted)]">
-                  {locale === "hi" ? "sq/ft आइटम = ₹/वर्ग फुट" : "sq/ft items = ₹/sqft"}
-                </span>
-              </th>
+              <th>{t("common.rate")}</th>
               <th>{locale === "hi" ? "अनुमान" : "Estimate"}</th>
             </tr>
           </thead>
           <tbody>
-            {groups.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="text-[var(--ink-muted)]">
-                  {t("common.empty")}
-                </td>
-              </tr>
-            ) : (
-              groups.map((g) => {
+            {groups.map((g) => {
                 const rate = rateValue(g);
                 const dirty =
                   draft[g.key] !== undefined && draft[g.key] !== g.rate;
@@ -359,10 +333,17 @@ export default function AdminRatesPage() {
                   </tr>
                 );
               })
-            )}
+            }
           </tbody>
         </table>
-      </div>
+        {!groups.length ? (
+          <EmptyState
+            message={t("common.empty")}
+            href="/admin/products"
+            cta={t("admin.newProduct")}
+          />
+        ) : null}
+      </TableWrap>
     </AdminShell>
   );
 }

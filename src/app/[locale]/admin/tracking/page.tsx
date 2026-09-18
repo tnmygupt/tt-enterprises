@@ -5,6 +5,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { AdminShell } from "@/components/AdminShell";
 import { AccessPlacesMapLazy } from "@/components/AccessPlacesMapLazy";
 import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
@@ -141,17 +142,11 @@ function AdminTrackingInner() {
   return (
     <AdminShell>
       <div className="space-y-8">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <h1 className="tt-display text-3xl text-[var(--brand-deep)] sm:text-4xl">
-              {t("tracking.title")}
-            </h1>
-            <p className="mt-1 text-sm text-[var(--ink-muted)]">
-              {t("tracking.hint")}
-            </p>
-          </div>
-          <DateRangeBar value={range} onChange={setRange} />
-        </div>
+      <AdminPageHeader
+        title={t("tracking.title")}
+        hint={t("tracking.hint")}
+        extra={<DateRangeBar value={range} onChange={setRange} />}
+      />
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-6">
           <Kpi
@@ -551,7 +546,7 @@ function AdminTrackingInner() {
 
           <AccessPlacesMapLazy pins={placesFiltered} focusKey={focusPin} />
 
-          <div className="tt-panel overflow-x-auto p-0">
+          <div className="tt-panel p-0 tt-acct-table-wrap">
             <table className="w-full min-w-[32rem] text-left text-sm">
               <thead className="border-b border-[var(--line)] bg-[var(--surface-2)] text-xs uppercase tracking-wide text-[var(--ink-muted)]">
                 <tr>

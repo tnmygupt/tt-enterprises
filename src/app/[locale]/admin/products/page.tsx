@@ -4,6 +4,10 @@ import { FormEvent, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { EmptyState } from "@/components/admin/EmptyState";
+import { PageTabs } from "@/components/admin/PageTabs";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { AdminShell } from "@/components/AdminShell";
 import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
@@ -640,27 +644,21 @@ export default function AdminProductsPage() {
 
   return (
     <AdminShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">
-            {editing
-              ? (db?.products ?? []).some((p) => p.id === editing.id)
-                ? t("admin.editProduct")
-                : editing.code?.includes("-COPY")
-                  ? t("admin.duplicateProduct")
-                  : t("admin.newProduct")
-              : t("admin.products")}
-          </h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {editing
-              ? locale === "hi"
-                ? "अंग्रेज़ी भरें — खाली हिंदी सेव पर अपने आप अनुवाद हो जाएगी।"
-                : "Fill English — empty Hindi fields auto-translate on save."
-              : t("admin.productListHint")}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {editing ? (
+      <AdminPageHeader
+        title={
+          editing
+            ? (db?.products ?? []).some((p) => p.id === editing.id)
+              ? t("admin.editProduct")
+              : editing.code?.includes("-COPY")
+                ? t("admin.duplicateProduct")
+                : t("admin.newProduct")
+            : t("admin.products")
+        }
+        hint={
+          editing ? t("admin.productEditorHint") : t("admin.productListHint")
+        }
+        actions={
+          editing ? (
             <>
               {(db?.products ?? []).some((p) => p.id === editing.id) ? (
                 <Link
@@ -688,17 +686,17 @@ export default function AdminProductsPage() {
             </>
           ) : (
             <>
-                {session?.role === "super_admin" ? (
+              {session?.role === "super_admin" ? (
                 <Link href="/admin/home" className="tt-btn tt-btn-outline">
                   {t("admin.homePage")}
                 </Link>
-                ) : null}
-                <Link href="/admin/rates" className="tt-btn tt-btn-outline">
-                  {t("admin.rates")}
-                </Link>
-                <Link href="/admin/accounts/production" className="tt-btn tt-btn-outline">
-                  {t("accounts.production")}
-                </Link>
+              ) : null}
+              <Link href="/admin/rates" className="tt-btn tt-btn-outline">
+                {t("admin.rates")}
+              </Link>
+              <Link href="/admin/accounts/production" className="tt-btn tt-btn-outline">
+                {t("accounts.bom")}
+              </Link>
               <button
                 type="button"
                 className="tt-btn tt-btn-dark"
@@ -717,9 +715,9 @@ export default function AdminProductsPage() {
                 {t("admin.newProduct")}
               </button>
             </>
-          )}
-        </div>
-      </div>
+          )
+        }
+      />
 
       {!editing ? (
         <>
@@ -748,16 +746,16 @@ export default function AdminProductsPage() {
             </select>
           </div>
 
-          <div className="tt-panel mt-5 overflow-x-auto">
+          <TableWrap className="tt-panel mt-5">
             <table className="tt-table min-w-[960px]">
               <thead>
                 <tr>
-                  <th>Category</th>
-                  <th>Product</th>
-                  <th>Sizes</th>
-                  <th>Pricing</th>
-                  <th>From rate</th>
-                  <th>Stock</th>
+                  <th>{t("admin.colCategory")}</th>
+                  <th>{t("admin.colProduct")}</th>
+                  <th>{t("admin.colSizes")}</th>
+                  <th>{t("admin.colPricing")}</th>
+                  <th>{t("admin.colFromRate")}</th>
+                  <th>{t("admin.colStock")}</th>
                   <th></th>
                 </tr>
               </thead>
@@ -859,7 +857,8 @@ export default function AdminProductsPage() {
                 })}
               </tbody>
             </table>
-          </div>
+            {!rows.length ? <EmptyState message={t("common.empty")} /> : null}
+          </TableWrap>
         </>
       ) : null}
 
@@ -871,9 +870,20 @@ export default function AdminProductsPage() {
             </p>
           ) : null}
 
-          <div>
+          <PageTabs
+            value="basics"
+            tabs={[
+              { id: "basics", label: t("admin.sectionBasics"), href: "#product-basics" },
+              { id: "sizes", label: t("admin.sectionSizes"), href: "#product-sizes" },
+              { id: "media", label: t("admin.sectionMedia"), href: "#product-media" },
+              { id: "stock", label: t("admin.sectionStock"), href: "#product-stock" },
+              { id: "bom", label: t("admin.sectionBom"), href: "/admin/accounts/production" },
+            ]}
+          />
+
+          <div id="product-basics">
             <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-              1 · Category & names
+              1 · {t("admin.sectionBasics")}
             </p>
             <div className="mt-2 grid gap-3 sm:grid-cols-3">
               <div>
@@ -1152,9 +1162,9 @@ export default function AdminProductsPage() {
             </div>
           </div>
 
-          <div>
+          <div id="product-stock">
             <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-              2 · Pricing rules
+              2 · {t("admin.sectionPricing")}
             </p>
             <div className="mt-2 grid gap-3 sm:grid-cols-3">
               <div>
@@ -1512,9 +1522,9 @@ export default function AdminProductsPage() {
             )}
           </div>
 
-          <div>
+          <div id="product-media">
             <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-              3 · Media (photo / video)
+              3 · {t("admin.sectionMedia")}
             </p>
             <p className="mt-1 text-xs text-[var(--ink-muted)]">
               Take a photo, pick from this phone or PC, or paste a server / CDN URL.
@@ -1859,11 +1869,11 @@ export default function AdminProductsPage() {
             </div>
           </div>
 
-          <div>
+          <div id="product-sizes">
             <div className="flex flex-wrap items-end justify-between gap-2">
               <div>
                 <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-                  4 · Sizes / variations *
+                  4 · {t("admin.sectionSizes")}
                 </p>
                 <p className="mt-1 text-xs text-[var(--ink-muted)]">
                   {isSqftUnit(editing.unit)
@@ -1886,7 +1896,7 @@ export default function AdminProductsPage() {
                   })
                 }
               >
-                + Add size
+                + {t("admin.addSize")}
               </button>
             </div>
 
@@ -2549,7 +2559,7 @@ export default function AdminProductsPage() {
                 setEditing({ ...editing, active: e.target.checked })
               }
             />
-            Active on store
+            {t("admin.activeOnStore")}
           </label>
           {session.role === "super_admin" ? (
             <>
@@ -2572,17 +2582,13 @@ export default function AdminProductsPage() {
             </>
           ) : null}
 
-          <div className="flex flex-wrap gap-3">
+          <div className="tt-sticky-bar">
             <button
               type="submit"
               className="tt-btn tt-btn-dark"
               disabled={busy}
             >
-              {busy
-                ? locale === "hi"
-                  ? "अनुवाद व सेव…"
-                  : "Translating & saving…"
-                : t("common.save")}
+              {busy ? t("admin.translatingSaving") : t("admin.saveProduct")}
             </button>
             <button
               type="button"

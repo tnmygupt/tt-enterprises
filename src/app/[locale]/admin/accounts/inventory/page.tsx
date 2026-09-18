@@ -8,6 +8,7 @@ import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsEmpty } from "@/components/AccountsEmpty";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { ExportButtons } from "@/components/ExportButtons";
 import { NumberField } from "@/components/NumberField";
 import { deriveSecondaryQty, inventoryRows } from "@/lib/inventory";
@@ -271,7 +272,7 @@ function InventoryInner({ initialQ }: { initialQ: string }) {
         </Link>
       </div>
 
-      <div className="tt-panel mt-4 overflow-x-auto">
+      <TableWrap className="tt-panel mt-4">
         <table className="tt-table min-w-[980px]">
           <thead>
             <tr>
@@ -387,7 +388,7 @@ function InventoryInner({ initialQ }: { initialQ: string }) {
         {!rows.length ? (
           <AccountsEmpty message={t("common.empty")} />
         ) : null}
-      </div>
+      </TableWrap>
 
       {msg && !pendingCount ? (
         <p className="mt-3 text-sm text-[var(--brand-deep)]">{msg}</p>
@@ -451,7 +452,7 @@ function InventoryInner({ initialQ }: { initialQ: string }) {
         </div>
       ) : null}
 
-      <div className="tt-panel mt-6 overflow-x-auto">
+      <TableWrap className="tt-panel mt-6">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
           {locale === "hi" ? "हाल की मूवमेंट" : "Recent movements"}
         </p>
@@ -502,7 +503,7 @@ function InventoryInner({ initialQ }: { initialQ: string }) {
         {!movements.length ? (
           <AccountsEmpty message={t("common.empty")} />
         ) : null}
-      </div>
+      </TableWrap>
     </AccountsShell>
   );
 }

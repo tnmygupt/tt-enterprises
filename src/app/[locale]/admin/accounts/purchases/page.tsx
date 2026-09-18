@@ -534,7 +534,7 @@ function PurchasesInner() {
       ) : null}
 
       {tab === "orders" ? (
-        <div className="tt-panel mt-6 overflow-x-auto">
+        <div className="tt-panel mt-6 tt-acct-table-wrap">
           <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
             {t("accounts.openPos")}
           </p>
@@ -593,7 +593,7 @@ function PurchasesInner() {
           ) : null}
         </div>
       ) : (
-      <div className="tt-panel mt-6 overflow-x-auto">
+      <div className="tt-panel mt-6 tt-acct-table-wrap">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
           {t("accounts.purchaseBills")}
         </p>

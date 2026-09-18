@@ -251,7 +251,7 @@ export default function FlowAuditPage() {
         </div>
       </div>
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-panel mt-5 tt-acct-table-wrap">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
           Automated
         </p>
@@ -292,7 +292,7 @@ export default function FlowAuditPage() {
         </table>
       </div>
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-panel mt-5 tt-acct-table-wrap">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
           Manual walkthrough — tick as you verify
         </p>

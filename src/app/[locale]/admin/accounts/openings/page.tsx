@@ -677,7 +677,7 @@ export default function OpeningsPage() {
             </button>
           </form>
 
-          <div className="tt-panel overflow-x-auto">
+          <div className="tt-panel tt-acct-table-wrap">
             <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
               Recent opening bills
             </p>

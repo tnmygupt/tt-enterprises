@@ -462,7 +462,7 @@ function PartyStatementInner() {
                 </div>
               </>
             ) : (
-              <div className="tt-panel overflow-x-auto">
+              <div className="tt-panel tt-acct-table-wrap">
               <table className="tt-table min-w-[880px]">
                 <thead>
                   <tr>
@@ -513,7 +513,7 @@ function PartyStatementInner() {
           </div>
 
           {openContracts.length ? (
-            <div className="tt-panel mt-4 overflow-x-auto">
+            <div className="tt-panel mt-4 tt-acct-table-wrap">
               <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
                 {locale === "hi" ? "खुले कॉन्ट्रैक्ट" : "Open contracts"}
               </p>
@@ -555,7 +555,7 @@ function PartyStatementInner() {
             </div>
           ) : null}
 
-          <div className="tt-panel mt-4 overflow-x-auto">
+          <div className="tt-panel mt-4 tt-acct-table-wrap">
             <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
               {t("accounts.outstanding")} (bill-wise)
             </p>

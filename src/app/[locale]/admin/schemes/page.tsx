@@ -3,6 +3,8 @@
 import { FormEvent, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { AdminShell } from "@/components/AdminShell";
 import { NumberField } from "@/components/NumberField";
 import { OrderDiscountExplain } from "@/components/OrderDiscountExplain";
@@ -191,23 +193,21 @@ export default function AdminSchemesPage() {
 
   return (
     <AdminShell>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">{t("admin.schemes")}</h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {t("admin.schemesPageHint")}
-          </p>
-        </div>
-        <button
-          type="button"
-          className="tt-btn tt-btn-dark"
-          onClick={() => setEditing(blank())}
-        >
-          {t("admin.schemesNew")}
-        </button>
-      </div>
+      <AdminPageHeader
+        title={t("admin.schemes")}
+        hint={t("admin.schemesPageHint")}
+        actions={
+          <button
+            type="button"
+            className="tt-btn tt-btn-dark"
+            onClick={() => setEditing(blank())}
+          >
+            {t("admin.schemesNew")}
+          </button>
+        }
+      />
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <TableWrap className="tt-panel mt-5">
         <table className="tt-table min-w-[960px]">
           <thead>
             <tr>
@@ -309,7 +309,7 @@ export default function AdminSchemesPage() {
             ))}
           </tbody>
         </table>
-      </div>
+      </TableWrap>
 
       {editing ? (
         <form onSubmit={onSave} className="tt-panel mt-6 space-y-4 p-5">

@@ -5,9 +5,18 @@ import { useLocale, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
-import { AccountsShell } from "@/components/AccountsShell";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { EmptyState } from "@/components/admin/EmptyState";
+import { FilterChips } from "@/components/admin/FilterChips";
+import { StatusBadge } from "@/components/admin/StatusBadge";
+import { TableWrap } from "@/components/admin/TableWrap";
+import { AdminShell } from "@/components/AdminShell";
 import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
-import { orderNextAction } from "@/lib/admin-queues";
+import {
+  orderNextActionHref,
+  orderNextActionKey,
+  orderNextActionLabelKey,
+} from "@/lib/admin-queues";
 import { inRange } from "@/lib/date-range";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
@@ -129,18 +138,12 @@ function AdminOrdersInner() {
 
   const filters: { key: FilterKey; label: string }[] = [
     { key: "all", label: t("common.all") },
-    { key: "estimate", label: locale === "hi" ? "नए अनुमान" : "Estimates" },
-    { key: "need_bill", label: locale === "hi" ? "बिल बाकी" : "Need bill" },
-    {
-      key: "need_voucher",
-      label: locale === "hi" ? "बुक बाकी" : "Need voucher",
-    },
-    { key: "need_verify", label: locale === "hi" ? "पेमेंट जाँच" : "Verify pay" },
-    {
-      key: "need_lr",
-      label: locale === "hi" ? "LR बाकी" : "Pending LR",
-    },
-    { key: "full_truck", label: locale === "hi" ? "फुल ट्रक" : "Full truck" },
+    { key: "estimate", label: t("admin.queueEstimates") },
+    { key: "need_bill", label: t("admin.queueNeedBill") },
+    { key: "need_voucher", label: t("admin.queueNeedVoucher") },
+    { key: "need_verify", label: t("admin.queueVerifyPay") },
+    { key: "need_lr", label: t("admin.queueNeedLr") },
+    { key: "full_truck", label: t("admin.queueFullTruck") },
     { key: "dispatched", label: t("orderStatus.dispatched") },
     { key: "delivered", label: t("orderStatus.delivered") },
   ];
@@ -184,6 +187,57 @@ function AdminOrdersInner() {
     [db]
   );
 
+  const filterCounts = useMemo(() => {
+    const list = db?.orders ?? [];
+    const vouchers = db?.vouchers ?? [];
+    const countFor = (key: FilterKey) => {
+      const isQueue =
+        key === "estimate" ||
+        key === "need_bill" ||
+        key === "need_voucher" ||
+        key === "need_verify" ||
+        key === "need_lr" ||
+        key === "full_truck";
+      return list.filter((o) => {
+        if (
+          !isQueue &&
+          !isOpenWorkOrder(o) &&
+          !inRange(o.createdAt, range.from, range.to)
+        ) {
+          return false;
+        }
+        if (key === "all") return true;
+        return matchesFilter(o, key, vouchers);
+      }).length;
+    };
+    return {
+      all: countFor("all"),
+      estimate: countFor("estimate"),
+      need_bill: countFor("need_bill"),
+      need_voucher: countFor("need_voucher"),
+      need_verify: countFor("need_verify"),
+      need_lr: countFor("need_lr"),
+      full_truck: countFor("full_truck"),
+      dispatched: countFor("dispatched"),
+      delivered: countFor("delivered"),
+    } satisfies Record<FilterKey, number>;
+  }, [db, range.from, range.to]);
+
+  const nextLabel = (o: Order) =>
+    t(`admin.${orderNextActionLabelKey(o)}` as "admin.nextActionOpen");
+
+  const emptyCopy = !cloudReady
+    ? t("common.loading")
+    : !rows.length && hiddenByDate > 0
+      ? t("admin.ordersOutsideHint", { hidden: hiddenByDate })
+      : !rows.length && (db?.orders?.length ?? 0) === 0
+        ? t("admin.ordersNoneCloud")
+        : !rows.length && cancelledCount > 0 && filter === "estimate"
+          ? t("admin.ordersCancelledHint", { count: cancelledCount })
+          : !rows.length
+            ? t("common.empty")
+            : "";
+
   // Placed after every hook so the gate can never change the hook order
   if (!canViewOrders) {
     return <AdminAccessDenied title={t("admin.orders")} />;
@@ -191,68 +245,53 @@ function AdminOrdersInner() {
 
   return (
     <>
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">{t("admin.orders")}</h1>
-          <p className="mt-1 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "फ़िल्टर करें, खोजें, बिल / LR / पेमेंट हैंडल करें"
-              : "Filter, search, handle bill / LR / payment"}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {canManage ? (
-            <Link href="/admin/orders/new" className="tt-btn tt-btn-dark">
-              {locale === "hi" ? "+ नया ऑर्डर" : "+ New order"}
-            </Link>
-          ) : null}
-          <input
-            className="tt-input max-w-xs"
-            placeholder={t("common.search")}
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-        </div>
-      </div>
+      <AdminPageHeader
+        title={t("admin.orders")}
+        hint={t("admin.ordersHint")}
+        actions={
+          <>
+            {canManage ? (
+              <Link href="/admin/orders/new" className="tt-btn tt-btn-dark">
+                {t("admin.newOrder")}
+              </Link>
+            ) : null}
+            <input
+              className="tt-input max-w-xs"
+              placeholder={t("common.search")}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </>
+        }
+      />
 
       {queueFilter ? (
         <p className="mt-4 rounded-lg border border-amber-500/30 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-950">
-          {locale === "hi"
-            ? "कार्य कतार — सभी खुले ऑर्डर (तारीख फ़िल्टर बंद)"
-            : "Work queue — all open orders (date filter off)"}
+          {t("admin.ordersQueueHint")}
         </p>
       ) : (
         <DateRangeBar value={range} onChange={setRange} className="mt-4" />
       )}
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap gap-2">
-          {filters.map((f) => (
-            <Link
-              key={f.key}
-              href={
-                f.key === "all"
-                  ? "/admin/orders"
-                  : `/admin/orders?filter=${f.key}`
-              }
-              className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
-                filter === f.key
-                  ? "tt-selected bg-[var(--brand-deep)] text-white"
-                  : "border border-[var(--line)] bg-white text-[var(--ink-muted)]"
-              }`}
-            >
-              {f.label}
-            </Link>
-          ))}
-        </div>
+        <FilterChips
+          items={filters.map((f) => ({
+            id: f.key,
+            label: f.label,
+            count: filterCounts[f.key],
+            active: filter === f.key,
+            href:
+              f.key === "all"
+                ? "/admin/orders"
+                : `/admin/orders?filter=${f.key}`,
+          }))}
+        />
         <p className="text-xs text-[var(--ink-muted)]">
           {queueFilter
-            ? locale === "hi"
-              ? `${rows.length} लंबित`
-              : `${rows.length} pending`
-            : locale === "hi"
-              ? `${rows.length} ऑर्डर इस अवधि में${hiddenByDate ? ` · ${hiddenByDate} बाहर` : ""}`
-              : `${rows.length} in range${hiddenByDate ? ` · ${hiddenByDate} outside` : ""}`}
+            ? t("admin.ordersPendingCount", { count: rows.length })
+            : hiddenByDate
+              ? `${t("admin.ordersInRange", { count: rows.length })} · ${t("admin.ordersOutside", { hidden: hiddenByDate })}`
+              : t("admin.ordersInRange", { count: rows.length })}
         </p>
       </div>
 
@@ -281,7 +320,7 @@ function AdminOrdersInner() {
               )}
             </p>
             <p className="mt-1 text-xs text-[var(--ink-muted)]">
-              {orderNextAction(o)}
+              {nextLabel(o)}
             </p>
             <p className="mt-1 text-sm tabular-nums">
               {formatInr(o.estimatedTotal, locale)}
@@ -291,66 +330,58 @@ function AdminOrdersInner() {
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <Link
-                href={`/orders/${o.id}`}
-                className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
+                href={orderNextActionHref(o)}
+                className="tt-btn tt-btn-dark min-h-11 px-3 text-sm font-bold"
               >
-                {locale === "hi" ? "खोलें" : "Open"}
+                {nextLabel(o)}
               </Link>
-              {canManage ? (
+              <Link
+                href={`/orders/${o.id}`}
+                className="tt-btn tt-btn-outline min-h-11 px-3 text-sm font-bold"
+              >
+                {t("admin.openOrder")}
+              </Link>
+              {canManage &&
+              orderNextActionKey(o) !== "confirmBill" &&
+              orderNextActionKey(o) !== "uploadBill" ? (
                 <Link
                   href={`/admin/orders/${o.id}/packing-slip`}
-                  className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
+                  className="tt-btn tt-btn-outline min-h-11 px-3 text-sm font-bold"
                 >
-                  {locale === "hi" ? "पैकिंग" : "Packing"}
+                  {t("admin.packingShort")}
                 </Link>
               ) : null}
               {orderNeedsSaleVoucher(o, db?.vouchers ?? []) ? (
                 <Link
                   href={`/orders/${o.id}`}
-                  className="tt-btn tt-btn-dark px-2 py-1.5 text-xs font-bold"
+                  className="tt-btn tt-btn-dark min-h-11 px-3 text-sm font-bold"
                 >
-                  {locale === "hi" ? "बुक में डालें" : "Post to books"}
+                  {t("admin.postToBooks")}
                 </Link>
               ) : null}
             </div>
           </div>
         ))}
-        {!cloudReady ? (
-          <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.loading")}</p>
-        ) : !rows.length && hiddenByDate > 0 ? (
-          <p className="p-2 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? `${hiddenByDate} ऑर्डर इस तारीख के बाहर हैं — 7 दिन या अनुमान खोलें`
-              : `${hiddenByDate} order(s) outside this date — open 7 days or Estimates`}
-          </p>
-        ) : !rows.length && (db?.orders?.length ?? 0) === 0 ? (
-          <p className="p-2 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "क्लाउड से कोई ऑर्डर नहीं आया। पेज रीफ़्रेश करें या फिर से लॉगिन करें।"
-              : "No orders loaded from cloud. Refresh or log in again."}
-          </p>
-        ) : !rows.length && cancelledCount > 0 && filter === "estimate" ? (
-          <p className="p-2 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? `${cancelledCount} रद्द ऑर्डर हैं — All खोलें`
-              : `${cancelledCount} cancelled order(s). Open All to see them.`}
-          </p>
-        ) : !rows.length ? (
-          <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+        {emptyCopy ? (
+          <EmptyState
+            message={emptyCopy}
+            href={canManage ? "/admin/orders/new" : undefined}
+            cta={canManage ? t("admin.newOrder") : undefined}
+          />
         ) : null}
       </div>
 
-      <div className="tt-panel mt-5 hidden overflow-x-auto sm:block">
+      <TableWrap className="tt-panel mt-5 hidden sm:block">
         <table className="tt-table min-w-[980px]">
           <thead>
             <tr>
-              <th>Order</th>
-              <th>Customer</th>
+              <th>{t("admin.colOrder")}</th>
+              <th>{t("admin.colCustomer")}</th>
               <th>{t("common.status")}</th>
-              <th>{locale === "hi" ? "अगला कदम" : "Next"}</th>
-              <th>Estimate</th>
-              <th>Bill</th>
-              <th>Truck</th>
+              <th>{t("admin.colNext")}</th>
+              <th>{t("admin.colEstimate")}</th>
+              <th>{t("admin.colBill")}</th>
+              <th>{t("admin.colTruck")}</th>
               <th>{t("common.actions")}</th>
             </tr>
           </thead>
@@ -377,17 +408,25 @@ function AdminOrdersInner() {
                   </div>
                   {o.transport ? (
                     <div className="text-xs text-[var(--ink-muted)]">
-                      Transport: {o.transport}
+                      {t("admin.transport")}: {o.transport}
                     </div>
                   ) : null}
                 </td>
                 <td>
-                  <span className="tt-status">
+                  <StatusBadge
+                    tone={
+                      o.status === "cancelled"
+                        ? "danger"
+                        : o.status === "delivered"
+                          ? "ok"
+                          : "pending"
+                    }
+                  >
                     {t(`orderStatus.${o.status}` as "orderStatus.estimate")}
-                  </span>
+                  </StatusBadge>
                 </td>
                 <td className="max-w-[140px] text-sm text-[var(--ink-muted)]">
-                  {orderNextAction(o)}
+                  {nextLabel(o)}
                 </td>
                 <td className="tabular-nums">
                   {formatInr(o.estimatedTotal, locale)}
@@ -397,21 +436,32 @@ function AdminOrdersInner() {
                     ? formatInr(o.actualBillAmount, locale)
                     : "—"}
                 </td>
-                <td>{o.fullTruckRequested ? "Yes" : "—"}</td>
+                <td>{o.fullTruckRequested ? t("admin.yes") : "—"}</td>
                 <td>
                   <div className="flex flex-col gap-2 text-sm">
                     <Link
-                      href={`/orders/${o.id}`}
-                      className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
+                      href={orderNextActionHref(o)}
+                      className="tt-btn tt-btn-dark min-h-11 px-3 text-sm font-bold"
                     >
-                      {locale === "hi" ? "खोलें" : "Open"}
+                      {nextLabel(o)}
+                    </Link>
+                    <details className="rounded-lg border border-[var(--line)] px-2 py-1">
+                      <summary className="cursor-pointer text-xs font-semibold text-[var(--ink-muted)]">
+                        {t("common.actions")}
+                      </summary>
+                      <div className="mt-2 flex flex-col gap-2">
+                    <Link
+                      href={`/orders/${o.id}`}
+                      className="tt-btn tt-btn-outline min-h-11 px-3 text-sm font-bold"
+                    >
+                      {t("admin.openOrder")}
                     </Link>
                     {canManage ? (
                       <Link
                         href={`/admin/orders/${o.id}/packing-slip`}
-                        className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
+                        className="tt-btn tt-btn-outline min-h-11 px-3 text-sm font-bold"
                       >
-                        {locale === "hi" ? "पैकिंग" : "Packing"}
+                        {t("admin.packingShort")}
                       </Link>
                     ) : null}
                     {(() => {
@@ -425,13 +475,9 @@ function AdminOrdersInner() {
                           rel="noreferrer"
                           className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
                         >
-                          {locale === "hi"
-                            ? items.length > 1
-                              ? `प्रूफ (${items.length})`
-                              : "प्रूफ देखें"
-                            : items.length > 1
-                              ? `Proofs (${items.length})`
-                              : "View proof"}
+                      {items.length > 1
+                        ? t("admin.proofsCount", { count: items.length })
+                        : t("admin.viewProof")}
                         </a>
                       );
                     })()}
@@ -442,9 +488,7 @@ function AdminOrdersInner() {
                         {formatInr(paymentAmountDue(o), locale)}
                         {proofRemaining(o.paymentProof, paymentAmountDue(o)) >
                         0
-                          ? locale === "hi"
-                            ? " बाकी"
-                            : " left"
+                          ? ` ${t("admin.amountLeft")}`
                           : ""}
                       </p>
                     ) : null}
@@ -452,7 +496,7 @@ function AdminOrdersInner() {
                       <span className="inline-flex items-center justify-center rounded-lg px-2 py-1.5 text-xs font-bold text-white"
                         style={{ background: "var(--ok)" }}
                       >
-                        {locale === "hi" ? "✓ वेरिफाइड" : "✓ Verified"}
+                        {t("admin.verified")}
                       </span>
                     ) : o.paymentProof && canVerify ? (
                       <button
@@ -467,20 +511,16 @@ function AdminOrdersInner() {
                           if (
                             rem > 0 &&
                             !confirm(
-                              locale === "hi"
-                                ? `अभी ${formatInr(rem, locale)} बाकी है। Force-verify करें?`
-                                : `${formatInr(rem, locale)} still outstanding. Force-verify anyway?`
+                              t("admin.forceVerifyConfirm", {
+                                amount: formatInr(rem, locale),
+                              })
                             )
                           ) {
                             return;
                           }
                           if (
                             rem <= 0 &&
-                            !confirm(
-                              locale === "hi"
-                                ? "पेमेंट वेरिफाई करें?"
-                                : "Mark payment as verified?"
-                            )
+                            !confirm(t("admin.markVerifiedConfirm"))
                           ) {
                             return;
                           }
@@ -492,7 +532,7 @@ function AdminOrdersInner() {
                             window.alert(
                               err instanceof Error
                                 ? err.message
-                                : "Verify failed"
+                                : t("admin.verifyFailed")
                             );
                             return;
                           }
@@ -515,7 +555,7 @@ function AdminOrdersInner() {
                           refresh();
                         }}
                       >
-                        {locale === "hi" ? "वेरिफाई" : "Verify"}
+                        {t("admin.verify")}
                       </button>
                     ) : null}
                     {canManage && o.status === "estimate" ? (
@@ -536,7 +576,7 @@ function AdminOrdersInner() {
                           refresh();
                         }}
                       >
-                        Confirm
+                        {t("admin.confirmShort")}
                       </button>
                     ) : null}
                     {canManage && o.status === "payment_verified" ? (
@@ -550,7 +590,7 @@ function AdminOrdersInner() {
                             alert(
                               err instanceof Error
                                 ? err.message
-                                : "Cannot dispatch"
+                                : t("admin.cannotDispatch")
                             );
                             return;
                           }
@@ -561,16 +601,13 @@ function AdminOrdersInner() {
                               settings: db.settings,
                               users: db.users,
                               locale,
-                              extraNote:
-                                locale === "hi"
-                                  ? "LR अपलोड बाकी"
-                                  : "LR upload pending",
+                              extraNote: t("admin.lrUploadPending"),
                             });
                           }
                           refresh();
                         }}
                       >
-                        {locale === "hi" ? "डिस्पैच" : "Dispatch"}
+                        {t("admin.dispatch")}
                       </button>
                     ) : null}
                     {o.status === "dispatched" && !orderHasLr(o) ? (
@@ -578,9 +615,7 @@ function AdminOrdersInner() {
                         href={`/orders/${o.id}`}
                         className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
                       >
-                        {locale === "hi"
-                          ? "LR → डिलीवर"
-                          : "LR → delivered"}
+                        {t("admin.lrToDelivered")}
                       </Link>
                     ) : null}
                     {canManage && o.status === "payment_verified" ? (
@@ -588,9 +623,7 @@ function AdminOrdersInner() {
                         href={`/orders/${o.id}`}
                         className="tt-btn tt-btn-outline px-2 py-1.5 text-xs font-bold"
                       >
-                        {locale === "hi"
-                          ? "LR → डिलीवर"
-                          : "LR → delivered"}
+                        {t("admin.lrToDelivered")}
                       </Link>
                     ) : null}
                     {canManage &&
@@ -610,7 +643,7 @@ function AdminOrdersInner() {
                             alert(
                               err instanceof Error
                                 ? err.message
-                                : "Cannot mark delivered"
+                                : t("admin.cannotDeliver")
                             );
                             return;
                           }
@@ -626,7 +659,7 @@ function AdminOrdersInner() {
                           refresh();
                         }}
                       >
-                        Delivered
+                        {t("admin.markDelivered")}
                       </button>
                     ) : null}
                     {canManage && canCancelOrderStatus(o.status) ? (
@@ -660,36 +693,22 @@ function AdminOrdersInner() {
                         {t("common.cancelOrder")}
                       </button>
                     ) : null}
+                      </div>
+                    </details>
                   </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        {!cloudReady ? (
-          <p className="p-6 text-sm text-[var(--ink-muted)]">{t("common.loading")}</p>
-        ) : !rows.length && hiddenByDate > 0 ? (
-          <p className="p-6 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? `${hiddenByDate} ऑर्डर इस तारीख के बाहर हैं — 7 दिन या अनुमान खोलें`
-              : `${hiddenByDate} order(s) outside this date — open 7 days or Estimates`}
-          </p>
-        ) : !rows.length && (db?.orders?.length ?? 0) === 0 ? (
-          <p className="p-6 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "क्लाउड से कोई ऑर्डर नहीं आया। पेज रीफ़्रेश करें या फिर से लॉगिन करें।"
-              : "No orders loaded from cloud. Refresh or log in again."}
-          </p>
-        ) : !rows.length && cancelledCount > 0 && filter === "estimate" ? (
-          <p className="p-6 text-sm text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? `${cancelledCount} रद्द ऑर्डर हैं — All खोलें`
-              : `${cancelledCount} cancelled order(s). Open All to see them.`}
-          </p>
-        ) : !rows.length ? (
-          <p className="p-6 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+        {emptyCopy ? (
+          <EmptyState
+            message={emptyCopy}
+            href={canManage ? "/admin/orders/new" : undefined}
+            cta={canManage ? t("admin.newOrder") : undefined}
+          />
         ) : null}
-      </div>
+      </TableWrap>
     </>
   );
 }
@@ -697,10 +716,10 @@ function AdminOrdersInner() {
 export default function AdminOrdersPage() {
   const t = useTranslations();
   return (
-    <AccountsShell>
+    <AdminShell>
       <Suspense fallback={<p>{t("common.loading")}</p>}>
         <AdminOrdersInner />
       </Suspense>
-    </AccountsShell>
+    </AdminShell>
   );
 }

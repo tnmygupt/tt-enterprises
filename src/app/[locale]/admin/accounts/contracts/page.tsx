@@ -495,7 +495,7 @@ export default function ContractsPage() {
             0
           );
           return (
-            <div key={g.number} className="tt-panel overflow-x-auto">
+            <div key={g.number} className="tt-panel tt-acct-table-wrap">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] px-4 py-3">
                 <div>
                   <p className="font-mono font-semibold">{g.number}</p>

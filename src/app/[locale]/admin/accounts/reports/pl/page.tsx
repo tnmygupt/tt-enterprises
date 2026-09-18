@@ -94,7 +94,7 @@ export default function AccountsPlPage() {
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <div className="tt-panel overflow-x-auto">
+        <div className="tt-panel tt-acct-table-wrap">
           <div className="border-b border-[var(--line)] bg-[var(--brand-deep)] px-4 py-3 font-semibold text-white">
             {locale === "hi" ? "आय" : "Income"}
           </div>
@@ -119,7 +119,7 @@ export default function AccountsPlPage() {
             </tfoot>
           </table>
         </div>
-        <div className="tt-panel overflow-x-auto">
+        <div className="tt-panel tt-acct-table-wrap">
           <div className="border-b border-[var(--line)] bg-[var(--brand-deep)] px-4 py-3 font-semibold text-white">
             {locale === "hi" ? "खर्च" : "Expenses"}
           </div>
