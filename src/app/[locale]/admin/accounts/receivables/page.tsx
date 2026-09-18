@@ -41,7 +41,8 @@ export default function ReceivablesPage() {
       db.parties,
       db.vouchers,
       db.billAllocations ?? [],
-      asOf
+      asOf,
+      db.orders
     );
     return partyId ? rows.filter((r) => r.voucher.partyId === partyId) : rows;
   }, [db, partyId, asOf]);
@@ -114,7 +115,8 @@ export default function ReceivablesPage() {
           db.vouchers,
           db.billAllocations ?? [],
           asOf,
-          "sale"
+          "sale",
+          db.orders
         );
         empty.current += a.current;
         empty.d1_30 += a.d1_30;
@@ -130,7 +132,8 @@ export default function ReceivablesPage() {
       db.vouchers,
       db.billAllocations ?? [],
       asOf,
-      "sale"
+      "sale",
+      db.orders
     );
   }, [db, partyId, asOf]);
 

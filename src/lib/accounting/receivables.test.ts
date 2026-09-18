@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { BillAllocation, Voucher } from "../types";
-import { invoiceSettlementLines, leftoverReceipts } from "./receivables";
+import {
+  invoiceSettlementLines,
+  leftoverReceipts,
+  openInvoicesForParty,
+} from "./receivables";
 
 function sale(id: string, number: string): Voucher {
   return {
@@ -112,5 +116,43 @@ describe("leftoverReceipts", () => {
       },
     ];
     expect(leftoverReceipts([r1], allocs)).toEqual([]);
+  });
+});
+
+describe("openInvoicesForParty cancelled orders", () => {
+  it("drops a live sale whose linked order is cancelled", () => {
+    const inv = {
+      ...sale("sale1", "S-1"),
+      linkedOrderId: "ord_cancel",
+      dueDate: "2026-08-05",
+    } as Voucher;
+    const open = openInvoicesForParty(
+      "p1",
+      [inv],
+      [],
+      "2026-08-22",
+      "sale",
+      [{ id: "ord_cancel", status: "cancelled" }]
+    );
+    expect(open).toEqual([]);
+  });
+
+  it("keeps an unpaid sale for an open order", () => {
+    const inv = {
+      ...sale("sale1", "S-1"),
+      linkedOrderId: "ord_open",
+      dueDate: "2026-08-05",
+    } as Voucher;
+    const open = openInvoicesForParty(
+      "p1",
+      [inv],
+      [],
+      "2026-08-22",
+      "sale",
+      [{ id: "ord_open", status: "payment_pending" }]
+    );
+    expect(open).toHaveLength(1);
+    expect(open[0]?.outstanding).toBe(28000);
+    expect(open[0]?.daysOverdue).toBeGreaterThan(0);
   });
 });
