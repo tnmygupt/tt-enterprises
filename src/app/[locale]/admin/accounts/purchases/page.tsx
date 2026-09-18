@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useMemo, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
@@ -16,9 +16,9 @@ import {
   catalogRowValue,
   deriveSecondaryQty,
   inventoryRows,
-  parseCatalogRowValue,
   voucherLineAmount,
 } from "@/lib/inventory";
+import { applyCatalogToVoucherLine } from "@/lib/voucher-line-catalog";
 import { ExportButtons } from "@/components/ExportButtons";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
 import {
@@ -36,24 +36,21 @@ import {
   createVoucher,
   markPurchaseOrderOrdered,
 } from "@/lib/store/db";
-import type { PurchaseOrder, VoucherLine } from "@/lib/types";
+import type { PurchaseOrder } from "@/lib/types";
+import {
+  blankLine,
+  isEmptyItemLine,
+  lastEmptyItemIndex,
+  lastItemLineIndex,
+  mergeFilledItemLine,
+  withTrailingBlankItem,
+} from "../vouchers/helpers";
 import {
   sendWhatsAppMessage,
   supplierPoWhatsAppText,
   whatsappCountryCode,
   whatsappResultCopy,
 } from "@/lib/whatsapp";
-
-function blankLine(): VoucherLine {
-  return {
-    id: `vl_${crypto.randomUUID()}`,
-    itemLabel: "",
-    qty: 1,
-    secondaryQty: 1,
-    rate: 0,
-    amount: 0,
-  };
-}
 
 export default function PurchasesPage() {
   return (
@@ -95,8 +92,20 @@ function PurchasesInner() {
     narration: "",
     lines: [blankLine()],
   });
+  const [focusLineId, setFocusLineId] = useState<string | null>(null);
+  const [focusNonce, setFocusNonce] = useState(0);
+  const lineCatalogRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const catalog = useMemo(() => (db ? inventoryRows(db) : []), [db]);
+  const catalogOptions = useMemo(
+    () =>
+      catalog.map((c) => ({
+        value: catalogRowValue(c),
+        label: `${c.sku} · ${c.name}`,
+        searchText: `${c.sku} ${c.name}`,
+      })),
+    [catalog]
+  );
   const suppliers =
     db?.parties.filter((p) => p.active && p.type === "supplier") ?? [];
   const purchases = useMemo(() => {
@@ -128,6 +137,11 @@ function PurchasesInner() {
     [db, locale, purchases, showRates, t]
   );
 
+  useEffect(() => {
+    if (!focusLineId) return;
+    lineCatalogRefs.current[focusLineId]?.focus();
+  }, [focusLineId, focusNonce]);
+
   if (!session || !checkAnyCapability(session, db, ["manage_accounts", "manage_reorder"])) {
     return (
       <AccountsShell>
@@ -135,6 +149,76 @@ function PurchasesInner() {
       </AccountsShell>
     );
   }
+
+  const catalogFillOpts = {
+    catalogItems: catalog,
+    products: db?.products ?? [],
+    type: "purchase" as const,
+    partyId: form.supplierId,
+    date: form.date,
+    contracts: db?.supplierContracts,
+  };
+
+  const applyLineCatalog = (index: number, val: string) => {
+    const current = form.lines[index];
+    if (!current) return;
+    const result = applyCatalogToVoucherLine({
+      ...catalogFillOpts,
+      line: current,
+      catalogValue: val,
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setError("");
+    const next = [...form.lines];
+    next[index] = result.line;
+    setForm({
+      ...form,
+      lines: result.cleared ? next : withTrailingBlankItem(next),
+    });
+  };
+
+  const quickAddCatalog = (val: string) => {
+    if (!val) return;
+    const idx = lastEmptyItemIndex(form.lines);
+    const source = idx >= 0 ? form.lines[idx]! : blankLine();
+    const result = applyCatalogToVoucherLine({
+      ...catalogFillOpts,
+      line: source,
+      catalogValue: val,
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setError("");
+    setForm({
+      ...form,
+      lines: mergeFilledItemLine(form.lines, result.line),
+    });
+  };
+
+  const addBlankItemLine = () => {
+    const idx = lastEmptyItemIndex(form.lines);
+    if (idx >= 0) {
+      setFocusLineId(form.lines[idx]!.id);
+      setFocusNonce((n) => n + 1);
+      return;
+    }
+    const blank = blankLine();
+    setForm({ ...form, lines: [...form.lines, blank] });
+    setFocusLineId(blank.id);
+    setFocusNonce((n) => n + 1);
+  };
+
+  const onLastItemFieldEnter = (index: number) => {
+    if (index !== lastItemLineIndex(form.lines)) return;
+    const row = form.lines[index];
+    if (!row || isEmptyItemLine(row)) return;
+    addBlankItemLine();
+  };
 
   const onSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -330,15 +414,29 @@ function PurchasesInner() {
             label="Packing slip (photo or PDF)"
           />
 
+          <div className="sticky top-0 z-20 rounded-xl border border-[var(--brand)]/30 bg-white/95 p-3 shadow-sm backdrop-blur">
+            <label className="tt-label" htmlFor="purchase-quick-add">
+              {t("accounts.quickAddItem")}
+            </label>
+            <SearchSelect
+              id="purchase-quick-add"
+              options={catalogOptions}
+              value=""
+              onChange={quickAddCatalog}
+              placeholder="Search catalog…"
+              allowClear={false}
+              keepFocusOnPick
+            />
+            <p className="mt-1 text-xs text-[var(--ink-muted)]">
+              {t("accounts.quickAddItemHint")}
+            </p>
+          </div>
+
           {form.lines.map((l, i) => (
             <div key={l.id} className="grid gap-2 md:grid-cols-5">
               <SearchSelect
                 className="sm:col-span-2"
-                options={catalog.map((c) => ({
-                  value: catalogRowValue(c),
-                  label: `${c.sku} · ${c.name}`,
-                  searchText: `${c.sku} ${c.name}`,
-                }))}
+                options={catalogOptions}
                 value={
                   l.productId
                     ? catalogRowValue({
@@ -348,57 +446,13 @@ function PurchasesInner() {
                       })
                     : ""
                 }
-                onChange={(val) => {
-                  const next = [...form.lines];
-                  if (!val) {
-                    next[i] = {
-                      ...l,
-                      productId: undefined,
-                      variationId: undefined,
-                      colorId: undefined,
-                      itemLabel: "",
-                    };
-                    setForm({ ...form, lines: next });
-                    return;
-                  }
-                  const { productId, variationId, colorId } =
-                    parseCatalogRowValue(val);
-                  const item = catalog.find(
-                    (c) =>
-                      c.productId === productId &&
-                      (c.variationId ?? "") === (variationId || "") &&
-                      (c.colorId ?? "") === (colorId || "")
-                  );
-                  const product = db?.products.find((p) => p.id === productId);
-                  const variation = product?.variations.find(
-                    (v) => v.id === variationId
-                  );
-                  const rate =
-                    product && isSqftUnit(product.unit)
-                      ? resolveSqftPack(product, variation).ratePerSqft
-                      : variation?.rate ?? product?.baseRate ?? l.rate;
-                  const qty = l.qty || 1;
-                  const secondaryQty = product
-                    ? deriveSecondaryQty(product, qty, variationId || undefined)
-                    : qty;
-                  const updated: VoucherLine = {
-                    ...l,
-                    productId,
-                    variationId: variationId || undefined,
-                    colorId: colorId || undefined,
-                    itemLabel: item?.name || l.itemLabel,
-                    unit: product?.unit,
-                    qty,
-                    rate,
-                    secondaryQty,
-                    amount: 0,
-                  };
-                  updated.amount = voucherLineAmount(updated, product);
-                  next[i] = updated;
-                  setForm({ ...form, lines: next });
-                }}
+                onChange={(val) => applyLineCatalog(i, val)}
                 placeholder="Search catalog…"
                 emptyLabel="Catalog…"
+                autoFocus={l.id === focusLineId}
+                inputRef={(el) => {
+                  lineCatalogRefs.current[l.id] = el;
+                }}
               />
               <NumberField
                 className="tt-input"
@@ -446,6 +500,15 @@ function PurchasesInner() {
                   next[i] = updated;
                   setForm({ ...form, lines: next });
                 }}
+                onKeyDown={
+                  showRates
+                    ? undefined
+                    : (e) => {
+                        if (e.key !== "Enter") return;
+                        e.preventDefault();
+                        onLastItemFieldEnter(i);
+                      }
+                }
               />
               {showRates ? (
                 <div>
@@ -470,6 +533,11 @@ function PurchasesInner() {
                       updated.amount = voucherLineAmount(updated, product);
                       next[i] = updated;
                       setForm({ ...form, lines: next });
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      e.preventDefault();
+                      onLastItemFieldEnter(i);
                     }}
                   />
                   {isSqftUnit(l.unit) && l.productId && l.rate > 0
@@ -520,12 +588,10 @@ function PurchasesInner() {
 
           <button
             type="button"
-            className="text-sm font-semibold text-[var(--brand)]"
-            onClick={() =>
-              setForm({ ...form, lines: [...form.lines, blankLine()] })
-            }
+            className="tt-btn tt-btn-outline"
+            onClick={addBlankItemLine}
           >
-            + {locale === "hi" ? "लाइन" : "Line"}
+            + {t("accounts.addItem")}
           </button>
           <button type="submit" className="tt-btn tt-btn-dark block" disabled={saving}>
             {saving ? t("accounts.saving") : t("common.save")}
