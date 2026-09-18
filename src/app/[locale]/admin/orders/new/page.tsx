@@ -567,7 +567,7 @@ export default function AdminPunchOrderPage() {
               </div>
               <div>
                 <p className="text-xs uppercase text-[var(--ink-muted)]">
-                  GST / Aadhaar
+                  {t("checkout.gstAadhar")}
                 </p>
                 <p className="text-sm">{dealer.gstOrAadhar || "—"}</p>
               </div>

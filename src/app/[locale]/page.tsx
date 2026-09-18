@@ -457,11 +457,6 @@ function MoreInfoSection() {
               ) : null}
             </p>
           </div>
-          {settings.gstin ? (
-            <p className="mt-3 text-xs text-[var(--ink-muted)]">
-              GSTIN: {settings.gstin}
-            </p>
-          ) : null}
         </div>
       ) : null}
     </section>

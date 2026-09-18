@@ -965,7 +965,7 @@ export default function AdminUsersPage() {
         value: u.pincode || "—",
       },
       {
-        label: locale === "hi" ? "GST / आधार" : "GST / Aadhaar",
+        label: t("checkout.gstAadhar"),
         value: u.gstOrAadhar || "—",
       },
       {

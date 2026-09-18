@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { useTranslations } from "next-intl";
+import { useTranslations, useLocale } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
@@ -22,6 +22,7 @@ import {
   parseCatalogRowValue,
 } from "@/lib/inventory";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
+import { formatInr } from "@/lib/pricing";
 import {
   listOpenPurchaseOrders,
   poLineRemaining,
@@ -95,6 +96,7 @@ export default function GoodsReceivedPage() {
 
 function GoodsReceivedInner() {
   const t = useTranslations();
+  const locale = useLocale() as "en" | "hi";
   const search = useSearchParams();
   const highlightId = search.get("id") || "";
   const { session } = useSession();
@@ -682,6 +684,13 @@ function GoodsReceivedInner() {
                   <span className="text-[var(--danger)]">Voided</span>
                 ) : billed ? (
                   <span className="text-[var(--ok)]">Priced</span>
+                ) : (g.accruedAmount || 0) > 0.009 ? (
+                  <span className="font-semibold text-[var(--brand-deep)]">
+                    {t("accounts.grniOpen")}
+                    {isOwner
+                      ? ` · ${formatInr(g.accruedAmount || 0, locale)}`
+                      : ""}
+                  </span>
                 ) : (
                   <span className="font-semibold text-[var(--brand-deep)]">
                     Needs pricing
@@ -799,6 +808,13 @@ function GoodsReceivedInner() {
                       <span className="text-[var(--danger)]">Voided</span>
                     ) : billed ? (
                       <span className="text-[var(--ok)]">Priced</span>
+                    ) : (g.accruedAmount || 0) > 0.009 ? (
+                      <span className="font-semibold text-[var(--brand-deep)]">
+                        {t("accounts.grniOpen")}
+                        {isOwner
+                          ? ` · ${formatInr(g.accruedAmount || 0, locale)}`
+                          : ""}
+                      </span>
                     ) : (
                       <span className="font-semibold text-[var(--brand-deep)]">
                         Needs pricing

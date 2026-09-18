@@ -10,7 +10,7 @@ import { AccountsShell } from "@/components/AccountsShell";
 import { ExportButtons } from "@/components/ExportButtons";
 import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
-import { OWNER_SENSITIVE_ACCOUNTS } from "@/lib/accounting";
+import { OWNER_SENSITIVE_ACCOUNTS, isHiddenTaxAccount } from "@/lib/accounting";
 import { toDateInputValue } from "@/lib/date-range";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
 import { formatInr, roundMoney } from "@/lib/pricing";
@@ -55,6 +55,7 @@ export default function JournalPage() {
     if (!db) return [];
     return db.accounts
       .filter((a) => a.active)
+      .filter((a) => !isHiddenTaxAccount(a.id))
       .filter((a) => isOwner || !OWNER_SENSITIVE_ACCOUNTS.has(a.id))
       .sort((a, b) => a.code.localeCompare(b.code));
   }, [db, isOwner]);

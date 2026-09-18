@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildDraftPosFromAlerts, type ReorderDb } from "./reorder-po";
+import {
+  autoReorderOwnerPoSummaries,
+  buildDraftPosFromAlerts,
+  runAutoReorder,
+  type ReorderDb,
+} from "./reorder-po";
+import { stockAlertsFromDb } from "./accounting/analysis";
 import type {
   AppSettings,
   Party,
@@ -123,5 +129,43 @@ describe("buildDraftPosFromAlerts", () => {
       asOf: "2026-07-15",
     });
     expect(created[0]?.narration).toBe("Auto reorder (velocity)");
+    expect(created[0]?.status).toBe("draft");
+  });
+});
+
+describe("runAutoReorder", () => {
+  it("confirms new POs as ordered without leaving drafts", () => {
+    const snap = db();
+    const result = runAutoReorder(snap, "cron", {
+      rows: [alert({ suggestedQty: 4, coverMode: "min" })],
+      asOf: "2026-07-15",
+    });
+    expect(result.created).toHaveLength(1);
+    expect(result.created[0]?.status).toBe("ordered");
+    expect(result.created[0]?.narration).toBe("Auto reorder (min)");
+    expect(snap.purchaseOrders[0]?.status).toBe("ordered");
+    expect(result.alertCount).toBe(1);
+    const summaries = autoReorderOwnerPoSummaries(
+      result.created,
+      snap.parties
+    );
+    expect(summaries[0]).toMatchObject({
+      millName: "Patel Mills",
+      lines: [{ itemLabel: "HDPE", qty: 4 }],
+    });
+  });
+
+  it("does not duplicate qty already sitting on an open ordered PO", () => {
+    const snap = db();
+    const first = runAutoReorder(snap, "cron", { asOf: "2026-07-15" });
+    expect(first.created).toHaveLength(1);
+    expect(first.created[0]?.status).toBe("ordered");
+    const leftover = stockAlertsFromDb(snap, { asOf: "2026-07-15" }).filter(
+      (r) => r.kind === "reorder" && r.suggestedQty > 0
+    );
+    expect(leftover).toEqual([]);
+    const second = runAutoReorder(snap, "cron", { asOf: "2026-07-15" });
+    expect(second.created).toHaveLength(0);
+    expect(snap.purchaseOrders).toHaveLength(1);
   });
 });

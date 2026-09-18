@@ -211,17 +211,6 @@ export default function AdminSettingsPage() {
             }}
           />
         </div>
-        <div>
-          <label className="tt-label">GSTIN</label>
-          <input
-            className="tt-input"
-            defaultValue={db.settings.gstin}
-            onBlur={(e) => {
-              saveSettings({ ...db.settings, gstin: e.target.value });
-              refresh();
-            }}
-          />
-        </div>
       </div>
 
       <div className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5">
@@ -765,9 +754,10 @@ export default function AdminSettingsPage() {
         <p className="text-[var(--ink-muted)]">
           Weekly cron hits <code>/api/cron/reorder</code> with{" "}
           <code>Authorization: Bearer CRON_SECRET</code>. Products need a
-          preferred supplier. Draft POs also WhatsApp staff (orders). Overdue,
-          credit-limit, scheme-ending and stale-estimate WhatsApp:{" "}
-          <code>/api/cron/whatsapp-digest</code>. See <code>HOSTINGER.md</code>.
+          preferred supplier. Auto POs are marked ordered and WhatsApp the
+          owner only — not the mill. Overdue, credit-limit, scheme-ending and
+          stale-estimate WhatsApp: <code>/api/cron/whatsapp-digest</code>. See{" "}
+          <code>HOSTINGER.md</code>.
         </p>
         <label className="flex items-center gap-2">
           <input

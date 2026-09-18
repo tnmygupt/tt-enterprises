@@ -1016,6 +1016,60 @@ export function supplierPoWhatsAppText(input: {
     .join("\n");
 }
 
+export function autoReorderOwnerWhatsAppText(input: {
+  companyName: string;
+  locale: Locale;
+  pos: {
+    number: string;
+    millName: string;
+    lines: { itemLabel: string; qty: number }[];
+  }[];
+  alertCount: number;
+}): string {
+  const link = shortGoUrl("purchases");
+  const blocks = input.pos.map((po) => {
+    const items = po.lines
+      .slice(0, 12)
+      .map((l) => `• ${l.itemLabel} × ${l.qty}`)
+      .join("\n");
+    const extra =
+      po.lines.length > 12 ? `\n• +${po.lines.length - 12}` : "";
+    return `${po.number} · ${po.millName}\n${items}${extra}`;
+  });
+  if (input.locale === "hi") {
+    return [
+      `${input.companyName} — ऑटो रीऑर्डर`,
+      `${input.pos.length} PO ऑर्डर · ${input.alertCount} रीऑर्डर अलर्ट`,
+      ...blocks,
+      "",
+      "मिल को नहीं भेजा — जब तैयार हों तब आप बताएँ।",
+      openLinkLine(link, input.locale),
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  return [
+    `${input.companyName} — auto reorder`,
+    `${input.pos.length} PO(s) marked ordered · ${input.alertCount} reorder alert(s)`,
+    ...blocks,
+    "",
+    "Not sent to the mill — tell them when you are ready.",
+    openLinkLine(link, input.locale),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function autoReorderOwnerPushBody(input: {
+  poCount: number;
+  numbers: string[];
+}): string {
+  return `Ordered ${input.poCount} PO(s): ${input.numbers.join(", ")}`.slice(
+    0,
+    160
+  );
+}
+
 export function lowStockStaffWhatsAppText(input: {
   companyName: string;
   locale: Locale;

@@ -29,7 +29,7 @@ interface CreateBatchOpts {
   qty: number;
   rate: number;
   unit?: UnitOfSale;
-  source: "purchase" | "grn" | "opening" | "adjustment" | "sale_return";
+  source: "purchase" | "grn" | "opening" | "adjustment" | "sale_return" | "production";
   voucherId?: string;
   grnId?: string;
   provisional?: boolean;
@@ -56,7 +56,7 @@ export function createBatchFromLine(opts: CreateBatchOpts): StockBatch {
 
 interface AddPurchaseLayersOpts {
   provisional?: boolean;
-  source?: "purchase" | "grn" | "opening" | "adjustment" | "sale_return";
+  source?: "purchase" | "grn" | "opening" | "adjustment" | "sale_return" | "production";
 }
 
 /** Add purchase/GRN batches for a voucher */

@@ -36,6 +36,7 @@ export default function HealthCheckPage() {
       billAllocations: db.billAllocations,
       orders: db.orders,
       stockBatches: db.stockBatches,
+      goodsReceipts: db.goodsReceipts,
       asOf,
     });
   }, [db, asOf]);
