@@ -171,6 +171,23 @@ function dbStub(): AppDatabase {
     tallyPosts: [],
     statementMatches: [],
     accessPlaces: [],
+    monthlyAudits: [],
+    boms: [],
+    jobCards: [
+      {
+        id: "job1",
+        number: "JC-1001",
+        date: "2026-08-01",
+        outputProductId: "p1",
+        plannedQty: 10,
+        status: "issued",
+        inputLines: [],
+        issuedCost: 880,
+        wastageCost: 40,
+        createdAt: "2026-08-01T00:00:00.000Z",
+        createdBy: "plant",
+      },
+    ],
   } as AppDatabase;
 }
 
@@ -189,6 +206,9 @@ describe("staffScopedProjection plant manager", () => {
     expect(out.vouchers).toEqual([]);
     expect(out.ledgerEntries).toEqual([]);
     expect(out.accounts).toEqual([]);
+    expect(out.jobCards[0]?.issuedCost).toBeUndefined();
+    expect(out.jobCards[0]?.wastageCost).toBeUndefined();
+    expect(out.jobCards[0]?.status).toBe("issued");
     expect(out.goodsReceipts).toEqual([]);
     expect(out.products[0].baseRate).toBe(100);
     expect(out.supplierContracts[0].rate).toBe(0);

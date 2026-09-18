@@ -661,21 +661,31 @@ export default function AdminProductsPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           {editing ? (
-            <button
-              type="button"
-              className="tt-btn tt-btn-outline"
-              onClick={() => {
-                setEditing(null);
-                setError("");
-                setBulkSizes("");
-                setBulkMsg("");
-                setShowNewCategory(false);
-                setNewCategory({ en: "", hi: "" });
-                setCategoryError("");
-              }}
-            >
-              {t("common.back")}
-            </button>
+            <>
+              {(db?.products ?? []).some((p) => p.id === editing.id) ? (
+                <Link
+                  href="/admin/accounts/production"
+                  className="tt-btn tt-btn-outline"
+                >
+                  {t("accounts.bom")}
+                </Link>
+              ) : null}
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline"
+                onClick={() => {
+                  setEditing(null);
+                  setError("");
+                  setBulkSizes("");
+                  setBulkMsg("");
+                  setShowNewCategory(false);
+                  setNewCategory({ en: "", hi: "" });
+                  setCategoryError("");
+                }}
+              >
+                {t("common.back")}
+              </button>
+            </>
           ) : (
             <>
                 {session?.role === "super_admin" ? (
@@ -685,6 +695,9 @@ export default function AdminProductsPage() {
                 ) : null}
                 <Link href="/admin/rates" className="tt-btn tt-btn-outline">
                   {t("admin.rates")}
+                </Link>
+                <Link href="/admin/accounts/production" className="tt-btn tt-btn-outline">
+                  {t("accounts.production")}
                 </Link>
               <button
                 type="button"

@@ -496,6 +496,10 @@ export interface Order {
   stockReserved?: boolean;
   /** Auto-created on estimate; staff fills weighments then finalizes */
   packingSlip?: PackingSlip;
+  /** Owner override: post the sale even if over credit limit. */
+  allowOverCredit?: boolean;
+  /** Last credit-limit block (rupees over). Cleared when billed. */
+  creditBlockedOverBy?: number;
   /** How the estimate was placed. Default / omitted = dealer website checkout. */
   source?: "web" | "staff";
   /** Staff user id when `source` is `staff`. */
@@ -871,6 +875,8 @@ export interface Party {
   gstin?: string;
   /** Max receivable (customers) or payable exposure (suppliers) */
   creditLimit?: number;
+  /** Days after bill date before the invoice is overdue. 0 = due on bill date. */
+  creditDays?: number;
   active: boolean;
   createdAt: string;
   /**
@@ -940,6 +946,10 @@ export interface Voucher {
   linkedPurchaseId?: string;
   linkedPoId?: string;
   linkedGrnId?: string;
+  /** GRNI amount this purchase bill clears (goods accrued on GRN). */
+  grniAmount?: number;
+  /** Job card this journal issued or completed. */
+  linkedJobId?: string;
   /** Order payment-proof item this receipt settles (part payments) */
   linkedPaymentProofItemId?: string;
   dueDate?: string;
@@ -1038,6 +1048,9 @@ export interface GoodsReceipt {
   voided: boolean;
   voidedAt?: string;
   voidedBy?: string;
+  /** Journal that accrued Dr Inventory / Cr GRNI when PO/contract rate was known. */
+  accrualVoucherId?: string;
+  accruedAmount?: number;
 }
 
 /** Supplier rate contract — category or item level */
@@ -1091,7 +1104,8 @@ export type StockMovementType =
   | "purchase_return"
   | "grn"
   | "estimate_reserve"
-  | "estimate_release";
+  | "estimate_release"
+  | "production";
 
 export interface StockMovement {
   id: string;
@@ -1127,7 +1141,7 @@ export interface StockBatch {
   /** Cost rate per secondary unit */
   rate: number;
   unit?: UnitOfSale;
-  source: "purchase" | "grn" | "opening" | "adjustment" | "sale_return";
+  source: "purchase" | "grn" | "opening" | "adjustment" | "sale_return" | "production";
   voucherId?: string;
   grnId?: string;
   /** True when cost is unknown / placeholder (rate may be 0) */
@@ -1453,4 +1467,61 @@ export interface MonthlyAudit {
   closedAt: string;
   closedBy: string;
   note?: string;
+}
+
+export interface BomLine {
+  id: string;
+  productId: string;
+  variationId?: string;
+  colorId?: string;
+  /** Secondary units (kg/pcs) consumed per `Bom.outputQty`. */
+  qty: number;
+}
+
+export interface Bom {
+  id: string;
+  outputProductId: string;
+  outputVariationId?: string;
+  outputColorId?: string;
+  outputQty: number;
+  lines: BomLine[];
+  active: boolean;
+  createdAt: string;
+  createdBy: string;
+}
+
+export type JobCardStatus = "draft" | "issued" | "completed" | "cancelled";
+
+export interface JobCardLine {
+  productId: string;
+  variationId?: string;
+  colorId?: string;
+  itemLabel: string;
+  /** Secondary units to consume on issue. */
+  qty: number;
+  bundles: number;
+}
+
+export interface JobCard {
+  id: string;
+  number: string;
+  bomId?: string;
+  date: string;
+  outputProductId: string;
+  outputVariationId?: string;
+  outputColorId?: string;
+  plannedQty: number;
+  actualQty?: number;
+  status: JobCardStatus;
+  inputLines: JobCardLine[];
+  issuedCost?: number;
+  issueVoucherId?: string;
+  completeVoucherId?: string;
+  wastageQty?: number;
+  wastageCost?: number;
+  createdAt: string;
+  createdBy: string;
+  issuedAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
 }

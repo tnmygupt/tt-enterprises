@@ -74,6 +74,7 @@ export default function AdminPackingSlipPage() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmFinalize, setConfirmFinalize] = useState(false);
+  const [allowOverCredit, setAllowOverCredit] = useState(false);
   const sheetRef = useRef<HTMLDivElement>(null);
 
   const canManage =
@@ -617,6 +618,7 @@ export default function AdminPackingSlipPage() {
           discKind === "percent" || discKind === "flat" ? discKind : undefined,
         manualDiscountValue:
           discKind && Number(discValue) > 0 ? Number(discValue) : undefined,
+        allowOverCredit,
       });
       let billed = done;
       try {
@@ -866,6 +868,18 @@ export default function AdminPackingSlipPage() {
               ? "फाइनल करें? असली वजन, शिपिंग और बिल ऑर्डर में लग जाएगा।"
               : "Finalize? Actual weights, shipping and bill will be applied to the order."}
           </p>
+          {session &&
+          (checkCapability(session, db, "manage_accounts") ||
+            checkCapability(session, db, "view_financials")) ? (
+            <label className="mt-3 flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={allowOverCredit}
+                onChange={(e) => setAllowOverCredit(e.target.checked)}
+              />
+              {t("accounts.allowOverCreditBill")}
+            </label>
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               type="button"
@@ -1014,7 +1028,7 @@ export default function AdminPackingSlipPage() {
             />
           </label>
           <label className="flex items-center gap-2">
-            <span className="w-20 shrink-0 font-bold">GST/ID</span>
+            <span className="w-20 shrink-0 font-bold">ID</span>
             <input
               className="min-w-0 flex-1 border-0 bg-transparent outline-none"
               disabled={locked}

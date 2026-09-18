@@ -16,6 +16,7 @@ import {
   OWNER_SENSITIVE_ACCOUNTS,
   accountBalance,
   isDebitNormal,
+  isHiddenTaxAccount,
   partyBalance,
 } from "@/lib/accounting";
 import { ExportButtons } from "@/components/ExportButtons";
@@ -281,6 +282,7 @@ function LedgerInner() {
                 .filter(
                   (a) =>
                     a.active &&
+                    !isHiddenTaxAccount(a.id) &&
                     (isOwner || !OWNER_SENSITIVE_ACCOUNTS.has(a.id))
                 )
                 .map((a) => (

@@ -72,6 +72,7 @@ const GROUPS: NavGroup[] = [
       { href: "/admin/accounts/daybook", labelKey: "daybook", term: "Alt+F1" },
       { href: "/admin/accounts/ledger", labelKey: "ledger", term: "Alt+L" },
       { href: "/admin/accounts/inventory", labelKey: "stock", term: "Alt+F2" },
+      { href: "/admin/accounts/production", labelKey: "production" },
       {
         href: "/admin/accounts/cash-bank",
         labelKey: "cashBankBook",
@@ -137,6 +138,7 @@ const GROUPS: NavGroup[] = [
 ];
 
 const PLANT_ITEMS: NavItem[] = [
+  { href: "/admin/accounts/production", labelKey: "production" },
   { href: "/admin/accounts/inventory", labelKey: "stock" },
   { href: "/admin/accounts/reports/stock-alerts", labelKey: "stockAlerts" },
   { href: "/admin/accounts/purchases?tab=orders", labelKey: "tabOrders" },

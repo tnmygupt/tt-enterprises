@@ -296,11 +296,12 @@ export function VoucherForm({
     setError("");
     setSaving(true);
     try {
-      let workingLines = lines
+      let workingLines: VoucherLine[] = lines
         .map((l) => ({
           ...l,
           itemLabel: l.itemLabel.trim() || type,
           amount: lineAmt(l),
+          taxPercent: 0,
         }))
         .filter(
           (l) =>
@@ -672,22 +673,6 @@ export function VoucherForm({
                           }}
                         />
                       </div>
-                      <div>
-                        <label className="tt-label">Tax %</label>
-                        <NumberField
-                          className="tt-input"
-                          emptyAs={null}
-                          value={l.taxPercent ?? 0}
-                          onValueChange={(v) => {
-                            const next = [...lines];
-                            next[i] = {
-                              ...l,
-                              taxPercent: typeof v === "number" ? v : 0,
-                            };
-                            setLines(next);
-                          }}
-                        />
-                      </div>
                     </div>
                     <div className="mt-2 flex justify-end text-sm tabular-nums">
                       <span className="text-[var(--ink-muted)]">
@@ -953,22 +938,6 @@ export function VoucherForm({
                         </p>
                       ) : null}
                     </div>
-                    <div className="lg:col-span-1">
-                      <label className="tt-label">Tax %</label>
-                      <NumberField
-                        className="tt-input"
-                        emptyAs={null}
-                        value={l.taxPercent ?? 0}
-                        onValueChange={(v) => {
-                          const next = [...lines];
-                          next[i] = {
-                            ...l,
-                            taxPercent: typeof v === "number" ? v : 0,
-                          };
-                          setLines(next);
-                        }}
-                      />
-                    </div>
                   </div>
                   <div className="mt-2 flex justify-end text-sm tabular-nums">
                     <span className="text-[var(--ink-muted)]">Amount · </span>
@@ -1220,12 +1189,6 @@ export function VoucherForm({
                 </strong>
               </span>
             )}
-            <span>
-              Tax{" "}
-              <strong className="tabular-nums">
-                {formatInr(totals.taxAmount, locale)}
-              </strong>
-            </span>
             {Math.abs(totals.roundOff) >= 0.005 ? (
               <span>
                 Round off{" "}

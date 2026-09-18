@@ -146,6 +146,7 @@ export default function FlowAuditPage() {
       billAllocations: db.billAllocations,
       orders: db.orders,
       stockBatches: db.stockBatches,
+      goodsReceipts: db.goodsReceipts,
       asOf: today,
     });
   }, [db, today]);

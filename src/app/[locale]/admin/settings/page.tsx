@@ -211,17 +211,6 @@ export default function AdminSettingsPage() {
             }}
           />
         </div>
-        <div>
-          <label className="tt-label">GSTIN</label>
-          <input
-            className="tt-input"
-            defaultValue={db.settings.gstin}
-            onBlur={(e) => {
-              saveSettings({ ...db.settings, gstin: e.target.value });
-              refresh();
-            }}
-          />
-        </div>
       </div>
 
       <div className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5">

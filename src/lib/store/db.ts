@@ -32,6 +32,10 @@ import {
   assertPeriodOpen,
   buildBooksBackupPayload,
   isCashBankAccount,
+  postBalancedJournal,
+  voidJournalOn,
+  saleDueDate,
+  assertSaleUnderCredit,
   type BillCsvRow,
   type PartyCsvRow,
   type StockCsvRow,
@@ -87,6 +91,8 @@ import type {
   StockCount,
   CashCount,
   MonthlyAudit,
+  Bom,
+  JobCard,
 } from "../types";
 import type { WaInbox } from "../whatsapp-inbox";
 import { ROLE_CAPABILITIES, type Capability } from "../types";
@@ -116,6 +122,13 @@ import { calcShippingAmount } from "@/lib/shipping";
 import { buildDraftPosFromAlerts } from "@/lib/reorder-po";
 import { confirmDraftPurchaseOrder } from "@/lib/purchase-orders";
 import { placeEstimateOnDatabase } from "@/lib/place-estimate";
+import {
+  cancelIssuedJobCardOn,
+  completeJobCardOn,
+  createJobCardOn,
+  issueJobCardOn,
+  upsertBomOn,
+} from "@/lib/production";
 import { stockAlertsFromDb } from "@/lib/accounting/analysis";
 import { normalizeProductLocalized } from "@/lib/localized";
 import { buildHrPunch, ensureHrAuditCollections } from "@/lib/hr";
@@ -241,6 +254,8 @@ export interface AppDatabase {
   stockCounts?: StockCount[];
   cashCounts?: CashCount[];
   monthlyAudits?: MonthlyAudit[];
+  boms?: Bom[];
+  jobCards?: JobCard[];
 }
 
 function emptyDb(): AppDatabase {
@@ -286,6 +301,8 @@ function emptyDb(): AppDatabase {
     stockCounts: [],
     cashCounts: [],
     monthlyAudits: [],
+    boms: [],
+    jobCards: [],
   };
 }
 
@@ -362,6 +379,8 @@ export function loadDb(): AppDatabase {
     if (!parsed.waInbox.reads) parsed.waInbox.reads = [];
     ensureHrAuditCollections(parsed);
     ensureCountCollections(parsed);
+    if (!parsed.boms) parsed.boms = [];
+    if (!parsed.jobCards) parsed.jobCards = [];
 
     // Ensure perpetual accounting setup + FIFO migration
     const accountingMigrated = ensurePerpetualAccounting(parsed);
@@ -522,6 +541,7 @@ export function ensurePerpetualAccounting(db: AppDatabase): boolean {
   // Ensure new accounts exist (perpetual + M7 expense heads)
   const needed = [
     { id: ACCT.inventory, code: "1300", name: { en: "Inventory", hi: "इन्वेंटरी" }, type: "asset" as const },
+    { id: ACCT.wip, code: "1305", name: { en: "Work in progress", hi: "WIP" }, type: "asset" as const },
     { id: ACCT.cogs, code: "5002", name: { en: "Cost of Goods Sold", hi: "बेचे गए माल की लागत" }, type: "expense" as const },
     { id: ACCT.grni, code: "2105", name: { en: "Goods Received Not Billed", hi: "माल प्राप्त पर बिल नहीं" }, type: "liability" as const },
     { id: ACCT.freight, code: "5101", name: { en: "Freight / Cartage", hi: "भाड़ा" }, type: "expense" as const },
@@ -529,6 +549,7 @@ export function ensurePerpetualAccounting(db: AppDatabase): boolean {
     { id: ACCT.salary, code: "5103", name: { en: "Salary / Wages", hi: "वेतन" }, type: "expense" as const },
     { id: ACCT.electricity, code: "5104", name: { en: "Electricity", hi: "बिजली" }, type: "expense" as const },
     { id: ACCT.packing, code: "5105", name: { en: "Packing / Material", hi: "पैकिंग" }, type: "expense" as const },
+    { id: ACCT.wastage, code: "5106", name: { en: "Wastage / write-off", hi: "वेस्टेज" }, type: "expense" as const },
     { id: ACCT.miscExpense, code: "5199", name: { en: "Misc. Expense", hi: "अन्य खर्च" }, type: "expense" as const },
     {
       id: ACCT.freightCharges,
@@ -3093,6 +3114,7 @@ export function finalizePackingSlip(
     checkedBy?: string;
     manualDiscountKind?: "percent" | "flat";
     manualDiscountValue?: number;
+    allowOverCredit?: boolean;
   }
 ): Order {
   const db = loadDb();
@@ -3116,6 +3138,9 @@ export function finalizePackingSlip(
   }
   if (slip.status === "finalized") {
     throw new Error("Packing slip already finalized");
+  }
+  if (opts?.allowOverCredit) {
+    order.allowOverCredit = true;
   }
   const hasPktPcsQty = order.lines.some((line) => {
     const unit =
@@ -3186,6 +3211,15 @@ export function finalizePackingSlip(
   }
   slip.shippingAmount = ship;
   order.shippingAmount = ship;
+  const creditPreview = computeBillFromSlip(order, slip, {
+    shippingAmount: ship,
+  });
+  const creditBill = roundOffRupees(
+    Math.max(0, creditPreview.subtotal + ship)
+  );
+  if (creditBill > 0) {
+    enforceOrderCredit(db, order, creditBill);
+  }
   if (opts?.manualDiscountKind === "percent" || opts?.manualDiscountKind === "flat") {
     order.manualDiscountKind = opts.manualDiscountKind;
     order.manualDiscountValue =
@@ -3247,7 +3281,9 @@ export function finalizePackingSlip(
   const grossBill = roundOffRupees(
     Math.max(0, preview.subtotal + ship - schemeDisc)
   );
-  uploadBill(orderId, grossBill, undefined, undefined, staffId);
+  uploadBill(orderId, grossBill, undefined, undefined, staffId, {
+    allowOverCredit: opts?.allowOverCredit,
+  });
 
   const after = loadDb();
   const finalOrder = after.orders.find((o) => o.id === orderId)!;
@@ -3338,12 +3374,51 @@ export function reopenPackingSlip(orderId: string, staffId: string): Order {
   return order;
 }
 
+function customerPartyForOrder(
+  db: AppDatabase,
+  order: Order
+): Party | undefined {
+  let party = db.parties.find(
+    (p) => p.linkedUserId === order.userId && p.type === "customer"
+  );
+  if (party) return party;
+  const phone = (order.phone || "").trim();
+  if (!phone) return undefined;
+  return db.parties.find(
+    (p) => p.type === "customer" && p.active && p.phone === phone
+  );
+}
+
+function enforceOrderCredit(
+  db: AppDatabase,
+  order: Order,
+  saleTotal: number,
+  allowOverCredit?: boolean
+): void {
+  const party = customerPartyForOrder(db, order);
+  const check = assertSaleUnderCredit({
+    party,
+    ledgerEntries: db.ledgerEntries,
+    saleTotal,
+    allowOverCredit: allowOverCredit || order.allowOverCredit,
+  });
+  if (check.ok) {
+    order.creditBlockedOverBy = undefined;
+    return;
+  }
+  order.creditBlockedOverBy = check.overBy;
+  order.updatedAt = new Date().toISOString();
+  saveDb(db);
+  throw new Error(check.message);
+}
+
 export function uploadBill(
   orderId: string,
   actualAmount: number,
   billFileDataUrl?: string,
   lineActualWeights?: number[],
-  byUserId = "system"
+  byUserId = "system",
+  opts?: { allowOverCredit?: boolean }
 ): Order {
   const db = loadDb();
   const order = db.orders.find((o) => o.id === orderId);
@@ -3359,6 +3434,10 @@ export function uploadBill(
   if (!(actualAmount > 0)) {
     throw new Error("Enter a valid bill amount");
   }
+  if (opts?.allowOverCredit) {
+    order.allowOverCredit = true;
+  }
+  enforceOrderCredit(db, order, roundOffRupees(actualAmount));
   order.actualBillAmount = roundOffRupees(actualAmount);
   if (billFileDataUrl) order.billFileDataUrl = billFileDataUrl;
   order.billUploadedAt = new Date().toISOString();
@@ -5318,6 +5397,8 @@ export function createVoucher(input: {
   allocations?: { invoiceVoucherId: string; amount: number }[];
   /** Allow sale even if over credit limit */
   allowOverCredit?: boolean;
+  /** GRNI this purchase bill clears */
+  grniAmount?: number;
 }): Voucher {
   const db = loadDb();
   assertPeriodOpen(input.date, db.settings);
@@ -5474,6 +5555,7 @@ export function createVoucher(input: {
     linkedPurchaseId: input.linkedPurchaseId,
     linkedPoId: input.linkedPoId,
     linkedGrnId: input.linkedGrnId,
+    grniAmount: input.grniAmount,
     linkedPaymentProofItemId: input.linkedPaymentProofItemId,
     dueDate: input.dueDate?.slice(0, 10) || input.date.slice(0, 10),
     outstanding:
@@ -5749,10 +5831,10 @@ export function voidVoucher(voucherId: string, voidedBy = "system"): void {
   v.voided = true;
   v.voidedAt = new Date().toISOString();
   v.voidedBy = voidedBy;
-  
+
   // Reverse FIFO costing
   reverseVoucherCosting(db.stockBatches, db.batchConsumptions, voucherId);
-  
+
   for (const e of db.ledgerEntries) {
     if (e.voucherId === voucherId) e.voided = true;
   }
@@ -5796,6 +5878,9 @@ export function voidVoucher(voucherId: string, voidedBy = "system"): void {
   }
   if (v.type === "sale" || v.type === "purchase") {
     v.outstanding = 0;
+  }
+  if (v.type === "purchase" && v.linkedGrnId) {
+    reaccrueGrniAfterVoidedBill(db, v, voidedBy);
   }
   // Refresh invoices that had allocations from this voucher
   for (const inv of db.vouchers) {
@@ -5963,7 +6048,7 @@ function applyStockAdjust(db: AppDatabase, input: StockAdjustInput): void {
       })
     );
   } else if (input.direction === "out" && secondary > 0) {
-    consumeFifo(db.stockBatches, db.batchConsumptions, {
+    const fifo = consumeFifo(db.stockBatches, db.batchConsumptions, {
       voucherId: `adj_${movementId}`,
       date: new Date().toISOString().slice(0, 10),
       lines: [
@@ -5976,6 +6061,28 @@ function applyStockAdjust(db: AppDatabase, input: StockAdjustInput): void {
       ],
       allowShortfall: false,
     });
+    if (fifo.totalCost > 0.009) {
+      const journal = postBalancedJournal(db, {
+        date: new Date().toISOString().slice(0, 10),
+        narration: input.note?.trim() || `Write-off ${product.name.en}`,
+        createdBy: input.createdBy,
+        legs: [
+          {
+            accountId: ACCT.wastage,
+            debit: fifo.totalCost,
+            itemLabel: product.name.en,
+          },
+          {
+            accountId: ACCT.inventory,
+            credit: fifo.totalCost,
+            itemLabel: product.name.en,
+          },
+        ],
+      });
+      for (const c of db.batchConsumptions) {
+        if (c.voucherId === `adj_${movementId}`) c.voucherId = journal.id;
+      }
+    }
   }
 }
 
@@ -5994,6 +6101,54 @@ export function adjustStockBatch(inputs: StockAdjustInput[]): number {
   for (const input of inputs) applyStockAdjust(db, input);
   saveDb(db);
   return inputs.length;
+}
+
+function asProductionDb(db: AppDatabase) {
+  if (!db.boms) db.boms = [];
+  if (!db.jobCards) db.jobCards = [];
+  return db as AppDatabase & {
+    boms: NonNullable<AppDatabase["boms"]>;
+    jobCards: NonNullable<AppDatabase["jobCards"]>;
+  };
+}
+
+export function upsertBom(input: Parameters<typeof upsertBomOn>[1]) {
+  const db = loadDb();
+  const bom = upsertBomOn(asProductionDb(db), input);
+  saveDb(db);
+  return bom;
+}
+
+export function createJobCard(input: Parameters<typeof createJobCardOn>[1]) {
+  const db = loadDb();
+  const job = createJobCardOn(asProductionDb(db), input);
+  saveDb(db);
+  return job;
+}
+
+export function issueJobCard(jobId: string, createdBy: string) {
+  const db = loadDb();
+  const job = issueJobCardOn(asProductionDb(db), jobId, createdBy);
+  saveDb(db);
+  return job;
+}
+
+export function completeJobCard(input: {
+  jobId: string;
+  actualQty: number;
+  createdBy: string;
+}) {
+  const db = loadDb();
+  const job = completeJobCardOn(asProductionDb(db), input);
+  saveDb(db);
+  return job;
+}
+
+export function cancelIssuedJobCard(jobId: string, createdBy: string) {
+  const db = loadDb();
+  const job = cancelIssuedJobCardOn(asProductionDb(db), jobId, createdBy);
+  saveDb(db);
+  return job;
 }
 
 export function clockStaffPunch(input: {
@@ -6217,19 +6372,23 @@ export function createSaleVoucherFromOrder(
   );
   const skipInventory = !!order.stockReserved && hasReserveMovement;
 
+  const billDate = (
+    order.billUploadedAt ||
+    order.updatedAt ||
+    new Date().toISOString()
+  ).slice(0, 10);
+
   return createVoucher({
     type: "sale",
-    date: (order.billUploadedAt || order.updatedAt || new Date().toISOString()).slice(
-      0,
-      10
-    ),
+    date: billDate,
+    dueDate: saleDueDate(billDate, party.creditDays),
     partyId: party.id,
     narration: `Auto sale from order ${order.orderNumber}`,
     lines,
     linkedOrderId: order.id,
     createdBy,
     skipInventory,
-    allowOverCredit: true,
+    allowOverCredit: !!order.allowOverCredit,
   });
 }
 
@@ -6515,6 +6674,68 @@ function nextGrnNumber(receipts: GoodsReceipt[]): string {
   return `GRN-${max + 1}`;
 }
 
+function postGrniAccrual(
+  db: AppDatabase,
+  grn: GoodsReceipt,
+  supplierId: string,
+  createdBy: string
+): void {
+  const accrued = roundMoney(grn.accruedAmount || 0);
+  if (!(accrued > 0.009)) return;
+  const accrual = postBalancedJournal(db, {
+    date: grn.date,
+    narration: `GRNI ${grn.number}`,
+    createdBy,
+    partyId: supplierId,
+    linkedGrnId: grn.id,
+    legs: [
+      { accountId: ACCT.inventory, debit: accrued, itemLabel: grn.number },
+      { accountId: ACCT.grni, credit: accrued, itemLabel: grn.number },
+    ],
+  });
+  grn.accrualVoucherId = accrual.id;
+  grn.accruedAmount = accrued;
+}
+
+function reaccrueGrniAfterVoidedBill(
+  db: AppDatabase,
+  bill: Voucher,
+  voidedBy: string
+): void {
+  const grnId = bill.linkedGrnId;
+  if (!grnId) return;
+  const grn = db.goodsReceipts.find((g) => g.id === grnId);
+  if (!grn || grn.voided) return;
+  const po = db.purchaseOrders.find(
+    (p) => p.id === (bill.linkedPoId || grn.poId)
+  );
+  if (po) {
+    for (const line of grn.lines) {
+      const poLine = po.lines.find((x) => x.id === line.poLineId);
+      if (poLine) {
+        poLine.billedQty = roundMoney(
+          Math.max(0, (poLine.billedQty ?? 0) - line.qty)
+        );
+      }
+    }
+    syncPoStatus(db, po.id);
+  }
+  const stillBilled = db.vouchers.some(
+    (x) =>
+      x.id !== bill.id &&
+      x.type === "purchase" &&
+      !x.voided &&
+      x.linkedGrnId === grn.id
+  );
+  if (stillBilled) return;
+  if (!((grn.accruedAmount || 0) > 0.009)) return;
+  const existing = grn.accrualVoucherId
+    ? db.vouchers.find((x) => x.id === grn.accrualVoucherId)
+    : undefined;
+  if (existing && !existing.voided) return;
+  postGrniAccrual(db, grn, po?.supplierId || bill.partyId || "", voidedBy);
+}
+
 function syncPoStatus(db: AppDatabase, poId: string): void {
   const po = db.purchaseOrders.find((p) => p.id === poId);
   if (!po || po.status === "cancelled") return;
@@ -6694,16 +6915,14 @@ export function createGoodsReceipt(input: {
   }
   applyGrnStock(db, grn, input.createdBy, false);
 
-  // Provisional FIFO layers (rate 0) until the owner prices the bill
+  // FIFO layers — accrue at PO/contract rate when known; else rate 0 until priced
   db.stockBatches = db.stockBatches || [];
+  let accrued = 0;
   for (const line of grn.lines) {
     const poLine = po.lines.find((l) => l.id === line.poLineId);
     const productId = line.productId || poLine?.productId;
     if (!productId) continue;
     const product = db.products.find((p) => p.id === productId);
-    // Must match applyGrnStock exactly or the FIFO layer and the physical
-    // stock disagree — a kg product with no explicit weight adds
-    // bundles × kg to stock but would otherwise layer only the bundle count.
     const measure = product
       ? deriveSecondaryQty(
           product,
@@ -6713,6 +6932,22 @@ export function createGoodsReceipt(input: {
         )
       : line.secondaryQty ?? line.qty;
     if (measure <= 0) continue;
+    const contract = resolveOpenContract(
+      db.supplierContracts,
+      db.products,
+      po.supplierId,
+      productId,
+      grn.date,
+      {
+        contractId: poLine?.contractId,
+        variationId: line.variationId || poLine?.variationId,
+      }
+    );
+    const rate = roundMoney(
+      (poLine?.rate && poLine.rate > 0 ? poLine.rate : 0) ||
+        (contract?.rate && contract.rate > 0 ? contract.rate : 0)
+    );
+    if (rate > 0) accrued = roundMoney(accrued + measure * rate);
     db.stockBatches.push(
       createBatchFromLine({
         date: grn.date,
@@ -6720,13 +6955,17 @@ export function createGoodsReceipt(input: {
         variationId: line.variationId || poLine?.variationId,
         colorId: line.colorId || poLine?.colorId,
         qty: measure,
-        rate: 0,
+        rate,
         unit: line.unit || poLine?.unit || product?.unit,
         source: "grn",
         grnId: grn.id,
         provisional: true,
       })
     );
+  }
+  if (accrued > 0.009) {
+    grn.accruedAmount = accrued;
+    postGrniAccrual(db, grn, po.supplierId, input.createdBy);
   }
 
   syncPoStatus(db, po.id);
@@ -6802,6 +7041,9 @@ export function voidGoodsReceipt(grnId: string, voidedBy = "system"): void {
 
   applyGrnStock(db, grn, voidedBy, true);
   db.stockBatches = db.stockBatches.filter((b) => b.grnId !== grn.id);
+  if (grn.accrualVoucherId) {
+    voidJournalOn(db, grn.accrualVoucherId, voidedBy);
+  }
 
   grn.voided = true;
   grn.voidedAt = new Date().toISOString();
@@ -7079,6 +7321,7 @@ export function createPurchaseBillFromGrn(input: {
     lines,
     linkedPoId: po.id,
     linkedGrnId: grn.id,
+    grniAmount: grn.accruedAmount || 0,
     packingSlipDataUrl: grn.packingSlipDataUrl,
     packingSlipName: grn.packingSlipName,
     createdBy: input.createdBy,
