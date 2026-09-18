@@ -4,6 +4,7 @@ import {
 } from "./accounting/analysis";
 import { resolveOpenContract } from "./contracts";
 import { roundMoney } from "./pricing";
+import { confirmDraftPurchaseOrder } from "./purchase-orders";
 import type {
   Party,
   Product,
@@ -126,4 +127,49 @@ export function buildDraftPosFromAlerts(
     created.push(po);
   }
   return created;
+}
+
+export type AutoReorderPoSummary = {
+  number: string;
+  millName: string;
+  lines: { itemLabel: string; qty: number }[];
+};
+
+export function autoReorderOwnerPoSummaries(
+  pos: PurchaseOrder[],
+  parties: Party[]
+): AutoReorderPoSummary[] {
+  return pos.map((po) => ({
+    number: po.number,
+    millName: parties.find((p) => p.id === po.supplierId)?.name || "Mill",
+    lines: po.lines.map((l) => ({ itemLabel: l.itemLabel, qty: l.qty })),
+  }));
+}
+
+/**
+ * Cron path: draft POs from reorder alerts, then mark them ordered.
+ * Does not message the mill — caller notifies owners.
+ */
+export function runAutoReorder(
+  db: ReorderDb,
+  createdBy = "cron_reorder",
+  opts: {
+    minQty?: number;
+    rows?: StockAlertRow[];
+    asOf?: string;
+  } = {}
+): { created: PurchaseOrder[]; alertCount: number } {
+  const asOf = opts.asOf || new Date().toISOString().slice(0, 10);
+  const reorderRows =
+    opts.rows ??
+    stockAlertsFromDb(db, { asOf }).filter((r) => r.kind === "reorder");
+  const created = buildDraftPosFromAlerts(db, createdBy, {
+    minQty: opts.minQty,
+    rows: reorderRows,
+    asOf,
+  });
+  for (const po of created) {
+    Object.assign(po, confirmDraftPurchaseOrder(po));
+  }
+  return { created, alertCount: reorderRows.length };
 }

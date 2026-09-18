@@ -73,7 +73,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   tallySyncStatus: "idle",
   tallySyncMessage: "Not synced yet",
   financialYearStartMonth: 4,
-  autoReorderEnabled: false,
+  autoReorderEnabled: true,
   autoReorderCron: "0 6 * * 1",
   autoReorderMinQty: 1,
   autoReorderUseVelocity: true,

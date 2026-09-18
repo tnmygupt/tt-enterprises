@@ -1,22 +1,27 @@
 import { NextRequest, NextResponse } from "next/server";
-import { stockAlertsFromDb } from "@/lib/accounting/analysis";
-import { buildDraftPosFromAlerts } from "@/lib/reorder-po";
+import {
+  autoReorderOwnerPoSummaries,
+  runAutoReorder,
+} from "@/lib/reorder-po";
 import { authorizeCron } from "@/lib/server/cron-auth";
 import { cloudGetAppDb, cloudPutAppDb } from "@/lib/server/app-db";
 import { notifyStaffWhatsAppServer } from "@/lib/server/whatsapp-notify";
-import { capabilityContextFrom } from "@/lib/capabilities";
+import { ownerUsers } from "@/lib/owner-daily-summary";
 import {
   removePushEndpoint,
   sendWebPushToSubs,
-  staffWithAnyCapability,
   vapidConfigured,
 } from "@/lib/server/web-push";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 import { sanitizeDbForCloud } from "@/lib/supabase/sanitize";
-import { lowStockStaffWhatsAppText, whatsappCountryCode } from "@/lib/whatsapp";
+import {
+  autoReorderOwnerPushBody,
+  autoReorderOwnerWhatsAppText,
+  whatsappCountryCode,
+} from "@/lib/whatsapp";
 
 /**
- * Weekly auto draft-PO from reorder alerts.
+ * Weekly auto ordered-POs from reorder alerts. WhatsApps owners only — never the mill.
  * Auth: Authorization: Bearer CRON_SECRET (or ?secret= for simple Hostinger curl).
  */
 export async function POST(req: NextRequest) {
@@ -27,14 +32,14 @@ export async function POST(req: NextRequest) {
   if (!isSupabaseConfigured()) {
     return NextResponse.json(
       { error: "Cloud database not configured" },
-      { status: 503 },
+      { status: 503 }
     );
   }
   const { db, updatedAt, error } = await cloudGetAppDb();
   if (error || !db) {
     return NextResponse.json(
       { error: error || "Cloud empty" },
-      { status: 500 },
+      { status: 500 }
     );
   }
 
@@ -47,9 +52,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const reorderRows = stockAlertsFromDb(db).filter((r) => r.kind === "reorder");
-  const created = buildDraftPosFromAlerts(db, "cron_reorder", {
-    rows: reorderRows,
+  const { created, alertCount } = runAutoReorder(db, "cron_reorder", {
     minQty: db.settings.autoReorderMinQty ?? 1,
   });
 
@@ -57,29 +60,26 @@ export async function POST(req: NextRequest) {
   if (!put.ok) {
     return NextResponse.json(
       { error: put.error || (put.conflict ? "Conflict" : "Save failed") },
-      { status: put.conflict ? 409 : 500 },
+      { status: put.conflict ? 409 : 500 }
     );
   }
 
   let pushSent = 0;
   let waSent = 0;
   if (created.length) {
+    const owners = ownerUsers(db.users);
     const title = "Auto reorder POs";
-    const text = `Created ${created.length} draft PO(s): ${created
-      .map((p) => p.number)
-      .join(", ")}`.slice(0, 160);
+    const text = autoReorderOwnerPushBody({
+      poCount: created.length,
+      numbers: created.map((p) => p.number),
+    });
     const url = "/en/admin/accounts/purchases";
     if (vapidConfigured()) {
-      const staff = staffWithAnyCapability(
-        db.users,
-        ["manage_orders", "manage_reorder"],
-        capabilityContextFrom(db),
-      );
       let dirty = false;
-      for (const u of staff) {
+      for (const u of owners) {
         const { sent, deadEndpoints } = await sendWebPushToSubs(
           u.pushSubscriptions,
-          { title, body: text, url },
+          { title, body: text, url }
         );
         pushSent += sent;
         if (deadEndpoints.length) {
@@ -96,15 +96,14 @@ export async function POST(req: NextRequest) {
       }
     }
     waSent = await notifyStaffWhatsAppServer({
-      users: db.users,
+      users: owners,
       countryCode: whatsappCountryCode(db.settings),
       enabled: db.settings.whatsappNotifyEnabled,
-      text: lowStockStaffWhatsAppText({
+      text: autoReorderOwnerWhatsAppText({
         companyName: db.settings.companyName || "TT Enterprises",
         locale: "en",
-        poCount: created.length,
-        numbers: created.map((p) => p.number),
-        alertCount: reorderRows.length,
+        pos: autoReorderOwnerPoSummaries(created, db.parties),
+        alertCount,
       }),
     });
   }
@@ -113,7 +112,7 @@ export async function POST(req: NextRequest) {
     ok: true,
     created: created.length,
     numbers: created.map((p) => p.number),
-    alertCount: reorderRows.length,
+    alertCount,
     pushSent,
     waSent,
   });
