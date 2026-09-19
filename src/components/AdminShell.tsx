@@ -84,6 +84,12 @@ const GROUPS: NavGroup[] = [
         superOnly: true,
       },
       {
+        href: "/admin/owner/approvals",
+        labelKey: "admin.approvals",
+        cap: "view_financials",
+        badge: "need_owner_approval",
+      },
+      {
         href: "/admin/audit",
         labelKey: "admin.auditHub",
         anyCap: [
@@ -455,6 +461,12 @@ export function AdminShell({
       label: locale === "hi" ? "रीऑर्डर स्टॉक" : "Reorder stock",
       count: queues.counts.need_reorder,
     },
+    {
+      key: "need_owner_approval",
+      href: "/admin/owner/approvals",
+      label: locale === "hi" ? "रेट / स्कीम अप्रूवल" : "Rate / scheme approval",
+      count: queues.counts.need_owner_approval,
+    },
   ].filter((q) => {
     if (q.count <= 0) return false;
     if (salesDesk && q.href.startsWith("/admin/accounts")) return false;
@@ -466,6 +478,9 @@ export function AdminShell({
         checkCapability(session, db, "manage_accounts") ||
         checkCapability(session, db, "manage_reorder")
       );
+    }
+    if (q.key === "need_owner_approval") {
+      return checkCapability(session, db, "view_financials");
     }
     return true;
   });

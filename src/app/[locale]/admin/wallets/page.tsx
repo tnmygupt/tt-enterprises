@@ -361,7 +361,13 @@ export default function AdminWalletsPage() {
             onSubmit={(e) => {
               e.preventDefault();
               assignSchemeToUser(assign.userId, assign.schemeId);
-              setMsg(locale === "hi" ? "स्कीम असाइन हो गई" : "Scheme assigned");
+              setMsg(
+                checkCapability(session, db, "view_financials")
+                  ? locale === "hi"
+                    ? "स्कीम असाइन हो गई"
+                    : "Scheme assigned"
+                  : t("admin.approvalQueued")
+              );
               refresh();
             }}
           >
