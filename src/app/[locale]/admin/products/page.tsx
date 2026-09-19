@@ -37,6 +37,11 @@ import {
   upsertCategory,
   upsertProduct,
 } from "@/lib/store/db";
+import {
+  OwnerPendingBanner,
+  ProposedRateHint,
+  pendingProductRatesApproval,
+} from "@/components/OwnerPendingBanner";
 import type {
   CategoryDef,
   LocalizedString,
@@ -322,6 +327,7 @@ export default function AdminProductsPage() {
   const locale = useLocale() as "en" | "hi";
   const { session } = useSession();
   const { db, refresh } = useDb();
+  const isOwner = checkCapability(session, db, "view_financials");
   const [editing, setEditing] = useState<Product | null>(null);
   const [homeNew, setHomeNew] = useState(false);
   const [homePromo, setHomePromo] = useState(false);
@@ -710,6 +716,10 @@ export default function AdminProductsPage() {
 
       {!editing ? (
         <>
+          <OwnerPendingBanner
+            items={(db?.ownerApprovals ?? []).filter((a) => a.kind === "product_rates")}
+            locale={locale}
+          />
           <div className="mt-4 flex flex-wrap gap-2">
             <input
               className="tt-input max-w-xs"
@@ -783,7 +793,16 @@ export default function AdminProductsPage() {
                             ? "rate × kg"
                             : "rate × qty"}
                       </td>
-                      <td>{formatInr(minRate, locale)}</td>
+                      <td>
+                        {formatInr(minRate, locale)}
+                        <ProposedRateHint
+                          approval={pendingProductRatesApproval(
+                            db?.ownerApprovals,
+                            p.id
+                          )}
+                          locale={locale}
+                        />
+                      </td>
                       <td className="text-sm">
                         {stock.bundles} bdl
                         <span className="block text-xs text-[var(--ink-muted)]">
@@ -1241,6 +1260,15 @@ export default function AdminProductsPage() {
                 <p className="mt-1 text-xs text-[var(--ink-muted)]">
                   Used for new sizes only
                 </p>
+                {editing ? (
+                  <ProposedRateHint
+                    approval={pendingProductRatesApproval(
+                      db?.ownerApprovals,
+                      editing.id
+                    )}
+                    locale={locale}
+                  />
+                ) : null}
               </div>
               <div>
                 <label className="tt-label">
@@ -2569,7 +2597,9 @@ export default function AdminProductsPage() {
                 ? locale === "hi"
                   ? "अनुवाद व सेव…"
                   : "Translating & saving…"
-                : t("common.save")}
+                : isOwner
+                  ? t("common.save")
+                  : t("admin.approvalSendToOwner")}
             </button>
             <button
               type="button"

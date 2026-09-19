@@ -32,7 +32,7 @@ import {
   pickBestOrderDiscount,
   type ManualDiscountKind,
 } from "@/lib/schemes";
-import { attachPackingSlip, canViewFinancials, createVoucher } from "@/lib/store/db";
+import { attachPackingSlip, canViewFinancials, checkCapability, createVoucher } from "@/lib/store/db";
 import type { PackingSlip, PartyType, VoucherLine, VoucherType } from "@/lib/types";
 import { formatInr, isSqftUnit, ratePerPacket, ratePerPiece, resolveSqftPack, roundMoney, roundOffRupees, unitLabel } from "@/lib/pricing";
 import {
@@ -1069,6 +1069,7 @@ export function VoucherForm({
                 onKindChange={setDiscKind}
                 onValueChange={setDiscValue}
                 locale={locale}
+                allowManual={checkCapability(session, db, "view_financials")}
               />
             ) : null}
             {type === "sale" ? (

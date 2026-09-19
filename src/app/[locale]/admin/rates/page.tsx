@@ -12,6 +12,11 @@ import { dedupeProductVariations, normalizeSizeKey } from "@/lib/media";
 import { applySqftComputedRate, formatInr, isSqftUnit, ratePerPacket, ratePerPiece, resolveSqftPack, unitLabel } from "@/lib/pricing";
 import { checkCapability, upsertProduct } from "@/lib/store/db";
 import type { Product } from "@/lib/types";
+import {
+  OwnerPendingBanner,
+  ProposedRateHint,
+  pendingProductRatesApproval,
+} from "@/components/OwnerPendingBanner";
 
 type SizeMember = {
   productId: string;
@@ -47,6 +52,7 @@ export default function AdminRatesPage() {
   const [draft, setDraft] = useState<Record<string, number>>({});
   const [msg, setMsg] = useState("");
   const [cleaning, setCleaning] = useState(false);
+  const isOwner = checkCapability(session, db, "view_financials");
 
   const groups = useMemo(() => {
     if (!db) return [] as RateGroup[];
@@ -180,9 +186,11 @@ export default function AdminRatesPage() {
     setDraft({});
     refresh();
     setMsg(
-      locale === "hi"
-        ? `${byProduct.size} प्रोडक्ट · ${dirtyCount} ग्रुप अपडेट`
-        : `Saved ${byProduct.size} product(s) · ${dirtyCount} rate group(s)`
+      isOwner
+        ? locale === "hi"
+          ? `${byProduct.size} प्रोडक्ट · ${dirtyCount} ग्रुप अपडेट`
+          : `Saved ${byProduct.size} product(s) · ${dirtyCount} rate group(s)`
+        : t("admin.approvalQueued")
     );
   };
 
@@ -240,12 +248,19 @@ export default function AdminRatesPage() {
             disabled={dirtyCount === 0}
             onClick={saveAll}
           >
-            {locale === "hi"
-              ? `सेव (${dirtyCount})`
-              : `Save changes (${dirtyCount})`}
+            {isOwner
+              ? locale === "hi"
+                ? `सेव (${dirtyCount})`
+                : `Save changes (${dirtyCount})`
+              : `${t("admin.approvalSendToOwner")} (${dirtyCount})`}
           </button>
         </div>
       </div>
+
+      <OwnerPendingBanner
+        items={(db.ownerApprovals ?? []).filter((a) => a.kind === "product_rates")}
+        locale={locale}
+      />
 
       <div className="mt-4 flex flex-wrap gap-2">
         <input
@@ -352,6 +367,20 @@ export default function AdminRatesPage() {
                           }))
                         }
                       />
+                      {g.productIds.map((pid) => {
+                        const pending = pendingProductRatesApproval(
+                          db.ownerApprovals,
+                          pid
+                        );
+                        if (!pending) return null;
+                        return (
+                          <ProposedRateHint
+                            key={pid}
+                            approval={pending}
+                            locale={locale}
+                          />
+                        );
+                      })}
                     </td>
                     <td className="text-sm text-[var(--ink-muted)]">
                       {estimate}
