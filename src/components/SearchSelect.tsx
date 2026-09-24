@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 
 export type SearchSelectOption = {
   value: string;
@@ -20,7 +26,19 @@ type SearchSelectProps = {
   disabled?: boolean;
   /** Max rows shown in the dropdown (default 120). */
   limit?: number;
+  autoFocus?: boolean;
+  inputRef?: Ref<HTMLInputElement>;
+  /** Hide the leading “clear” row (default: hidden when required). */
+  allowClear?: boolean;
+  /** After a pick, keep the input focused so the next search can start immediately. */
+  keepFocusOnPick?: boolean;
 };
+
+function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
+  if (!ref) return;
+  if (typeof ref === "function") ref(value);
+  else ref.current = value;
+}
 
 /** Type-to-search select for parties, catalog items, etc. */
 export function SearchSelect({
@@ -34,13 +52,20 @@ export function SearchSelect({
   id,
   disabled,
   limit = 120,
+  autoFocus,
+  inputRef,
+  allowClear,
+  keepFocusOnPick,
 }: SearchSelectProps) {
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
+  const innerInputRef = useRef<HTMLInputElement | null>(null);
+  const skipOpenRef = useRef(false);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
 
+  const showClear = allowClear ?? !required;
   const selected = options.find((o) => o.value === value);
 
   const filtered = (() => {
@@ -51,7 +76,7 @@ export function SearchSelect({
       .slice(0, limit);
   })();
 
-  const clearOffset = required ? 0 : 1;
+  const clearOffset = showClear ? 1 : 0;
   const maxHighlight = Math.max(0, filtered.length + clearOffset - 1);
 
   useEffect(() => {
@@ -73,19 +98,32 @@ export function SearchSelect({
     onChange(v);
     setQuery("");
     setOpen(false);
+    if (keepFocusOnPick) {
+      skipOpenRef.current = true;
+      requestAnimationFrame(() => {
+        innerInputRef.current?.focus();
+        skipOpenRef.current = false;
+      });
+    }
   };
 
   return (
     <div ref={rootRef} className={`relative ${className}`}>
       <input
         id={id}
+        ref={(el) => {
+          innerInputRef.current = el;
+          assignRef(inputRef, el);
+        }}
         type="text"
         className="tt-input"
         disabled={disabled}
         required={required && !value}
+        autoFocus={autoFocus}
         placeholder={selected ? selected.label : placeholder}
         value={open ? query : selected?.label || ""}
         onFocus={() => {
+          if (skipOpenRef.current) return;
           setOpen(true);
           setQuery("");
         }}
@@ -107,11 +145,11 @@ export function SearchSelect({
               setOpen(true);
               return;
             }
-            if (!required && highlight === 0) {
+            if (showClear && highlight === 0) {
               pick("");
               return;
             }
-            const optIdx = required ? highlight : highlight - 1;
+            const optIdx = showClear ? highlight - 1 : highlight;
             const opt = filtered[optIdx];
             if (opt) pick(opt.value);
           } else if (e.key === "Escape") {
@@ -131,7 +169,7 @@ export function SearchSelect({
           role="listbox"
           className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-[var(--line)] bg-white py-1 shadow-lg"
         >
-          {!required ? (
+          {showClear ? (
             <li
               role="option"
               aria-selected={!value}

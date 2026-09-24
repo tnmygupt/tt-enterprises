@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
@@ -16,15 +16,14 @@ import { ACCT, SALE_CHARGE_PRESETS, allocateOldestFirst,
   partyBalance,
   unallocatedAdvance,
 } from "@/lib/accounting";
-import { resolveOpenContract } from "@/lib/contracts";
 import {
   catalogRowValue,
   deriveSecondaryQty,
   inventoryRows,
-  parseCatalogRowValue,
   secondaryPerBundle,
   voucherLineAmount,
 } from "@/lib/inventory";
+import { applyCatalogToVoucherLine } from "@/lib/voucher-line-catalog";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
 import { StaffBillDiscountFields } from "@/components/StaffBillDiscountFields";
 import {
@@ -33,7 +32,7 @@ import {
   pickBestOrderDiscount,
   type ManualDiscountKind,
 } from "@/lib/schemes";
-import { attachPackingSlip, canViewFinancials, createVoucher } from "@/lib/store/db";
+import { attachPackingSlip, canViewFinancials, checkCapability, createVoucher } from "@/lib/store/db";
 import type { PackingSlip, PartyType, VoucherLine, VoucherType } from "@/lib/types";
 import { formatInr, isSqftUnit, ratePerPacket, ratePerPiece, resolveSqftPack, roundMoney, roundOffRupees, unitLabel } from "@/lib/pricing";
 import {
@@ -43,7 +42,16 @@ import {
   buildVoucherPackingSlipPdfDataUrl,
   voucherLinesToOrderLines,
 } from "@/lib/voucher-packing-slip";
-import { blankChargeLine, blankLine, isChargeLine } from "./helpers";
+import {
+  blankChargeLine,
+  blankLine,
+  isChargeLine,
+  isEmptyItemLine,
+  lastEmptyItemIndex,
+  lastItemLineIndex,
+  mergeFilledItemLine,
+  withTrailingBlankItem,
+} from "./helpers";
 
 export function VoucherForm({
   type,
@@ -79,6 +87,9 @@ export function VoucherForm({
   const [saving, setSaving] = useState(false);
   const [showPartyModal, setShowPartyModal] = useState(false);
   const [productModalLine, setProductModalLine] = useState<number | null>(null);
+  const [focusLineId, setFocusLineId] = useState<string | null>(null);
+  const [focusNonce, setFocusNonce] = useState(0);
+  const lineCatalogRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [saleSlip, setSaleSlip] = useState<PackingSlip | null>(null);
   const [discKind, setDiscKind] = useState<ManualDiscountKind | "">("");
   const [discValue, setDiscValue] = useState("");
@@ -290,6 +301,75 @@ export function VoucherForm({
 
   const showPurchaseRates = session ? canViewFinancials(session.role) : false;
 
+  useEffect(() => {
+    if (!focusLineId) return;
+    lineCatalogRefs.current[focusLineId]?.focus();
+  }, [focusLineId, focusNonce]);
+
+  const catalogFillOpts = {
+    catalogItems,
+    products: db?.products ?? [],
+    type,
+    partyId,
+    date,
+    contracts: db?.supplierContracts,
+  };
+
+  const applyLineCatalog = (index: number, val: string) => {
+    const current = lines[index];
+    if (!current) return;
+    const result = applyCatalogToVoucherLine({
+      ...catalogFillOpts,
+      line: current,
+      catalogValue: val,
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setError("");
+    const next = [...lines];
+    next[index] = result.line;
+    setLines(result.cleared ? next : withTrailingBlankItem(next));
+  };
+
+  const quickAddCatalog = (val: string) => {
+    if (!val) return;
+    const idx = lastEmptyItemIndex(lines);
+    const source = idx >= 0 ? lines[idx]! : blankLine();
+    const result = applyCatalogToVoucherLine({
+      ...catalogFillOpts,
+      line: source,
+      catalogValue: val,
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setError("");
+    setLines(mergeFilledItemLine(lines, result.line));
+  };
+
+  const addBlankItemLine = () => {
+    const idx = lastEmptyItemIndex(lines);
+    if (idx >= 0) {
+      setFocusLineId(lines[idx]!.id);
+      setFocusNonce((n) => n + 1);
+      return;
+    }
+    const blank = blankLine();
+    setLines([...lines, blank]);
+    setFocusLineId(blank.id);
+    setFocusNonce((n) => n + 1);
+  };
+
+  const onLastItemFieldEnter = (index: number) => {
+    if (index !== lastItemLineIndex(lines)) return;
+    const row = lines[index];
+    if (!row || isEmptyItemLine(row)) return;
+    addBlankItemLine();
+  };
+
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!session || !db) return;
@@ -297,6 +377,7 @@ export function VoucherForm({
     setSaving(true);
     try {
       let workingLines = lines
+        .filter((l) => !isEmptyItemLine(l))
         .map((l) => ({
           ...l,
           itemLabel: l.itemLabel.trim() || type,
@@ -607,6 +688,27 @@ export function VoucherForm({
             <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
               Line items
             </p>
+            <div className="sticky top-0 z-20 rounded-xl border border-[var(--brand)]/30 bg-white/95 p-3 shadow-sm backdrop-blur">
+              <label className="tt-label" htmlFor="voucher-quick-add">
+                {t("accounts.quickAddItem")}
+              </label>
+              <SearchSelect
+                id="voucher-quick-add"
+                options={catalogOptions}
+                value=""
+                onChange={quickAddCatalog}
+                placeholder={
+                  type === "sale"
+                    ? "Search in-stock item…"
+                    : "Search item…"
+                }
+                allowClear={false}
+                keepFocusOnPick
+              />
+              <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                {t("accounts.quickAddItemHint")}
+              </p>
+            </div>
             {lines.map((l, i) => {
               const charge = isChargeLine(l);
               const product =
@@ -616,6 +718,9 @@ export function VoucherForm({
               const hideRates =
                 (type === "purchase" || type === "debit_note") &&
                 !showPurchaseRates;
+              const filledItemCount = lines.filter(
+                (x) => !isChargeLine(x) && !isEmptyItemLine(x)
+              ).length;
 
               if (charge) {
                 return (
@@ -701,77 +806,7 @@ export function VoucherForm({
                 );
               }
 
-              const applyCatalog = (val: string) => {
-                const next = [...lines];
-                if (!val) {
-                  next[i] = {
-                    ...l,
-                    productId: undefined,
-                    variationId: undefined,
-                    colorId: undefined,
-                    unit: undefined,
-                    accountId: undefined,
-                  };
-                  setLines(next);
-                  return;
-                }
-                const { productId, variationId, colorId } =
-                  parseCatalogRowValue(val);
-                const item = catalogItems.find(
-                  (c) =>
-                    c.productId === productId &&
-                    (c.variationId ?? "") === (variationId || "") &&
-                    (c.colorId ?? "") === (colorId || "")
-                );
-                if (type === "sale" && item && !(item.stock > 0)) {
-                  setError(`Out of stock: ${item.name}`);
-                  return;
-                }
-                const prod = db?.products.find((p) => p.id === productId);
-                const variation = prod?.variations.find(
-                  (v) => v.id === variationId
-                );
-                const contract =
-                  type === "purchase" && partyId
-                    ? resolveOpenContract(
-                        db?.supplierContracts ?? [],
-                        db?.products ?? [],
-                        partyId,
-                        productId,
-                        date,
-                        { variationId: variationId || undefined }
-                      )
-                    : undefined;
-                const rate =
-                  isSqftUnit(prod?.unit) && prod
-                    ? contract?.rate ??
-                      resolveSqftPack(prod, variation).ratePerSqft
-                    : contract?.rate ??
-                      variation?.rate ??
-                      prod?.baseRate ??
-                      l.rate;
-                const qty = l.qty || 1;
-                const unit = prod?.unit;
-                const secondaryQty = prod
-                  ? deriveSecondaryQty(prod, qty, variationId || undefined)
-                  : qty;
-                const updated = {
-                  ...l,
-                  productId,
-                  variationId: variationId || undefined,
-                  colorId: colorId || undefined,
-                  accountId: undefined,
-                  itemLabel: item?.name || l.itemLabel,
-                  unit,
-                  qty,
-                  secondaryQty,
-                  rate,
-                  amount: 0,
-                };
-                updated.amount = lineAmt(updated);
-                next[i] = updated;
-                setLines(next);
-              };
+              const applyCatalog = (val: string) => applyLineCatalog(i, val);
 
               return (
                 <div
@@ -822,6 +857,10 @@ export function VoucherForm({
                             : "Search item…"
                         }
                         emptyLabel="Manual / no stock link"
+                        autoFocus={l.id === focusLineId}
+                        inputRef={(el) => {
+                          lineCatalogRefs.current[l.id] = el;
+                        }}
                       />
                     </div>
                     <div className="lg:col-span-3">
@@ -834,7 +873,7 @@ export function VoucherForm({
                           next[i] = { ...l, itemLabel: e.target.value };
                           setLines(next);
                         }}
-                        required
+                        required={!isEmptyItemLine(l) || filledItemCount === 0}
                       />
                     </div>
                     <div className="lg:col-span-1">
@@ -903,6 +942,15 @@ export function VoucherForm({
                             next[i] = updated;
                             setLines(next);
                           }}
+                          onKeyDown={
+                            hideRates
+                              ? (e) => {
+                                  if (e.key !== "Enter") return;
+                                  e.preventDefault();
+                                  onLastItemFieldEnter(i);
+                                }
+                              : undefined
+                          }
                         />
                       )}
                       {product && l.unit === "kg" && type !== "sale" ? (
@@ -931,6 +979,11 @@ export function VoucherForm({
                             const next = [...lines];
                             next[i] = updated;
                             setLines(next);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter") return;
+                            e.preventDefault();
+                            onLastItemFieldEnter(i);
                           }}
                         />
                       )}
@@ -967,6 +1020,11 @@ export function VoucherForm({
                           };
                           setLines(next);
                         }}
+                        onKeyDown={(e) => {
+                          if (e.key !== "Enter") return;
+                          e.preventDefault();
+                          onLastItemFieldEnter(i);
+                        }}
                       />
                     </div>
                   </div>
@@ -985,9 +1043,9 @@ export function VoucherForm({
               <button
                 type="button"
                 className="tt-btn tt-btn-outline"
-                onClick={() => setLines([...lines, blankLine()])}
+                onClick={addBlankItemLine}
               >
-                + Add item
+                + {t("accounts.addItem")}
               </button>
               {(type === "sale" || type === "credit_note") &&
                 SALE_CHARGE_PRESETS.map((p) => (
@@ -1011,6 +1069,7 @@ export function VoucherForm({
                 onKindChange={setDiscKind}
                 onValueChange={setDiscValue}
                 locale={locale}
+                allowManual={checkCapability(session, db, "view_financials")}
               />
             ) : null}
             {type === "sale" ? (

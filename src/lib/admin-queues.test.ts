@@ -78,4 +78,36 @@ describe("getAdminQueues", () => {
     });
     expect(queues.counts.need_reorder).toBe(1);
   });
+
+  it("counts pending owner rate/scheme approvals", () => {
+    const queues = getAdminQueues({
+      orders: [],
+      ownerApprovals: [
+        {
+          id: "a1",
+          kind: "product_rates",
+          status: "pending",
+          targetKey: "product_rates:p1",
+          title: "Rate",
+          snapshot: {},
+          requestedBy: "s",
+          requestedAt: "2026-09-01T00:00:00.000Z",
+          updatedAt: "2026-09-01T00:00:00.000Z",
+        },
+        {
+          id: "a2",
+          kind: "scheme_upsert",
+          status: "approved",
+          targetKey: "scheme_upsert:s1",
+          title: "Scheme",
+          snapshot: {},
+          requestedBy: "s",
+          requestedAt: "2026-09-01T00:00:00.000Z",
+          updatedAt: "2026-09-01T00:00:00.000Z",
+        },
+      ],
+    });
+    expect(queues.counts.need_owner_approval).toBe(1);
+    expect(queues.needOwnerApproval).toBe(1);
+  });
 });

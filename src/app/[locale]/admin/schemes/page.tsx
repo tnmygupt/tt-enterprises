@@ -24,6 +24,10 @@ import {
 } from "@/lib/schemes";
 import { autoFillLocalized } from "@/lib/translate-client";
 import { deleteScheme, checkCapability, upsertScheme } from "@/lib/store/db";
+import {
+  OwnerPendingBanner,
+  pendingSchemeApproval,
+} from "@/components/OwnerPendingBanner";
 import type {
   ProductCategory,
   Scheme,
@@ -48,6 +52,7 @@ export default function AdminSchemesPage() {
   const locale = useLocale() as "en" | "hi";
   const { session } = useSession();
   const { db, refresh } = useDb();
+  const isOwner = checkCapability(session, db, "view_financials");
   const [editing, setEditing] = useState<Scheme | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -207,6 +212,16 @@ export default function AdminSchemesPage() {
         </button>
       </div>
 
+      <OwnerPendingBanner
+        items={(db?.ownerApprovals ?? []).filter(
+          (a) =>
+            a.kind === "scheme_upsert" ||
+            a.kind === "scheme_delete" ||
+            a.kind === "scheme_assign"
+        )}
+        locale={locale}
+      />
+
       <div className="tt-panel mt-5 overflow-x-auto">
         <table className="tt-table min-w-[960px]">
           <thead>
@@ -264,11 +279,17 @@ export default function AdminSchemesPage() {
                   <input
                     type="checkbox"
                     checked={s.active}
+                    disabled={!isOwner && !!pendingSchemeApproval(db?.ownerApprovals, s.id)}
                     onChange={(e) => {
                       upsertScheme({ ...s, active: e.target.checked });
                       refresh();
                     }}
                   />
+                  {pendingSchemeApproval(db?.ownerApprovals, s.id) ? (
+                    <div className="mt-1 text-[10px] font-semibold text-[var(--brand)]">
+                      {t("admin.approvalMyPending")}
+                    </div>
+                  ) : null}
                 </td>
                 <td className="space-x-3 whitespace-nowrap">
                   <button
@@ -869,7 +890,9 @@ export default function AdminSchemesPage() {
                 ? locale === "hi"
                   ? "अनुवाद व सेव…"
                   : "Translating & saving…"
-                : t("common.save")}
+                : isOwner
+                  ? t("common.save")
+                  : t("admin.approvalSendToOwner")}
             </button>
             <button
               type="button"
