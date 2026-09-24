@@ -283,7 +283,7 @@ export function upsertPendingApproval(
   }
 ): OwnerApproval[] {
   const now = new Date().toISOString();
-  let rows = pruneConflictingPending(list ?? [], input);
+  const rows = pruneConflictingPending(list ?? [], input);
   const idx = rows.findIndex(
     (r) => r.status === "pending" && r.targetKey === input.targetKey
   );
