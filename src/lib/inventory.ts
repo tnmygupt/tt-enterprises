@@ -206,7 +206,7 @@ function applySigned(
   return Math.max(0, next);
 }
 
-function applyQty(
+export function applyProductQtyDelta(
   product: Product,
   variationId: string | undefined,
   colorId: string | undefined,
@@ -475,7 +475,7 @@ export function applyVoucherStock(
     );
     const signedBundles = direction === "in" ? bundles : -bundles;
     const signedSecondary = direction === "in" ? secondary : -secondary;
-    applyQty(
+    applyProductQtyDelta(
       product,
       line.variationId,
       line.colorId,
@@ -565,7 +565,7 @@ export function applyGrnStock(
     );
     const signedBundles = direction === "in" ? qtyBundles : -qtyBundles;
     const signedSecondary = direction === "in" ? secondary : -secondary;
-    applyQty(
+    applyProductQtyDelta(
       product,
       line.variationId,
       line.colorId,
@@ -915,7 +915,7 @@ export function applyOrderEstimateStock(
       );
       const signedBundles = direction === "in" ? bundles : -bundles;
       const signedSecondary = direction === "in" ? secondary : -secondary;
-      applyQty(
+      applyProductQtyDelta(
         product,
         line.variationId,
         line.colorId,
@@ -996,7 +996,7 @@ export function rebalanceOrderReservation(
     if (Math.abs(delta) < 0.001) return;
 
     ensureStockSecondary(product);
-    applyQty(product, line.variationId, line.colorId, 0, -delta);
+    applyProductQtyDelta(product, line.variationId, line.colorId, 0, -delta);
     product.updatedAt = new Date().toISOString();
 
     db.stockMovements.unshift({

@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { FilterChips } from "@/components/admin/FilterChips";
 import { AdminShell } from "@/components/AdminShell";
 import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
@@ -160,16 +162,51 @@ export default function AdminSettingsPage() {
 
   return (
     <AdminShell>
-      <h1 className="tt-display text-4xl text-[var(--brand-deep)]">
-        {t("admin.settings")}
-      </h1>
+      <AdminPageHeader
+        title={t("admin.settings")}
+        hint={t("admin.settingsHintOps")}
+        extra={
+          <FilterChips
+            items={[
+              {
+                id: "company",
+                label: t("admin.settingsCompanyToc"),
+                href: "#settings-company",
+              },
+              {
+                id: "payments",
+                label: t("admin.settingsPaymentsToc"),
+                href: "#settings-payments",
+              },
+              {
+                id: "whatsapp",
+                label: t("admin.settingsWhatsappToc"),
+                href: "#settings-whatsapp",
+              },
+              {
+                id: "reorder",
+                label: t("admin.settingsReorderToc"),
+                href: "#settings-reorder",
+              },
+              {
+                id: "danger",
+                label: t("admin.settingsDangerToc"),
+                href: "#settings-danger",
+              },
+            ]}
+          />
+        }
+      />
 
-      <div className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5">
+      <div
+        id="settings-company"
+        className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5"
+      >
         <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-          Company
+          {t("admin.settingsCompany")}
         </p>
         <div>
-          <label className="tt-label">Company name</label>
+          <label className="tt-label">{t("admin.companyName")}</label>
           <input
             className="tt-input"
             defaultValue={db.settings.companyName}
@@ -180,7 +217,7 @@ export default function AdminSettingsPage() {
           />
         </div>
         <div>
-          <label className="tt-label">Phone</label>
+          <label className="tt-label">{t("common.phone")}</label>
           <input
             className="tt-input"
             defaultValue={db.settings.phone}
@@ -191,7 +228,7 @@ export default function AdminSettingsPage() {
           />
         </div>
         <div>
-          <label className="tt-label">Phone 2 (optional)</label>
+          <label className="tt-label">{t("admin.phone2")}</label>
           <input
             className="tt-input"
             defaultValue={db.settings.phone2 ?? ""}
@@ -202,7 +239,7 @@ export default function AdminSettingsPage() {
           />
         </div>
         <div>
-          <label className="tt-label">Address 1</label>
+          <label className="tt-label">{t("admin.address1")}</label>
           <textarea
             className="tt-textarea"
             defaultValue={db.settings.address}
@@ -213,7 +250,7 @@ export default function AdminSettingsPage() {
           />
         </div>
         <div>
-          <label className="tt-label">Address 2</label>
+          <label className="tt-label">{t("admin.address2")}</label>
           <textarea
             className="tt-textarea"
             defaultValue={db.settings.address2 ?? ""}
@@ -223,20 +260,12 @@ export default function AdminSettingsPage() {
             }}
           />
         </div>
-        <div>
-          <label className="tt-label">GSTIN</label>
-          <input
-            className="tt-input"
-            defaultValue={db.settings.gstin}
-            onBlur={(e) => {
-              saveSettings({ ...db.settings, gstin: e.target.value });
-              refresh();
-            }}
-          />
-        </div>
       </div>
 
-      <div className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5">
+      <div
+        id="settings-whatsapp"
+        className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5"
+      >
         <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
           {t("whatsapp.settingsTitle")}
         </p>
@@ -344,12 +373,13 @@ export default function AdminSettingsPage() {
         </div>
       </div>
 
-      <div className="mt-6 max-w-3xl space-y-4 rounded-2xl border border-[var(--line)] bg-white p-5">
+      <div
+        id="settings-payments"
+        className="mt-6 max-w-3xl space-y-4 rounded-2xl border border-[var(--line)] bg-white p-5"
+      >
         <div>
           <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "पेमेंट सेटअप (नोट + UPI सीमा)"
-              : "Payment setup (note + UPI cap)"}
+            {t("admin.settingsPayments")}
           </p>
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
             {locale === "hi"
@@ -766,7 +796,10 @@ export default function AdminSettingsPage() {
         ) : null}
       </div>
 
-      <div className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm">
+      <div
+        id="settings-reorder"
+        className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm"
+      >
         <p className="font-semibold text-[var(--ink)]">
           {t("admin.autoReorderTitle")}
         </p>
@@ -777,9 +810,10 @@ export default function AdminSettingsPage() {
         <p className="text-[var(--ink-muted)]">
           Weekly cron hits <code>/api/cron/reorder</code> with{" "}
           <code>Authorization: Bearer CRON_SECRET</code>. Products need a
-          preferred supplier. Draft POs also WhatsApp staff (orders). Overdue,
-          credit-limit, scheme-ending and stale-estimate WhatsApp:{" "}
-          <code>/api/cron/whatsapp-digest</code>. See <code>HOSTINGER.md</code>.
+          preferred supplier. Auto POs are marked ordered and WhatsApp the
+          owner only — not the mill. Overdue, credit-limit, scheme-ending and
+          stale-estimate WhatsApp: <code>/api/cron/whatsapp-digest</code>. See{" "}
+          <code>HOSTINGER.md</code>.
         </p>
         <label className="flex items-center gap-2">
           <input
@@ -1009,7 +1043,10 @@ export default function AdminSettingsPage() {
         </div>
       </div>
 
-      <div className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm">
+      <div
+        id="settings-danger"
+        className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm"
+      >
         <p className="font-semibold text-[var(--ink)]">Live integrations</p>
         <ul className="space-y-2 text-[var(--ink-muted)]">
           <li>
@@ -1056,6 +1093,11 @@ export default function AdminSettingsPage() {
         >
           Reset local demo data
         </button>
+      </div>
+      <div className="tt-sticky-bar">
+        <p className="text-sm text-[var(--ink-muted)]">
+          {t("admin.settingsSavedOnBlur")}
+        </p>
       </div>
     </AdminShell>
   );

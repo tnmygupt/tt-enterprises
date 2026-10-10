@@ -369,6 +369,43 @@ button.tt-selected {
   color: var(--brand-deep);
 }
 
+.tt-table-wrap-loose .tt-table th:first-child,
+.tt-table-wrap-loose .tt-table td:first-child {
+  position: static;
+}
+
+.tt-status-ok {
+  background: color-mix(in srgb, var(--ok) 18%, white);
+  color: var(--ok);
+}
+
+.tt-status-danger {
+  background: color-mix(in srgb, var(--danger) 16%, white);
+  color: var(--danger);
+}
+
+.tt-status-pending {
+  background: #fff6e5;
+  color: #9a5b00;
+}
+
+.tt-status-muted {
+  background: var(--surface-2);
+  color: var(--ink-muted);
+}
+
+.tt-chip:focus-visible,
+.tt-acct-header .tt-btn:focus-visible,
+.tt-acct-table-wrap .tt-btn:focus-visible,
+button.tt-chip:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.tt-table .tt-btn {
+  min-height: 2.75rem;
+}
+
 .tt-acct-kpi {
   display: block;
   padding: 1.1rem 1.15rem;
@@ -1700,7 +1737,7 @@ button.tt-selected {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  min-height: 36px;
+  min-height: 44px;
   padding: 0.35rem 0.75rem;
   border: 1px solid var(--line);
   background: #fff;

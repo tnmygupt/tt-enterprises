@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsEmpty } from "@/components/AccountsEmpty";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { AdminShell } from "@/components/AdminShell";
 import { CountAuditHowTo } from "@/components/HrAuditHowTo";
 import { NumberField } from "@/components/NumberField";
@@ -424,7 +425,7 @@ export default function StockCountPage() {
       ) : null}
 
       {sessionRow && lines.length ? (
-        <div className="tt-panel mt-4 overflow-x-auto print:hidden">
+        <TableWrap className="tt-panel mt-4 print:hidden">
           <table className="tt-table min-w-[720px]">
             <thead>
               <tr>
@@ -498,7 +499,7 @@ export default function StockCountPage() {
               ))}
             </tbody>
           </table>
-        </div>
+        </TableWrap>
       ) : sessionRow ? (
         <div className="print:hidden">
           <AccountsEmpty message={t("admin.auditEmptyLines")} />

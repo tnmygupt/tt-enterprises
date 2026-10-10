@@ -90,6 +90,7 @@ export function runBooksHealthCheck(input: {
   billAllocations?: BillAllocation[];
   orders: Order[];
   stockBatches?: StockBatch[];
+  goodsReceipts?: GoodsReceipt[];
   asOf: string;
 }): HealthReport {
   const asOf = input.asOf.slice(0, 10);
@@ -122,6 +123,37 @@ export function runBooksHealthCheck(input: {
     ok: Math.abs(invGap.gap) < 1,
     detail: `Ledger ${invGap.ledger} · Layers ${invGap.layers} · Gap ${invGap.gap}`,
     ownerOnly: true,
+  });
+
+  const grniAcct = input.accounts.find((a) => a.id === ACCT.grni);
+  const grniBal = grniAcct
+    ? accountBalance(grniAcct, input.ledgerEntries, asOf)
+    : 0;
+  const billedGrn = new Set(
+    input.vouchers
+      .filter((v) => v.type === "purchase" && !v.voided && v.linkedGrnId)
+      .map((v) => v.linkedGrnId as string)
+  );
+  const unbilledAccrued = roundMoney(
+    (input.goodsReceipts ?? [])
+      .filter(
+        (g) =>
+          !g.voided &&
+          g.date.slice(0, 10) <= asOf &&
+          !billedGrn.has(g.id)
+      )
+      .reduce((s, g) => s + (g.accruedAmount || 0), 0)
+  );
+  const grniDiff = roundMoney(grniBal - unbilledAccrued);
+  items.push({
+    id: "grni_accrual",
+    label: "GRNI equals unbilled goods receipts",
+    ownerOnly: true,
+    ok: Math.abs(grniDiff) < 1,
+    detail:
+      Math.abs(grniDiff) < 1
+        ? `Ledger ${grniBal} · Unbilled ${unbilledAccrued}`
+        : `Ledger ${grniBal} · Unbilled ${unbilledAccrued} · Diff ${grniDiff}`,
   });
 
   const debtors = input.accounts.find((a) => a.id === ACCT.debtors);

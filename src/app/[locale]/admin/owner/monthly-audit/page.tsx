@@ -7,6 +7,7 @@ import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsEmpty } from "@/components/AccountsEmpty";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
+import { PageTabs } from "@/components/admin/PageTabs";
 import { AdminShell } from "@/components/AdminShell";
 import { MonthCloseHowTo } from "@/components/HrAuditHowTo";
 import { exportMonthlyAuditPdf, printAuditPage } from "@/lib/audit-print";
@@ -144,6 +145,22 @@ function AuditInner() {
         }
       />
 
+      <PageTabs
+        className="mt-4 print:hidden"
+        value="exceptions"
+        tabs={[
+          {
+            id: "exceptions",
+            label: t("admin.auditExceptions"),
+            href: "#audit-exceptions",
+          },
+          {
+            id: "books",
+            label: t("admin.auditBooks"),
+            href: "#audit-books",
+          },
+        ]}
+      />
       <div className="print:hidden">
         <MonthCloseHowTo month={month} />
       </div>
@@ -175,7 +192,7 @@ function AuditInner() {
             </p>
           ) : null}
 
-          <section className="print:break-after-page">
+          <section id="audit-exceptions" className="print:break-after-page">
             <h2 className="text-xl font-bold uppercase">{t("admin.auditExceptions")}</h2>
             <h3 className="mt-4 font-semibold">{t("admin.auditStockShortages")}</h3>
             {report.stockShortages.length ? (
@@ -292,7 +309,7 @@ function AuditInner() {
               <AccountsEmpty message={t("admin.auditEmptyAbsent")} />
             )}
           </section>
-          <section>
+          <section id="audit-books">
             <h2 className="text-xl font-bold uppercase">{t("admin.auditBooks")}</h2>
             <dl className="mt-4 grid gap-2 sm:grid-cols-2">
               <div>

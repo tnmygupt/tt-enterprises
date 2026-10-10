@@ -277,7 +277,7 @@ export default function AccountsLedgersPage() {
         />
       </div>
 
-      <div className="tt-panel mt-6 overflow-x-auto">
+      <div className="tt-panel mt-6 tt-acct-table-wrap">
         <table className="tt-table min-w-[700px]">
           <thead>
             <tr>

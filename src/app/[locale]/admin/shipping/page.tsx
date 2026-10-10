@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { AdminShell } from "@/components/AdminShell";
 import { NumberField } from "@/components/NumberField";
 import { useDb, useSession } from "@/lib/hooks";
@@ -39,23 +40,17 @@ export default function AdminShippingPage() {
 
   return (
     <AdminShell>
-      <h1 className="tt-display text-4xl text-[var(--brand-deep)]">
-        {t("admin.shipping")}
-      </h1>
-      <p className="mt-2 text-sm text-[var(--ink-muted)]">
-        Weight slab (if enabled) applies when cart weight is above the minimum.
-        Below that, band rules are used. Full-truck unlocks at thresholds below.
-      </p>
+      <AdminPageHeader title={t("admin.shipping")} hint={t("admin.shippingHint")} />
 
       <div className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5">
-        <h2 className="font-semibold">Jhal shipping — 1 jhal = ₹X</h2>
+        <h2 className="font-semibold">{t("admin.jhalShipping")}</h2>
         <p className="text-xs text-[var(--ink-muted)]">
           Jhal bill = rate × weighed kg; shipping = jhals × X below. Pkt/pc bill
           = qty × rate per pc; shipping uses the pack weight set on the product
           (weight slab), not this jhal rate.
         </p>
         <div>
-          <label className="tt-label">Rate per jhal (₹)</label>
+          <label className="tt-label">{t("admin.ratePerJhal")}</label>
           <NumberField
             min={0}
             step={1}
@@ -82,7 +77,7 @@ export default function AdminShippingPage() {
 
       <div className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5">
         <h2 className="font-semibold">
-          Weight slab — flat X, then +½X every 50 kg
+        <h2 className="font-semibold">{t("admin.kgShipping")}</h2>
         </h2>
         <p className="text-xs text-[var(--ink-muted)]">
           Any weight up to min kg → flat X. If heavier → X + ceil((weight −

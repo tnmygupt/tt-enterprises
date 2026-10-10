@@ -7,7 +7,7 @@ import { useDb, useSession } from "@/lib/hooks";
 import { getAdminQueues } from "@/lib/admin-queues";
 import { monthCloseObligation } from "@/lib/month-close-policy";
 import { checkCapability, isSalesDeskStaff, isStaff } from "@/lib/store/db";
-import { SALES_DESK_HREFS } from "@/lib/capabilities";
+import { SALES_DESK_HREFS, staffRoleLabel } from "@/lib/capabilities";
 import { refreshCloudDealerDirectory } from "@/lib/cloud-dealers";
 import { playStaffNewOrderChime } from "@/lib/whatsapp";
 import { notifyStaffPush } from "@/lib/push-client";
@@ -54,6 +54,12 @@ const GROUPS: NavGroup[] = [
     items: [
       { href: "/admin", labelKey: "admin.dashboard" },
       {
+        href: "/admin/orders",
+        labelKey: "admin.orders",
+        cap: "manage_orders",
+        badge: "need_confirm",
+      },
+      {
         href: "/admin/whatsapp",
         labelKey: "admin.whatsappDesk",
         anyCap: [
@@ -93,34 +99,13 @@ const GROUPS: NavGroup[] = [
           "view_financials",
         ],
       },
-      { href: "/admin/help", labelKey: "admin.helpGuide" },
-    ],
-  },
-  {
-    titleKey: "admin.moduleSelling",
-    items: [
-      {
-        href: "/admin/orders",
-        labelKey: "admin.orders",
-        cap: "manage_orders",
-        badge: "need_confirm",
-      },
-    ],
-  },
-  {
-    titleKey: "admin.moduleBooks",
-    items: [
-      {
-        href: "/admin/accounts",
-        labelKey: "admin.accountsBook",
-        cap: "manage_accounts",
-      },
       {
         href: "/admin/accounts/payments",
         labelKey: "admin.paymentsDesk",
         cap: "manage_accounts",
         badge: "need_verify_payment",
       },
+      { href: "/admin/help", labelKey: "admin.helpGuide" },
     ],
   },
   {
@@ -192,6 +177,16 @@ const GROUPS: NavGroup[] = [
         href: "/admin/wallets",
         labelKey: "admin.wallets",
         cap: "manage_wallet",
+      },
+    ],
+  },
+  {
+    titleKey: "admin.moduleBooks",
+    items: [
+      {
+        href: "/admin/accounts",
+        labelKey: "admin.accountsBook",
+        cap: "manage_accounts",
       },
     ],
   },
@@ -422,43 +417,43 @@ export function AdminShell({
     {
       key: "need_confirm",
       href: "/admin/orders?filter=estimate",
-      label: locale === "hi" ? "नए अनुमान" : "New estimates",
+      label: t("admin.queueEstimates"),
       count: queues.counts.need_confirm,
     },
     {
       key: "need_bill",
       href: "/admin/orders?filter=need_bill",
-      label: locale === "hi" ? "बिल बाकी" : "Bill pending",
+      label: t("admin.queueNeedBill"),
       count: queues.counts.need_bill,
     },
     {
       key: "need_verify",
       href: "/admin/orders?filter=need_verify",
-      label: locale === "hi" ? "पेमेंट जाँच" : "Verify payment",
+      label: t("admin.queueVerifyPay"),
       count: queues.counts.need_verify_payment,
     },
     {
       key: "need_lr",
       href: "/admin/orders?filter=need_lr",
-      label: locale === "hi" ? "LR → डिलीवर" : "LR → delivered",
+      label: t("admin.queueNeedLr"),
       count: queues.counts.need_lr,
     },
     {
       key: "full_truck",
       href: "/admin/orders?filter=full_truck",
-      label: locale === "hi" ? "फुल ट्रक" : "Full truck",
+      label: t("admin.queueFullTruck"),
       count: queues.counts.full_truck,
     },
     {
       key: "need_voucher",
       href: "/admin/orders?filter=need_voucher",
-      label: locale === "hi" ? "सेल वाउचर बाकी" : "Sale voucher due",
+      label: t("admin.queueNeedVoucher"),
       count: queues.counts.need_voucher,
     },
     {
       key: "need_reorder",
       href: "/admin/accounts/reports/stock-alerts",
-      label: locale === "hi" ? "रीऑर्डर स्टॉक" : "Reorder stock",
+      label: t("admin.queueReorder"),
       count: queues.counts.need_reorder,
     },
   ].filter((q) => {
@@ -497,7 +492,7 @@ export function AdminShell({
           </div>
         </div>
         <p className="text-xs capitalize text-[var(--ink-muted)]">
-          {session.role.replaceAll("_", " ")}
+          {staffRoleLabel(session.role, locale === "hi" ? "hi" : "en")}
         </p>
         {pendingQueues.length > 0 ? (
           <div className="mt-3">
@@ -512,13 +507,7 @@ export function AdminShell({
                 {pendingQueues.reduce((s, q) => s + q.count, 0)}
               </span>
               <span className="text-[10px] font-semibold opacity-80">
-                {pendingOpen
-                  ? locale === "hi"
-                    ? "छिपाएँ ▲"
-                    : "Hide ▲"
-                  : locale === "hi"
-                    ? "खोलें ▼"
-                    : "Open ▼"}
+                {pendingOpen ? t("admin.hidePending") : t("admin.openPending")}
               </span>
             </button>
             {pendingOpen ? (
@@ -549,9 +538,7 @@ export function AdminShell({
                     }}
                     className="flex min-h-9 items-center rounded-md px-2.5 py-1.5 text-[11px] font-medium text-[var(--ink-muted)] hover:bg-[var(--surface)] hover:text-[var(--ink)]"
                   >
-                    {locale === "hi"
-                      ? "सभी कतारें → डैशबोर्ड"
-                      : "All queues → dashboard"}
+                    {t("admin.allQueuesDashboard")}
                   </Link>
                 </li>
               </ul>
@@ -693,7 +680,7 @@ export function AdminShell({
         >
           {toast.text}
           <span className="mt-1 block text-xs font-medium text-[var(--ink-muted)]">
-            {locale === "hi" ? "देखें →" : "View →"}
+            {t("admin.viewArrow")}
           </span>
         </Link>
       ) : null}
@@ -712,7 +699,9 @@ export function AdminShell({
             >
               {navOpen
                 ? closeLabel
-                : `${t("nav.admin")} menu${pendingTotal > 0 ? ` · ${pendingTotal}` : ""}`}
+                : pendingTotal > 0
+                  ? t("admin.adminMenuCount", { count: pendingTotal })
+                  : t("admin.adminMenu")}
             </button>
             {navOpen ? (
               <aside className="tt-panel mt-3 max-h-[min(70dvh,calc(100dvh-8rem))] overflow-y-auto p-0">

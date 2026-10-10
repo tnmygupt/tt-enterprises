@@ -29,7 +29,6 @@ export function companyFromSettings(
     name: settings?.companyName,
     address: settings?.address,
     address2: settings?.address2,
-    gstin: settings?.gstin,
     phone: settings?.phone,
     phone2: settings?.phone2,
   };

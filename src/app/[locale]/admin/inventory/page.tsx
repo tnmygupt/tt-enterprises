@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/routing";
 
 /**
@@ -9,9 +10,10 @@ import { useRouter } from "@/i18n/routing";
  * a while; keep it as an alias so old links and bookmarks still land.
  */
 export default function AdminInventoryRedirect() {
+  const t = useTranslations();
   const router = useRouter();
   useEffect(() => {
     router.replace("/admin/accounts/inventory");
   }, [router]);
-  return <p className="p-6 text-sm">Loading…</p>;
+  return <p className="p-6 text-sm">{t("admin.loadingEllipsis")}</p>;
 }

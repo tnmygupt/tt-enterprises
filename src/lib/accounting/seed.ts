@@ -19,6 +19,8 @@ export const ACCT = {
   salary: "acct_salary",
   electricity: "acct_electricity",
   packing: "acct_packing",
+  wastage: "acct_wastage",
+  wip: "acct_wip",
   miscExpense: "acct_misc_expense",
   /** Income — freight billed to customer on a sale */
   freightCharges: "acct_freight_charges",
@@ -32,6 +34,7 @@ export const ACCT = {
 export const OWNER_SENSITIVE_ACCOUNTS = new Set<string>([
   ACCT.purchase,
   ACCT.inventory,
+  ACCT.wip,
   ACCT.cogs,
   ACCT.grni,
   ACCT.taxInput,
@@ -54,6 +57,16 @@ export function isCashBankAccount(account: {
     return true;
   }
   return false;
+}
+
+/** GST ledgers stay on the chart but are hidden from everyday pickers. */
+export const HIDDEN_TAX_ACCOUNTS = new Set<string>([
+  ACCT.taxOutput,
+  ACCT.taxInput,
+]);
+
+export function isHiddenTaxAccount(accountId: string): boolean {
+  return HIDDEN_TAX_ACCOUNTS.has(accountId);
 }
 
 export function cashBankAccounts<
@@ -90,6 +103,7 @@ export const EXPENSE_PRESETS: {
 }[] = [
   { id: "freight", accountId: ACCT.freight, label: "Freight" },
   { id: "packing", accountId: ACCT.packing, label: "Packing" },
+  { id: "wastage", accountId: ACCT.wastage, label: "Wastage" },
   { id: "electricity", accountId: ACCT.electricity, label: "Electricity" },
   { id: "rent", accountId: ACCT.rent, label: "Rent" },
   { id: "salary", accountId: ACCT.salary, label: "Salary", ownerOnly: true },
@@ -149,6 +163,14 @@ export const SEED_ACCOUNTS: Account[] = [
     id: ACCT.inventory,
     code: "1300",
     name: { en: "Inventory", hi: "इन्वेंटरी" },
+    type: "asset",
+    openingBalance: 0,
+    active: true,
+  },
+  {
+    id: ACCT.wip,
+    code: "1305",
+    name: { en: "Work in progress", hi: "WIP" },
     type: "asset",
     openingBalance: 0,
     active: true,
@@ -277,6 +299,14 @@ export const SEED_ACCOUNTS: Account[] = [
     id: ACCT.packing,
     code: "5105",
     name: { en: "Packing / Material", hi: "पैकिंग" },
+    type: "expense",
+    openingBalance: 0,
+    active: true,
+  },
+  {
+    id: ACCT.wastage,
+    code: "5106",
+    name: { en: "Wastage / write-off", hi: "वेस्टेज" },
     type: "expense",
     openingBalance: 0,
     active: true,

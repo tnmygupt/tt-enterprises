@@ -82,7 +82,7 @@ export default function AuditTrailPage() {
         <ExportButtons options={exportOptions} disabled={!rows.length} />
       </div>
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-panel mt-5 tt-acct-table-wrap">
         <table className="tt-table min-w-[780px]">
           <thead>
             <tr>

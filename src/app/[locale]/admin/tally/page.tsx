@@ -3,6 +3,7 @@
 import { FormEvent, useState } from "react";
 import { useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { AdminShell } from "@/components/AdminShell";
 import { useDb, useSession } from "@/lib/hooks";
 import {
@@ -80,27 +81,22 @@ export default function AdminTallyPage() {
 
   return (
     <AdminShell>
-      <h1 className="tt-display text-4xl text-[var(--brand-deep)]">{t("admin.tally")}</h1>
-      <p className="mt-2 max-w-2xl text-sm text-[var(--ink-muted)]">
-        TallyPrime stays the stock source of truth. Run the bridge on the office PC
-        (see <code>tally-bridge/</code>) — it POSTs to <code>/api/tally/sync</code> and
-        browsers auto-apply. You can still paste JSON below for a manual sync.
-      </p>
+      <AdminPageHeader title={t("admin.tally")} hint={t("admin.tallyHint")} />
 
       <div className="mt-6 rounded-2xl bg-[var(--brand-deep)] p-5 text-white">
-        <p className="text-sm text-[#b7c9bc]">Sync status</p>
+        <p className="text-sm text-[#b7c9bc]">{t("admin.tallySyncStatus")}</p>
         <p className="mt-1 text-xl font-semibold capitalize">
           {db.settings.tallySyncStatus}
         </p>
         <p className="mt-2 text-sm text-[#c5d4ca]">{db.settings.tallySyncMessage}</p>
         {db.settings.tallyLastSyncAt ? (
-          <p className="mt-2 text-xs text-[#9fb0a5]">
-            Last: {new Date(db.settings.tallyLastSyncAt).toLocaleString()}
-          </p>
+        <p className="mt-2 text-xs text-[#9fb0a5]">
+          {t("admin.lastSync")}: {new Date(db.settings.tallyLastSyncAt).toLocaleString()}
+        </p>
         ) : null}
       </div>
 
-      <div className="mt-8 overflow-x-auto rounded-2xl border border-[var(--line)] bg-white">
+      <div className="mt-8 rounded-2xl border border-[var(--line)] bg-white tt-acct-table-wrap">
         <table className="tt-table min-w-[800px]">
           <thead>
             <tr>
@@ -155,9 +151,11 @@ export default function AdminTallyPage() {
           value={payload}
           onChange={(e) => setPayload(e.target.value)}
         />
-        <button type="submit" className="tt-btn tt-btn-dark">
-          Apply stock sync
-        </button>
+        <div className="tt-sticky-bar">
+          <button type="submit" className="tt-btn tt-btn-dark">
+            {t("admin.syncNow")}
+          </button>
+        </div>
         {msg ? <p className="text-sm text-[var(--brand)]">{msg}</p> : null}
       </form>
 

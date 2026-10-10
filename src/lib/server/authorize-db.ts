@@ -17,6 +17,7 @@ import type {
   UserRole,
   Voucher,
   WalletDeposit,
+  JobCard,
 } from "@/lib/types";
 import { OWNER_SENSITIVE_ACCOUNTS } from "@/lib/accounting/seed";
 import { isPurchaseCostVoucherType } from "@/lib/owner-sensitive";
@@ -406,6 +407,8 @@ export function publicCatalogProjection(db: AppDatabase): AppDatabase {
     stockCounts: [],
     cashCounts: [],
     monthlyAudits: [],
+    boms: [],
+    jobCards: [],
   };
 
   return omitWaInbox({
@@ -522,6 +525,13 @@ export function staffScopedProjection(
           (cap("approve_dealers") && p.type === "customer")
       );
     }
+  }
+  if (!cap("manage_accounts") && !cap("view_financials")) {
+    out.jobCards = (out.jobCards ?? []).map((j) => ({
+      ...j,
+      issuedCost: undefined,
+      wastageCost: undefined,
+    }));
   }
   out.tallyPosts = [];
   if (!cap("manage_wallet") && !cap("view_financials")) {
@@ -1095,6 +1105,33 @@ function mergeByIdUnion<T extends { id: string }>(
   return [...byId.values()];
 }
 
+const JOB_STATUS_RANK: Record<JobCard["status"], number> = {
+  draft: 0,
+  issued: 1,
+  completed: 2,
+  cancelled: 2,
+};
+
+/** Plant GET strips rupees — never let a stale client wipe posted job books. */
+function mergeJobCards(
+  cloudItems: JobCard[] | undefined,
+  incomingItems: JobCard[] | undefined
+): JobCard[] {
+  const byId = new Map((cloudItems ?? []).map((x) => [x.id, x] as const));
+  for (const item of incomingItems ?? []) {
+    const existing = byId.get(item.id);
+    if (
+      existing &&
+      existing.status !== "draft" &&
+      JOB_STATUS_RANK[existing.status] >= JOB_STATUS_RANK[item.status]
+    ) {
+      continue;
+    }
+    byId.set(item.id, item);
+  }
+  return [...byId.values()];
+}
+
 /**
  * Keep rows that exist on only one side (dealer estimate on cloud, punch on
  * this device). For the same id, keep the newer `updatedAt`; ties prefer the
@@ -1396,6 +1433,16 @@ function mergeStaffLimitedPush(
       out.stockMovements,
       incoming.stockMovements
     );
+    touched = true;
+  }
+
+  if (
+    can("manage_accounts") ||
+    can("manage_products") ||
+    can("manage_reorder")
+  ) {
+    out.boms = mergeByIdUnion(out.boms ?? [], incoming.boms ?? []);
+    out.jobCards = mergeJobCards(out.jobCards ?? [], incoming.jobCards ?? []);
     touched = true;
   }
 
