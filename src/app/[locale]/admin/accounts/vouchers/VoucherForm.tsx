@@ -383,7 +383,10 @@ export function VoucherForm({
     setFocusLineId(blank.id);
     setFocusNonce((n) => n + 1);
   };
-  addLineRef.current = addBlankItemLine;
+
+  useEffect(() => {
+    addLineRef.current = addBlankItemLine;
+  });
 
   const onLastItemFieldEnter = (index: number) => {
     if (index !== lastItemLineIndex(lines)) return;

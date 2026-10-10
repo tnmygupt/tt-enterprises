@@ -3518,7 +3518,7 @@ function customerPartyForOrder(
   db: AppDatabase,
   order: Order
 ): Party | undefined {
-  let party = db.parties.find(
+  const party = db.parties.find(
     (p) => p.linkedUserId === order.userId && p.type === "customer"
   );
   if (party) return party;
