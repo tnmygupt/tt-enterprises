@@ -17,6 +17,7 @@ export function StaffBillDiscountFields({
   onValueChange,
   locale,
   disabled = false,
+  allowManual = true,
 }: {
   goodsSubtotal: number;
   schemeAmount: number;
@@ -27,6 +28,8 @@ export function StaffBillDiscountFields({
   onValueChange: (value: string) => void;
   locale: "en" | "hi";
   disabled?: boolean;
+  /** Extra % / ₹ staff cut — owner-only (`view_financials`). */
+  allowManual?: boolean;
 }) {
   const numericValue = Number(value);
   const applied = applyBillDiscounts({
@@ -55,21 +58,29 @@ export function StaffBillDiscountFields({
         </span>
       </div>
       <div className="grid gap-2 sm:grid-cols-[minmax(0,11rem)_1fr]">
-        <select
-          className="tt-select"
-          disabled={disabled}
-          value={kind || ""}
-          onChange={(e) =>
-            onKindChange(e.target.value as ManualDiscountKind | "")
-          }
-        >
-          <option value="">
-            {hi ? "स्टाफ अतिरिक्त नहीं" : "No extra staff cut"}
-          </option>
-          <option value="percent">{hi ? "% छूट" : "% off goods"}</option>
-          <option value="flat">{hi ? "₹ छूट" : "₹ off goods"}</option>
-        </select>
-        {kind ? (
+        {allowManual ? (
+          <select
+            className="tt-select"
+            disabled={disabled}
+            value={kind || ""}
+            onChange={(e) =>
+              onKindChange(e.target.value as ManualDiscountKind | "")
+            }
+          >
+            <option value="">
+              {hi ? "स्टाफ अतिरिक्त नहीं" : "No extra staff cut"}
+            </option>
+            <option value="percent">{hi ? "% छूट" : "% off goods"}</option>
+            <option value="flat">{hi ? "₹ छूट" : "₹ off goods"}</option>
+          </select>
+        ) : (
+          <p className="text-xs text-[var(--ink-muted)] sm:col-span-2">
+            {hi
+              ? "अतिरिक्त % / ₹ कटौती केवल ओनर कर सकते हैं।"
+              : "Extra % / ₹ cut is owner-only."}
+          </p>
+        )}
+        {allowManual && kind ? (
           <NumberField
             emptyAs={null}
             step={kind === "percent" ? "0.1" : "1"}

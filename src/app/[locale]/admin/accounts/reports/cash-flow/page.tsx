@@ -132,7 +132,7 @@ export default function CashFlowPage() {
               cf.financing,
             ] as const
           ).map((sec) => (
-            <div key={sec.label} className="tt-panel mt-4 overflow-x-auto">
+            <div key={sec.label} className="tt-panel mt-4 tt-acct-table-wrap">
               <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
                 {sec.label}
                 <span className="ml-2 font-normal text-[var(--ink-muted)]">

@@ -7,13 +7,18 @@ import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
 import {
-  ACCT,
-  accountBalance,
   allOpenPayables,
   allOpenReceivables,
   leftoverReceipts,
+  creditBlockedOrders,
+  overdueAmount,
+  overdueOpenReceivables,
+  overLimitCustomers,
+  runBooksHealthCheck,
 } from "@/lib/accounting";
+import { bankBooksTotal, cashInHand } from "@/lib/bank-accounts";
 import { getAdminQueues } from "@/lib/admin-queues";
+import { monthCloseStamp } from "@/lib/owner-monthly-audit";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import {
@@ -60,6 +65,16 @@ const DO_NOW: {
     term: "Alt+S",
   },
   {
+    href: "/admin/accounts/receivables?overdue=1",
+    labelKey: "overdue",
+    term: "Due",
+  },
+  {
+    href: "/admin/accounts/production",
+    labelKey: "production",
+    term: "BOM",
+  },
+  {
     href: "/admin/accounts/vouchers?new=payment",
     labelKey: "moneyPaid",
     term: "F5",
@@ -83,6 +98,7 @@ const MORE: {
   { href: "/admin/accounts/journal", labelKey: "journal" },
   { href: "/admin/accounts/match-statement", labelKey: "matchStatement" },
   { href: "/admin/accounts/inventory", labelKey: "stock" },
+  { href: "/admin/accounts/production", labelKey: "production" },
   { href: "/admin/accounts/cash-bank", labelKey: "cashBankBook" },
   { href: "/admin/accounts/daybook", labelKey: "daybook" },
   { href: "/admin/accounts/vouchers", labelKey: "allEntries" },
@@ -103,8 +119,6 @@ export default function AccountsHomePage() {
 
   const stats = useMemo(() => {
     if (!db) return null;
-    const cash = db.accounts.find((a) => a.id === ACCT.cash);
-    const bank = db.accounts.find((a) => a.id === ACCT.bank);
     const salesToday = db.vouchers
       .filter((v) => v.type === "sale" && !v.voided && v.date === today)
       .reduce((s, v) => s + v.total, 0);
@@ -112,7 +126,8 @@ export default function AccountsHomePage() {
       db.parties,
       db.vouchers,
       db.billAllocations ?? [],
-      today
+      today,
+      db.orders
     ).reduce((s, r) => s + r.outstanding, 0);
     const toPay = allOpenPayables(
       db.parties,
@@ -136,9 +151,30 @@ export default function AccountsHomePage() {
       db.billAllocations ?? []
     ).length;
     const posted = db.vouchers.filter((v) => !v.voided).length;
+    const overdueRows = overdueOpenReceivables(
+      db.parties,
+      db.vouchers,
+      db.billAllocations ?? [],
+      today,
+      db.orders
+    );
+    const queues = getAdminQueues(db);
+    const health = runBooksHealthCheck({
+      accounts: db.accounts,
+      ledgerEntries: db.ledgerEntries,
+      parties: db.parties,
+      vouchers: db.vouchers,
+      billAllocations: db.billAllocations,
+      orders: db.orders,
+      stockBatches: db.stockBatches,
+      goodsReceipts: db.goodsReceipts,
+      asOf: today,
+    });
+    const month = today.slice(0, 7);
+    const monthClosed = !!monthCloseStamp(db.monthlyAudits, month);
     return {
-      cash: cash ? accountBalance(cash, db.ledgerEntries, today) : 0,
-      bank: bank ? accountBalance(bank, db.ledgerEntries, today) : 0,
+      cash: cashInHand(db.accounts, db.ledgerEntries, today),
+      bank: bankBooksTotal(db.accounts, db.ledgerEntries, today),
       salesToday,
       toCollect,
       toPay,
@@ -148,6 +184,14 @@ export default function AccountsHomePage() {
       needPricing,
       leftover,
       posted,
+      overdueAmt: overdueAmount(overdueRows),
+      overdueCount: overdueRows.length,
+      overLimit: overLimitCustomers(db.parties, db.ledgerEntries).length,
+      blocked: creditBlockedOrders(db.orders).length,
+      needLr: queues.needLr.length,
+      fullTruck: queues.fullTruck.length,
+      healthFails: health.failCount,
+      monthClosed,
     };
   }, [db, today]);
 
@@ -174,6 +218,11 @@ export default function AccountsHomePage() {
       labelKey: "moneyToCollect",
       value: stats?.toCollect ?? 0,
       href: "/admin/accounts/receivables",
+    },
+    {
+      labelKey: "overdue",
+      value: stats?.overdueAmt ?? 0,
+      href: "/admin/accounts/receivables?overdue=1",
     },
     ...(isOwner
       ? [
@@ -245,6 +294,76 @@ export default function AccountsHomePage() {
           },
         ]
       : []),
+    ...((stats?.overdueCount ?? 0) > 0
+      ? [
+          {
+            href: "/admin/accounts/receivables?overdue=1",
+            labelKey: "overdue",
+            value: stats?.overdueCount ?? 0,
+            tone: "danger" as const,
+          },
+        ]
+      : []),
+    ...((stats?.overLimit ?? 0) > 0
+      ? [
+          {
+            href: "/admin/accounts/receivables",
+            labelKey: "overLimitDealers",
+            value: stats?.overLimit ?? 0,
+            tone: "danger" as const,
+          },
+        ]
+      : []),
+    ...((stats?.blocked ?? 0) > 0
+      ? [
+          {
+            href: "/admin/orders?filter=need_bill",
+            labelKey: "blockedOnCredit",
+            value: stats?.blocked ?? 0,
+            tone: "danger" as const,
+          },
+        ]
+      : []),
+    ...((stats?.needLr ?? 0) > 0
+      ? [
+          {
+            href: "/admin/orders?filter=need_lr",
+            labelKey: "lrPending",
+            value: stats?.needLr ?? 0,
+            tone: "warn" as const,
+          },
+        ]
+      : []),
+    ...((stats?.fullTruck ?? 0) > 0
+      ? [
+          {
+            href: "/admin/orders?filter=full_truck",
+            labelKey: "fullTruck",
+            value: stats?.fullTruck ?? 0,
+            tone: "warn" as const,
+          },
+        ]
+      : []),
+    ...((stats?.healthFails ?? 0) > 0
+      ? [
+          {
+            href: "/admin/accounts/controls/health",
+            labelKey: "healthFails",
+            value: stats?.healthFails ?? 0,
+            tone: "danger" as const,
+          },
+        ]
+      : []),
+    ...(!stats?.monthClosed && (stats?.posted ?? 0) > 0
+      ? [
+          {
+            href: "/admin/owner/monthly-audit",
+            labelKey: "monthCloseNeeded",
+            value: 1,
+            tone: "warn" as const,
+          },
+        ]
+      : []),
   ];
 
   const doNow = DO_NOW.filter((a) => !a.ownerOnly || isOwner);
@@ -254,6 +373,21 @@ export default function AccountsHomePage() {
   return (
     <AccountsShell>
       <AccountsPageHeader home title={t("homeTitle")} hint={t("homeHint")} />
+
+      <div className="tt-panel mt-3 p-4 text-sm">
+        <p className="font-semibold text-[var(--brand-deep)]">Which entry?</p>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-[var(--ink-muted)]">
+          <li>
+            Selling a dealer order: <Link href="/admin/orders/new" className="font-semibold text-[var(--brand)]">/admin/orders/new</Link> (F8). The sale voucher is a secondary path.
+          </li>
+          <li>
+            Stock in from a PO: <Link href="/admin/accounts/goods-received" className="font-semibold text-[var(--brand)]">GRN</Link> (F9), then bill.
+          </li>
+          <li>
+            Money in / out: receipt (F6) and payment (F5). Journal (F7) is for transfers, not sales.
+          </li>
+        </ul>
+      </div>
 
       {(stats?.posted ?? 0) === 0 ? (
         <div className="mt-3 rounded-lg border border-[var(--brand)] bg-[var(--brand-soft)] px-4 py-3">

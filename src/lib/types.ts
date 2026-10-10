@@ -496,6 +496,10 @@ export interface Order {
   stockReserved?: boolean;
   /** Auto-created on estimate; staff fills weighments then finalizes */
   packingSlip?: PackingSlip;
+  /** Owner override: post the sale even if over credit limit. */
+  allowOverCredit?: boolean;
+  /** Last credit-limit block (rupees over). Cleared when billed. */
+  creditBlockedOverBy?: number;
   /** How the estimate was placed. Default / omitted = dealer website checkout. */
   source?: "web" | "staff";
   /** Staff user id when `source` is `staff`. */
@@ -673,6 +677,8 @@ export interface BankAccountDetails {
   active?: boolean;
   /** Marks the account shown first in the picker. */
   isDefault?: boolean;
+  /** Linked cash/bank ledger (`Account.id`) for books, BRS, and receipts. */
+  ledgerId?: string;
 }
 
 /** Weight slab: ≤minKg → flat X; above min → X + steps × (X × fraction) */
@@ -761,6 +767,8 @@ export interface AppSettings {
     hrMissPunchOn?: string;
     /** Last owner digest of GPS punches outside the fence. */
     hrFenceOn?: string;
+    /** Last owner monthly-audit reminder (YYYY-MM-DD). Daily cooldown. */
+    monthAuditOn?: string;
   };
   tallyLastSyncAt?: string;
   tallySyncStatus?: "idle" | "ok" | "error";
@@ -816,7 +824,27 @@ export interface AppSettings {
   homeNewProductIds?: string[];
   /** Ordered product ids shown as promo / offer cards on home. */
   homePromoProductIds?: string[];
+  /**
+   * How strictly the last-week / month-end audit is enforced.
+   * escalating (default): remind in the last week, then block new-month postings.
+   * hard: block as soon as the prior month is unstamped.
+   * reminder: banner + WhatsApp only, never block billing.
+   */
+  monthAuditPolicy?: MonthAuditPolicy;
+  /** Extra IST calendar days after month-end before escalating blocks (default 0). */
+  monthAuditGraceDays?: number;
+  /** Owner escape hatch so a pending audit cannot brick billing. */
+  monthAuditOverrides?: MonthAuditOverride[];
 }
+
+export type MonthAuditPolicy = "escalating" | "hard" | "reminder";
+
+export type MonthAuditOverride = {
+  month: string;
+  by: string;
+  at: string;
+  reason: string;
+};
 
 export interface CartItem {
   key: string;
@@ -871,6 +899,12 @@ export interface Party {
   gstin?: string;
   /** Max receivable (customers) or payable exposure (suppliers) */
   creditLimit?: number;
+  /** Supplier default MOQ when the product has none */
+  minOrderQty?: number;
+  /** Supplier default lead time (days) when the product has none */
+  leadTimeDays?: number;
+  /** Days after bill date before the invoice is overdue. 0 = due on bill date. */
+  creditDays?: number;
   active: boolean;
   createdAt: string;
   /**
@@ -940,6 +974,10 @@ export interface Voucher {
   linkedPurchaseId?: string;
   linkedPoId?: string;
   linkedGrnId?: string;
+  /** GRNI amount this purchase bill clears (goods accrued on GRN). */
+  grniAmount?: number;
+  /** Job card this journal issued or completed. */
+  linkedJobId?: string;
   /** Order payment-proof item this receipt settles (part payments) */
   linkedPaymentProofItemId?: string;
   dueDate?: string;
@@ -1038,6 +1076,9 @@ export interface GoodsReceipt {
   voided: boolean;
   voidedAt?: string;
   voidedBy?: string;
+  /** Journal that accrued Dr Inventory / Cr GRNI when PO/contract rate was known. */
+  accrualVoucherId?: string;
+  accruedAmount?: number;
 }
 
 /** Supplier rate contract — category or item level */
@@ -1091,7 +1132,8 @@ export type StockMovementType =
   | "purchase_return"
   | "grn"
   | "estimate_reserve"
-  | "estimate_release";
+  | "estimate_release"
+  | "production";
 
 export interface StockMovement {
   id: string;
@@ -1127,7 +1169,7 @@ export interface StockBatch {
   /** Cost rate per secondary unit */
   rate: number;
   unit?: UnitOfSale;
-  source: "purchase" | "grn" | "opening" | "adjustment" | "sale_return";
+  source: "purchase" | "grn" | "opening" | "adjustment" | "sale_return" | "production";
   voucherId?: string;
   grnId?: string;
   /** True when cost is unknown / placeholder (rate may be 0) */
@@ -1279,7 +1321,7 @@ export type HrPayBasis = "monthly" | "daily" | "hourly";
 
 export type HrPunchKind = "in" | "out";
 export type HrLeaveKind = "casual" | "sick" | "unpaid";
-export type HrLeaveStatus = "pending" | "approved" | "rejected";
+export type HrLeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type StockCountStatus = "draft" | "submitted" | "owner_reviewed";
 export type CountLineDecision = "pending" | "approved" | "rejected";
 
@@ -1338,6 +1380,10 @@ export interface HrPunch {
   photoUrl?: string;
   userAgent?: string;
   weakGps?: boolean;
+  /** Clock-in saved without a GPS fix (owner-visible fallback). */
+  gpsFallback?: boolean;
+  note?: string;
+  correctedBy?: string;
   createdAt: string;
 }
 
@@ -1395,6 +1441,9 @@ export interface HrPayslip {
   advances: number;
   net: number;
   expenseVoucherId?: string;
+  voided?: boolean;
+  voidedAt?: string;
+  voidedBy?: string;
   createdAt: string;
   createdBy: string;
 }
@@ -1453,4 +1502,93 @@ export interface MonthlyAudit {
   closedAt: string;
   closedBy: string;
   note?: string;
+}
+
+export interface BomLine {
+  id: string;
+  productId: string;
+  variationId?: string;
+  colorId?: string;
+  /** Secondary units (kg/pcs) consumed per `Bom.outputQty`. */
+  qty: number;
+}
+
+export interface Bom {
+  id: string;
+  outputProductId: string;
+  outputVariationId?: string;
+  outputColorId?: string;
+  outputQty: number;
+  lines: BomLine[];
+  active: boolean;
+  createdAt: string;
+  createdBy: string;
+}
+
+export type JobCardStatus = "draft" | "issued" | "completed" | "cancelled";
+
+export interface JobCardLine {
+  productId: string;
+  variationId?: string;
+  colorId?: string;
+  itemLabel: string;
+  /** Secondary units to consume on issue. */
+  qty: number;
+  bundles: number;
+}
+
+export interface JobCard {
+  id: string;
+  number: string;
+  bomId?: string;
+  date: string;
+  outputProductId: string;
+  outputVariationId?: string;
+  outputColorId?: string;
+  plannedQty: number;
+  actualQty?: number;
+  status: JobCardStatus;
+  inputLines: JobCardLine[];
+  issuedCost?: number;
+  issueVoucherId?: string;
+  completeVoucherId?: string;
+  wastageQty?: number;
+  wastageCost?: number;
+  createdAt: string;
+  createdBy: string;
+  issuedAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+}
+
+/** Staff selling-rate / scheme writes that wait for an owner (`view_financials`). */
+export type OwnerApprovalKind =
+  | "product_rates"
+  | "scheme_upsert"
+  | "scheme_delete"
+  | "scheme_assign";
+
+export type OwnerApprovalStatus = "pending" | "approved" | "rejected";
+
+export interface OwnerApproval {
+  id: string;
+  kind: OwnerApprovalKind;
+  status: OwnerApprovalStatus;
+  /** e.g. product_rates:p1, scheme_upsert:s1, scheme_assign:u1:s1 */
+  targetKey: string;
+  productId?: string;
+  schemeId?: string;
+  dealerId?: string;
+  title: string;
+  snapshot: {
+    before?: unknown;
+    proposed?: unknown;
+  };
+  requestedBy: string;
+  requestedByName?: string;
+  requestedAt: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  note?: string;
+  updatedAt: string;
 }

@@ -436,7 +436,7 @@ function MatchStatementInner() {
             </Link>
           </div>
 
-          <div className="tt-panel mt-5 overflow-x-auto">
+          <div className="tt-panel mt-5 tt-acct-table-wrap">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--line)] px-4 py-3">
               <p className="text-sm font-semibold">Our ledger in period</p>
               <p className="shrink-0 text-xs text-[var(--ink-muted)]">

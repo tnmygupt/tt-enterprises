@@ -305,7 +305,7 @@ export default function PayablesPage() {
               }}
             />
           </div>
-          <div className="tt-panel mt-4 overflow-x-auto">
+          <div className="tt-panel mt-4 tt-acct-table-wrap">
             <table className="tt-table min-w-[720px]">
               <thead>
                 <tr>

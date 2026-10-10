@@ -120,7 +120,8 @@ function PartyStatementInner() {
       db.vouchers,
       allocations,
       to,
-      party.type === "supplier" ? "purchase" : "sale"
+      party.type === "supplier" ? "purchase" : "sale",
+      db.orders
     );
   }, [db, party, to, allocations]);
 
@@ -131,7 +132,8 @@ function PartyStatementInner() {
       db.vouchers,
       allocations,
       to,
-      party.type === "supplier" ? "purchase" : "sale"
+      party.type === "supplier" ? "purchase" : "sale",
+      db.orders
     );
   }, [db, party, to, allocations]);
 
@@ -147,7 +149,7 @@ function PartyStatementInner() {
 
   const goods = useMemo(() => {
     if (!db || !party || blocked) return [];
-    return partyGoodsLines(party, db.vouchers, from, to);
+    return partyGoodsLines(party, db.vouchers, from, to, db.orders);
   }, [blocked, db, from, party, to]);
 
   const openContracts = useMemo(() => {
@@ -462,7 +464,7 @@ function PartyStatementInner() {
                 </div>
               </>
             ) : (
-              <div className="tt-panel overflow-x-auto">
+              <div className="tt-panel tt-acct-table-wrap">
               <table className="tt-table min-w-[880px]">
                 <thead>
                   <tr>
@@ -513,7 +515,7 @@ function PartyStatementInner() {
           </div>
 
           {openContracts.length ? (
-            <div className="tt-panel mt-4 overflow-x-auto">
+            <div className="tt-panel mt-4 tt-acct-table-wrap">
               <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
                 {locale === "hi" ? "खुले कॉन्ट्रैक्ट" : "Open contracts"}
               </p>
@@ -555,7 +557,7 @@ function PartyStatementInner() {
             </div>
           ) : null}
 
-          <div className="tt-panel mt-4 overflow-x-auto">
+          <div className="tt-panel mt-4 tt-acct-table-wrap">
             <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
               {t("accounts.outstanding")} (bill-wise)
             </p>

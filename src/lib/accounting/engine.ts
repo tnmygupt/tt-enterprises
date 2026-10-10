@@ -206,6 +206,42 @@ export function buildLedgerEntries(voucher: Voucher): LedgerEntry[] {
         roundMoney((debitByAccount.get(head) ?? 0) + line.amount)
       );
     }
+    const grni = roundMoney(voucher.grniAmount ?? 0);
+    const goodsDebit = debitByAccount.get(ACCT.inventory) ?? 0;
+    if (grni > 0.009) {
+      debitByAccount.delete(ACCT.inventory);
+      rows.push(
+        entry({
+          ...base,
+          accountId: ACCT.grni,
+          partyId: voucher.partyId,
+          debit: grni,
+          credit: 0,
+        })
+      );
+      const trueUp = roundMoney(goodsDebit - grni);
+      if (trueUp > 0.009) {
+        rows.push(
+          entry({
+            ...base,
+            accountId: ACCT.inventory,
+            partyId: voucher.partyId,
+            debit: trueUp,
+            credit: 0,
+          })
+        );
+      } else if (trueUp < -0.009) {
+        rows.push(
+          entry({
+            ...base,
+            accountId: ACCT.inventory,
+            partyId: voucher.partyId,
+            debit: 0,
+            credit: roundMoney(-trueUp),
+          })
+        );
+      }
+    }
     for (const [accountId, debit] of debitByAccount) {
       if (Math.abs(debit) < 0.001) continue;
       rows.push(

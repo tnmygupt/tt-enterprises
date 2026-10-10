@@ -12,6 +12,11 @@ import { dedupeProductVariations, normalizeSizeKey } from "@/lib/media";
 import { applySqftComputedRate, formatInr, isSqftUnit, ratePerPacket, ratePerPiece, resolveSqftPack, unitLabel } from "@/lib/pricing";
 import { checkCapability, upsertProduct } from "@/lib/store/db";
 import type { Product } from "@/lib/types";
+import {
+  OwnerPendingBanner,
+  ProposedRateHint,
+  pendingProductRatesApproval,
+} from "@/components/OwnerPendingBanner";
 
 type SizeMember = {
   productId: string;
@@ -47,6 +52,7 @@ export default function AdminRatesPage() {
   const [draft, setDraft] = useState<Record<string, number>>({});
   const [msg, setMsg] = useState("");
   const [cleaning, setCleaning] = useState(false);
+  const isOwner = checkCapability(session, db, "view_financials");
 
   const groups = useMemo(() => {
     if (!db) return [] as RateGroup[];
@@ -180,9 +186,11 @@ export default function AdminRatesPage() {
     setDraft({});
     refresh();
     setMsg(
-      locale === "hi"
-        ? `${byProduct.size} प्रोडक्ट · ${dirtyCount} ग्रुप अपडेट`
-        : `Saved ${byProduct.size} product(s) · ${dirtyCount} rate group(s)`
+      isOwner
+        ? locale === "hi"
+          ? `${byProduct.size} प्रोडक्ट · ${dirtyCount} ग्रुप अपडेट`
+          : `Saved ${byProduct.size} product(s) · ${dirtyCount} rate group(s)`
+        : t("admin.approvalQueued")
     );
   };
 
@@ -240,12 +248,19 @@ export default function AdminRatesPage() {
             disabled={dirtyCount === 0}
             onClick={saveAll}
           >
-            {locale === "hi"
-              ? `सेव (${dirtyCount})`
-              : `Save changes (${dirtyCount})`}
+            {isOwner
+              ? locale === "hi"
+                ? `सेव (${dirtyCount})`
+                : `Save changes (${dirtyCount})`
+              : `${t("admin.approvalSendToOwner")} (${dirtyCount})`}
           </button>
         </div>
       </div>
+
+      <OwnerPendingBanner
+        items={(db.ownerApprovals ?? []).filter((a) => a.kind === "product_rates")}
+        locale={locale}
+      />
 
       <div className="mt-4 flex flex-wrap gap-2">
         <input
@@ -264,7 +279,50 @@ export default function AdminRatesPage() {
         <p className="mt-3 text-sm font-medium text-[var(--brand-deep)]">{msg}</p>
       ) : null}
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-acct-cards mt-5 sm:hidden">
+        {groups.length === 0 ? (
+          <p className="p-2 text-sm text-[var(--ink-muted)]">{t("common.empty")}</p>
+        ) : (
+          groups.map((g) => {
+            const rate = rateValue(g);
+            const dirty = draft[g.key] !== undefined && draft[g.key] !== g.rate;
+            const sizeList = g.sizes.map((s) => s.sizeLabel).join(", ");
+            return (
+              <div
+                key={g.key}
+                className={`tt-panel tt-acct-card ${dirty ? "border-[var(--brand)]" : ""}`}
+              >
+                <p className="text-xs text-[var(--ink-muted)]">{g.category}</p>
+                <p className="font-semibold">{g.productName}</p>
+                <p className="mt-1 text-sm break-words">{sizeList}</p>
+                <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                  {g.sizes.length} {locale === "hi" ? "साइज़" : "sizes"}
+                </p>
+                <label className="tt-hr-field mt-3">
+                  <span className="tt-hr-label">
+                    {locale === "hi" ? "रेट (₹)" : "Rate (₹)"}
+                  </span>
+                  <NumberField
+                    className="tt-input"
+                    min={0}
+                    step={0.01}
+                    emptyAs={null}
+                    value={rate}
+                    onValueChange={(v) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        [g.key]: typeof v === "number" ? v : 0,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      <div className="tt-panel mt-5 hidden overflow-x-auto sm:block">
         <table className="tt-table min-w-[920px]">
           <thead>
             <tr>
@@ -352,6 +410,20 @@ export default function AdminRatesPage() {
                           }))
                         }
                       />
+                      {g.productIds.map((pid) => {
+                        const pending = pendingProductRatesApproval(
+                          db.ownerApprovals,
+                          pid
+                        );
+                        if (!pending) return null;
+                        return (
+                          <ProposedRateHint
+                            key={pid}
+                            approval={pending}
+                            locale={locale}
+                          />
+                        );
+                      })}
                     </td>
                     <td className="text-sm text-[var(--ink-muted)]">
                       {estimate}

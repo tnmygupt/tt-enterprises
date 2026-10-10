@@ -5,8 +5,8 @@ import { TransportInput } from "@/components/TransportInput";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
-import { AccountsPageHeader } from "@/components/AccountsPageHeader";
-import { AccountsShell } from "@/components/AccountsShell";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { AdminShell } from "@/components/AdminShell";
 import { NumberField } from "@/components/NumberField";
 import { SearchSelect } from "@/components/SearchSelect";
 import {
@@ -473,19 +473,19 @@ export default function AdminPunchOrderPage() {
 
   if (!session || !canManage) {
     return (
-      <AccountsShell>
+      <AdminShell>
         <AdminAccessDenied />
-      </AccountsShell>
+      </AdminShell>
     );
   }
 
   return (
-    <AccountsShell>
-      <AccountsPageHeader
+    <AdminShell>
+      <AdminPageHeader
         title={t("admin.punchTitle")}
         hint={t("admin.punchHint")}
         backHref="/admin/orders"
-        backLabel={locale === "hi" ? "ऑर्डर" : "Orders"}
+        backLabel={t("admin.orders")}
       />
 
       <ol className="mt-4 flex flex-wrap gap-2 text-sm print:hidden">
@@ -567,7 +567,7 @@ export default function AdminPunchOrderPage() {
               </div>
               <div>
                 <p className="text-xs uppercase text-[var(--ink-muted)]">
-                  GST / Aadhaar
+                  {t("checkout.gstAadhar")}
                 </p>
                 <p className="text-sm">{dealer.gstOrAadhar || "—"}</p>
               </div>
@@ -902,6 +902,7 @@ export default function AdminPunchOrderPage() {
                   onKindChange={setDiscKind}
                   onValueChange={setDiscValue}
                   locale={locale}
+                  allowManual={checkCapability(session, db, "view_financials")}
                 />
               </div>
               {(billNow && billFromKg
@@ -995,7 +996,7 @@ export default function AdminPunchOrderPage() {
           </div>
         </section>
 
-        <div className={`flex flex-wrap items-center justify-between gap-2 ${step === 3 ? "" : "hidden"}`}>
+        <div className={`tt-sticky-bar ${step === 3 ? "" : "hidden"}`}>
           <button
             type="button"
             className="tt-btn tt-btn-outline"
@@ -1011,13 +1012,11 @@ export default function AdminPunchOrderPage() {
             {busy
               ? t("admin.punchWorking")
               : billNow
-                ? locale === "hi"
-                  ? "ऑर्डर + बिल पंच करें"
-                  : "Punch order & bill"
+                ? t("admin.punchOrderBill")
                 : t("admin.punchPostEstimate")}
           </button>
         </div>
       </form>
-    </AccountsShell>
+    </AdminShell>
   );
 }

@@ -78,7 +78,7 @@ export default function StockValuationPage() {
         <ExportButtons options={exportOptions} disabled={!report} />
       </div>
 
-      <div className="tt-panel mt-6 overflow-x-auto">
+      <div className="tt-panel mt-6 tt-acct-table-wrap">
         <table className="tt-table">
           <thead>
             <tr>

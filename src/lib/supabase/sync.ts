@@ -21,6 +21,7 @@ import {
   shouldPullFromLivePulse,
 } from "./live";
 import { sanitizeDbForCloud } from "./sanitize";
+import { isDatabaseInfraMessage } from "@/lib/sync-errors";
 
 let apiAvailable: boolean | null = null;
 let lastPushJson = "";
@@ -154,6 +155,14 @@ function emitSessionExpiredFromApi(status: number, body: string): void {
   }
   // Missing DB_API_KEY is "Unauthorized" — not a user session problem.
   if (error === "Unauthorized") return;
+  if (isDatabaseInfraMessage(error)) {
+    window.dispatchEvent(
+      new CustomEvent("tt-sync-error", {
+        detail: error || "Database is busy. Please retry.",
+      })
+    );
+    return;
+  }
   window.dispatchEvent(
     new CustomEvent("tt-session-expired", {
       detail: error || "Session invalid",

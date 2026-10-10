@@ -3,6 +3,9 @@
 import { FormEvent, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { EmptyState } from "@/components/admin/EmptyState";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { AdminShell } from "@/components/AdminShell";
 import { useDb, useSession } from "@/lib/hooks";
 import { slugifyCategory } from "@/lib/categories";
@@ -95,14 +98,10 @@ export default function AdminCategoriesPage() {
 
   return (
     <AdminShell>
-      <h1 className="tt-display text-4xl text-[var(--brand-deep)]">
-        {locale === "hi" ? "कैटेगरी" : "Categories"}
-      </h1>
-      <p className="mt-2 text-sm text-[var(--ink-muted)]">
-        {locale === "hi"
-          ? "अंग्रेज़ी नाम भरें — हिंदी खाली हो तो सेव पर अपने आप अनुवाद होगा।"
-          : "Enter English name — empty Hindi auto-translates on save."}
-      </p>
+      <AdminPageHeader
+        title={t("admin.categories")}
+        hint={t("admin.categoriesHint")}
+      />
 
       <form
         onSubmit={onCreate}
@@ -142,7 +141,7 @@ export default function AdminCategoriesPage() {
         </button>
       </form>
 
-      <div className="tt-panel mt-8 overflow-x-auto">
+      <TableWrap className="tt-panel mt-8">
         <table className="tt-table">
           <thead>
             <tr>
@@ -199,7 +198,10 @@ export default function AdminCategoriesPage() {
             ))}
           </tbody>
         </table>
-      </div>
+        {!db.categories.length ? (
+          <EmptyState message={t("common.empty")} />
+        ) : null}
+      </TableWrap>
 
       {editing ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

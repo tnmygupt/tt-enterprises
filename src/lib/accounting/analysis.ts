@@ -1,4 +1,5 @@
 import type {
+  Account,
   AppSettings,
   BatchConsumption,
   CategoryDef,
@@ -8,14 +9,18 @@ import type {
   Product,
   PurchaseOrder,
   StockMovement,
+  SupplierContract,
   Voucher,
 } from "../types";
 import { stockMatrixKey } from "../inventory";
 import { poLineRemaining } from "../purchase-orders";
 import { roundMoney } from "../pricing";
-import { ACCT } from "./seed";
+import {
+  contractHeadroomQty,
+  resolveInForceContract,
+} from "../contracts";
+import { ACCT, cashBankAccounts, isCashBankAccount } from "./seed";
 import { accountBalance } from "./engine";
-import type { Account } from "../types";
 
 export type AggRow = {
   key: string;
@@ -287,6 +292,8 @@ export function profitAnalysis(
   };
 }
 
+export type StockAlertBlocker = "missing_supplier" | "contract_exhausted";
+
 export type StockAlertRow = {
   productId: string;
   variationId?: string;
@@ -305,6 +312,8 @@ export type StockAlertRow = {
   incomingQty?: number;
   committedQty?: number;
   coverMode?: ReorderCoverMode;
+  blockers?: StockAlertBlocker[];
+  contractCapped?: boolean;
 };
 
 export const REORDER_DEFAULTS = {
@@ -417,10 +426,14 @@ export function seasonMultiplier(
 
 export function productCoverDays(
   product: Product,
-  settings?: AppSettings
+  settings?: AppSettings,
+  supplier?: { leadTimeDays?: number } | null
 ): number {
   const lead =
     product.leadTimeDays ??
+    (typeof supplier?.leadTimeDays === "number" && supplier.leadTimeDays > 0
+      ? supplier.leadTimeDays
+      : undefined) ??
     settings?.autoReorderLeadTimeDays ??
     REORDER_DEFAULTS.leadTimeDays;
   const safety = settings?.autoReorderSafetyDays ?? REORDER_DEFAULTS.safetyDays;
@@ -552,12 +565,15 @@ export type StockAlertsDb = {
   orders?: Order[];
   purchaseOrders?: PurchaseOrder[];
   settings?: AppSettings;
+  parties?: Party[];
+  supplierContracts?: SupplierContract[];
 };
 
 export type StockAlertsOpts = {
   deadDays?: number;
   slowDays?: number;
-  parties?: { id: string }[];
+  parties?: Party[];
+  supplierContracts?: SupplierContract[];
   orders?: Order[];
   purchaseOrders?: PurchaseOrder[];
   settings?: AppSettings;
@@ -619,6 +635,8 @@ export function stockAlertsFromDb(
     orders: opts.orders ?? db.orders,
     purchaseOrders: opts.purchaseOrders ?? db.purchaseOrders,
     settings: opts.settings ?? db.settings,
+    parties: opts.parties ?? db.parties,
+    supplierContracts: opts.supplierContracts ?? db.supplierContracts,
   });
 }
 
@@ -687,20 +705,47 @@ export function stockAlerts(
       slot.level
     );
     const hadVelocity = out > 0;
+    const supplier = p.preferredSupplierId
+      ? (opts.parties ?? []).find((x) => x.id === p.preferredSupplierId)
+      : undefined;
     const suggestion = computeReorderSuggestion({
       onHand: slot.stock,
       staffMin: slot.min,
       reorderQty: p.reorderQty,
       avgDailyOut: out / lookbackDays,
       hadVelocity,
-      coverDays: productCoverDays(p, settings),
+      coverDays: productCoverDays(p, settings, supplier),
       season: seasonMultiplier(p.category, asOf, settings),
       committed: committedQty,
       incoming: incomingQty,
-      minOrderQty: p.minOrderQty,
+      minOrderQty: p.minOrderQty ?? supplier?.minOrderQty,
       useVelocity,
     });
     if (suggestion.suggestedQty <= 0) return;
+    const blockers: StockAlertBlocker[] = [];
+    if (!p.preferredSupplierId) blockers.push("missing_supplier");
+    let suggestedQty = suggestion.suggestedQty;
+    let contractCapped = false;
+    if (p.preferredSupplierId) {
+      const contract = resolveInForceContract(
+        opts.supplierContracts ?? [],
+        products,
+        p.preferredSupplierId,
+        p.id,
+        asOf,
+        { variationId: slot.variationId }
+      );
+      if (contract) {
+        const head = contractHeadroomQty(contract, suggestedQty, contract.rate);
+        if (head.exhausted) {
+          blockers.push("contract_exhausted");
+          suggestedQty = 0;
+        } else if (head.capped) {
+          suggestedQty = head.qty;
+          contractCapped = true;
+        }
+      }
+    }
     const last = lastOutForLevel(
       lastOut,
       p.id,
@@ -718,7 +763,7 @@ export function stockAlerts(
       stock: slot.stock,
       stockSecondary: slot.stockSecondary,
       minStockLevel: slot.min,
-      suggestedQty: suggestion.suggestedQty,
+      suggestedQty,
       preferredSupplierId: p.preferredSupplierId,
       lastOutDate: last,
       daysSinceOut: daysSince(last, asOfMs),
@@ -727,6 +772,8 @@ export function stockAlerts(
       incomingQty: suggestion.incomingQty,
       committedQty: suggestion.committedQty,
       coverMode: suggestion.coverMode,
+      blockers: blockers.length ? blockers : undefined,
+      contractCapped: contractCapped || undefined,
     });
   };
 
@@ -867,6 +914,39 @@ export type CashFlowSection = {
   total: number;
 };
 
+const CURRENT_ASSET_IDS = new Set<string>([
+  ACCT.cash,
+  ACCT.bank,
+  ACCT.debtors,
+  ACCT.inventory,
+  ACCT.taxInput,
+]);
+
+/** Non-current asset (plant, vehicle, furniture, etc.) — cash against these is investing. */
+export function isInvestingAccount(account: Account | undefined): boolean {
+  if (!account || account.type !== "asset") return false;
+  if (isCashBankAccount(account)) return false;
+  if (CURRENT_ASSET_IDS.has(account.id)) return false;
+  return true;
+}
+
+function voucherTouchesInvesting(
+  voucher: Voucher,
+  accountsById: Map<string, Account>,
+  entries: LedgerEntry[]
+): boolean {
+  for (const line of voucher.lines) {
+    if (line.accountId && isInvestingAccount(accountsById.get(line.accountId))) {
+      return true;
+    }
+  }
+  for (const e of entries) {
+    if (e.voided || e.voucherId !== voucher.id) continue;
+    if (isInvestingAccount(accountsById.get(e.accountId))) return true;
+  }
+  return false;
+}
+
 /** Simple cash-flow from cash+bank ledger movements in period. */
 export function cashFlowStatement(
   accounts: Account[],
@@ -883,8 +963,11 @@ export function cashFlowStatement(
   netChange: number;
 } {
   const cashIds = new Set<string>([ACCT.cash, ACCT.bank]);
-  const cash = accounts.find((a) => a.id === ACCT.cash);
-  const bank = accounts.find((a) => a.id === ACCT.bank);
+  for (const a of accounts) {
+    if (isCashBankAccount(a)) cashIds.add(a.id);
+  }
+  const cashBank = cashBankAccounts(accounts);
+  const accountsById = new Map(accounts.map((a) => [a.id, a]));
   const dayBefore = (() => {
     const d = new Date(from.slice(0, 10) + "T00:00:00");
     d.setDate(d.getDate() - 1);
@@ -895,12 +978,10 @@ export function cashFlowStatement(
   })();
 
   const opening = roundMoney(
-    (cash ? accountBalance(cash, entries, dayBefore) : 0) +
-      (bank ? accountBalance(bank, entries, dayBefore) : 0)
+    cashBank.reduce((s, a) => s + accountBalance(a, entries, dayBefore), 0)
   );
   const closing = roundMoney(
-    (cash ? accountBalance(cash, entries, to) : 0) +
-      (bank ? accountBalance(bank, entries, to) : 0)
+    cashBank.reduce((s, a) => s + accountBalance(a, entries, to), 0)
   );
 
   const vById = new Map(vouchers.map((v) => [v.id, v]));
@@ -911,6 +992,8 @@ export function cashFlowStatement(
   let otherOut = 0;
   let capitalIn = 0;
   let capitalOut = 0;
+  let investIn = 0;
+  let investOut = 0;
 
   for (const e of entries) {
     if (e.voided || !cashIds.has(e.accountId)) continue;
@@ -922,6 +1005,12 @@ export function cashFlowStatement(
       else otherOut += Math.abs(net);
       continue;
     }
+    const investing = voucherTouchesInvesting(v, accountsById, entries);
+    if (investing) {
+      if (net > 0) investIn += net;
+      else investOut += Math.abs(net);
+      continue;
+    }
     if (v.type === "receipt") receipts += net > 0 ? net : 0;
     else if (v.type === "payment") {
       if (v.lines[0]?.accountId && v.lines[0].accountId !== ACCT.creditors) {
@@ -930,7 +1019,6 @@ export function cashFlowStatement(
         supplierPay += Math.abs(net);
       }
     } else if (v.type === "journal") {
-      // Classify vs capital
       const touchesCapital = v.lines.some((l) => l.accountId === ACCT.capital);
       if (touchesCapital) {
         if (net > 0) capitalIn += net;
@@ -947,6 +1035,10 @@ export function cashFlowStatement(
     { label: "Operating expenses", amount: roundMoney(-expenses) },
     { label: "Other operating", amount: roundMoney(otherIn - otherOut) },
   ];
+  const investingRows = [
+    { label: "Sale of assets", amount: roundMoney(investIn) },
+    { label: "Purchase of assets", amount: roundMoney(-investOut) },
+  ];
   const financingRows = [
     { label: "Capital / owner in", amount: roundMoney(capitalIn) },
     { label: "Capital / owner out", amount: roundMoney(-capitalOut) },
@@ -962,8 +1054,8 @@ export function cashFlowStatement(
   };
   const investing: CashFlowSection = {
     label: "Investing",
-    rows: [{ label: "—", amount: 0 }],
-    total: 0,
+    rows: investingRows,
+    total: sum(investingRows),
   };
   const financing: CashFlowSection = {
     label: "Financing",

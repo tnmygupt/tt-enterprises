@@ -1,24 +1,24 @@
 @import "tailwindcss";
 
 :root {
-  /* Soft sky / teal — easy contrast, no black/gold */
-  --bg: #f3f8fb;
+  /* Warm red from the TT mark — easy contrast, no teal/gold */
+  --bg: #faf6f5;
   --bg-elevated: #ffffff;
-  --surface: #f3f8fb;
-  --surface-2: #e7f1f6;
+  --surface: #faf6f5;
+  --surface-2: #f4eceb;
   --panel: #ffffff;
-  --ink: #1e3a4c;
-  --ink-muted: #5b7383;
-  --brand: #0b7ea4;
-  --brand-deep: #086484;
-  --brand-soft: #e4f4fa;
-  --brand-gold: #0b7ea4;
-  --brand-bronze: #0b7ea4;
-  --accent: #28a3c9;
-  --line: #d5e4ec;
-  --danger: #c43131;
+  --ink: #2c1f1f;
+  --ink-muted: #7a6565;
+  --brand: #ff3131;
+  --brand-deep: #c21818;
+  --brand-soft: #ffe8e6;
+  --brand-gold: #ff3131;
+  --brand-bronze: #ff3131;
+  --accent: #ff5a5a;
+  --line: #eadcda;
+  --danger: #9b1b1b;
   --ok: #0f8a5f;
-  --shadow: 0 1px 2px rgba(14, 60, 80, 0.04), 0 10px 28px rgba(14, 60, 80, 0.06);
+  --shadow: 0 1px 2px rgba(80, 20, 20, 0.04), 0 10px 28px rgba(80, 20, 20, 0.06);
 }
 
 @theme inline {
@@ -49,8 +49,8 @@ body {
   max-width: 100%;
   color: var(--ink);
   background:
-    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(11, 126, 164, 0.1), transparent 55%),
-    radial-gradient(ellipse 55% 40% at 0% 100%, rgba(40, 163, 201, 0.08), transparent 50%),
+    radial-gradient(ellipse 70% 45% at 100% 0%, rgba(255, 49, 49, 0.1), transparent 55%),
+    radial-gradient(ellipse 55% 40% at 0% 100%, rgba(255, 90, 90, 0.08), transparent 50%),
     var(--surface);
   font-family: var(--font-body), system-ui, sans-serif;
   overflow-x: clip;
@@ -91,7 +91,7 @@ button.tt-selected {
   border-radius: 1.25rem;
   color: var(--ink);
   background:
-    linear-gradient(145deg, #ffffff 0%, #eef7fb 48%, #dff0f7 100%);
+    linear-gradient(145deg, #ffffff 0%, #fff5f4 48%, #ffe8e6 100%);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
   padding: clamp(2rem, 5vw, 3.25rem);
@@ -102,7 +102,7 @@ button.tt-selected {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(circle at 88% 18%, rgba(40, 163, 201, 0.22), transparent 42%);
+    radial-gradient(circle at 88% 18%, rgba(255, 49, 49, 0.18), transparent 42%);
   pointer-events: none;
 }
 
@@ -130,7 +130,7 @@ button.tt-selected {
   justify-content: center;
   min-height: 11rem;
   border-radius: 1.1rem;
-  background: linear-gradient(160deg, #0b7ea4 0%, #28a3c9 100%);
+  background: linear-gradient(160deg, #ff3131 0%, #ff5a5a 100%);
   border: none;
 }
 
@@ -369,6 +369,43 @@ button.tt-selected {
   color: var(--brand-deep);
 }
 
+.tt-table-wrap-loose .tt-table th:first-child,
+.tt-table-wrap-loose .tt-table td:first-child {
+  position: static;
+}
+
+.tt-status-ok {
+  background: color-mix(in srgb, var(--ok) 18%, white);
+  color: var(--ok);
+}
+
+.tt-status-danger {
+  background: color-mix(in srgb, var(--danger) 16%, white);
+  color: var(--danger);
+}
+
+.tt-status-pending {
+  background: #fff6e5;
+  color: #9a5b00;
+}
+
+.tt-status-muted {
+  background: var(--surface-2);
+  color: var(--ink-muted);
+}
+
+.tt-chip:focus-visible,
+.tt-acct-header .tt-btn:focus-visible,
+.tt-acct-table-wrap .tt-btn:focus-visible,
+button.tt-chip:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.tt-table .tt-btn {
+  min-height: 2.75rem;
+}
+
 .tt-acct-kpi {
   display: block;
   padding: 1.1rem 1.15rem;
@@ -407,6 +444,197 @@ button.tt-selected {
 .tt-acct-table-wrap {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+/* HR desk: phone-first cards and labeled fields, not 13-column grids */
+.tt-hr-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem 1rem;
+  margin-top: 1rem;
+}
+
+.tt-hr-tabs {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1 1 12rem;
+  padding-bottom: 2px;
+}
+
+.tt-hr-tabs .tt-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.tt-hr-month {
+  width: 12.5rem;
+  max-width: 100%;
+  flex: 0 0 auto;
+}
+
+.tt-hr-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.tt-hr-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+.tt-hr-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.85rem;
+}
+
+.tt-hr-check {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 44px;
+  font-weight: 600;
+}
+
+.tt-hr-sites {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.tt-hr-people {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.tt-hr-selected {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.tt-hr-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.tt-hr-kpi {
+  background: var(--surface-2);
+  border-radius: 0.65rem;
+  padding: 0.5rem 0.65rem;
+}
+
+.tt-hr-kpi-n {
+  margin-top: 0.15rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  font-size: 1.05rem;
+}
+
+.tt-hr-day {
+  display: grid;
+  grid-template-columns: 6.4rem minmax(0, 1fr) auto;
+  gap: 0.35rem 0.7rem;
+  align-items: center;
+  padding: 0.7rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.tt-hr-day:last-child {
+  border-bottom: none;
+}
+
+.tt-hr-net {
+  font-size: 1.55rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand-deep);
+  line-height: 1.15;
+}
+
+.tt-hr-dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.35rem 1rem;
+  margin: 0.85rem 0 0;
+  font-size: 0.9rem;
+}
+
+.tt-hr-dl dt {
+  color: var(--ink-muted);
+}
+
+.tt-hr-dl dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-align: right;
+}
+
+.tt-hr-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.12rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.tt-hr-chip-ok {
+  background: color-mix(in srgb, var(--ok) 16%, white);
+  color: var(--ok);
+}
+
+.tt-hr-chip-warn {
+  background: #fff4e5;
+  color: #9a5b00;
+}
+
+.tt-hr-chip-bad {
+  background: color-mix(in srgb, var(--danger) 14%, white);
+  color: var(--danger);
+}
+
+.tt-hr-section {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+@media (min-width: 640px) {
+  .tt-hr-grid-2,
+  .tt-hr-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tt-hr-dl {
+    grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 960px) {
+  .tt-hr-people {
+    grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .tt-hr-grid-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 .tt-acct-table-wrap .tt-table th:first-child,
@@ -1509,7 +1737,7 @@ button.tt-selected {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
-  min-height: 36px;
+  min-height: 44px;
   padding: 0.35rem 0.75rem;
   border: 1px solid var(--line);
   background: #fff;

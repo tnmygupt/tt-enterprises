@@ -66,6 +66,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     bankName: "",
     branch: "",
   },
+  bankAccounts: [],
   paymentNote:
     "Pay the amount shown to Sudhir Gupta (UPI: 9415133028.eazypay@icici), then upload payment proof on this order.",
   whatsappNotifyEnabled: true,
@@ -73,7 +74,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   tallySyncStatus: "idle",
   tallySyncMessage: "Not synced yet",
   financialYearStartMonth: 4,
-  autoReorderEnabled: false,
+  autoReorderEnabled: true,
   autoReorderCron: "0 6 * * 1",
   autoReorderMinQty: 1,
   autoReorderUseVelocity: true,
@@ -84,6 +85,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoReorderSeasonMultiplier: 1.4,
   homeNewProductIds: [],
   homePromoProductIds: [],
+  monthAuditPolicy: "escalating",
+  monthAuditGraceDays: 0,
 };
 
 /** Demo logins removed — production bootstraps from cloud DB only. */

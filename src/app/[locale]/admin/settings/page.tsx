@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
+import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { FilterChips } from "@/components/admin/FilterChips";
 import { AdminShell } from "@/components/AdminShell";
 import { FilePick } from "@/components/FilePick";
 import { NumberField } from "@/components/NumberField";
@@ -12,10 +14,12 @@ import {
   checkCapability,
   resetDb,
   saveSettings,
+  addCompanyBankAccount,
+  upsertAccount,
 } from "@/lib/store/db";
 import { uploadMediaFile } from "@/lib/upload-media";
 import { formatSeasonMonths, parseSeasonMonthsFromText } from "@/lib/accounting";
-import { UPI_MAX_AMOUNT_DEFAULT, listPayableAccounts } from "@/lib/upi";
+import { UPI_MAX_AMOUNT_DEFAULT, listStoredPayableAccounts } from "@/lib/upi";
 import { WhatsAppTemplateEditor } from "@/components/WhatsAppTemplateEditor";
 import type { BankAccountDetails } from "@/lib/types";
 
@@ -36,7 +40,10 @@ export default function AdminSettingsPage() {
   // Memoize the derived accounts list here (before any conditional early
   // return) so React's rules-of-hooks are satisfied.
   const bankAccounts = useMemo(
-    () => (db ? listPayableAccounts(db.settings) : []),
+    () =>
+      db
+        ? listStoredPayableAccounts(db.settings, { includeInactive: true })
+        : [],
     [db]
   );
 
@@ -86,26 +93,33 @@ export default function AdminSettingsPage() {
     saveSettings({ ...db.settings, bankAccounts: next });
     refresh();
   };
+  const addAccount = () => {
+    try {
+      addCompanyBankAccount({
+        label: locale === "hi" ? "नया खाता" : "New account",
+        showToDealers: true,
+      });
+      setMsg(locale === "hi" ? "खाता जुड़ गया — विवरण भरें" : "Account added — fill in the details");
+      refresh();
+    } catch (err) {
+      setMsg(err instanceof Error ? err.message : "Could not add account");
+    }
+  };
   const updateAccount = (id: string, patch: Partial<BankAccountDetails>) => {
     persistAccounts(
       bankAccounts.map((a) => (a.id === id ? { ...a, ...patch } : a))
     );
-  };
-  const addAccount = () => {
-    const newAccount: BankAccountDetails = {
-      id: `bank_${crypto.randomUUID()}`,
-      label: locale === "hi" ? "नया खाता" : "New account",
-      accountName: "",
-      accountNumber: "",
-      ifsc: "",
-      bankName: "",
-      branch: "",
-      upiId: "",
-      upiPayeeName: "",
-      active: true,
-      isDefault: bankAccounts.length === 0,
-    };
-    persistAccounts([...bankAccounts, newAccount]);
+    const nextLabel = (patch.label ?? "").trim();
+    const ledgerId = bankAccounts.find((a) => a.id === id)?.ledgerId;
+    if (ledgerId && nextLabel && db) {
+      const ledger = db.accounts.find((a) => a.id === ledgerId);
+      if (ledger && ledger.id !== "acct_cash" && ledger.id !== "acct_bank") {
+        upsertAccount({
+          ...ledger,
+          name: { en: nextLabel, hi: nextLabel },
+        });
+      }
+    }
   };
   const removeAccount = (id: string) => {
     if (
@@ -148,16 +162,51 @@ export default function AdminSettingsPage() {
 
   return (
     <AdminShell>
-      <h1 className="tt-display text-4xl text-[var(--brand-deep)]">
-        {t("admin.settings")}
-      </h1>
+      <AdminPageHeader
+        title={t("admin.settings")}
+        hint={t("admin.settingsHintOps")}
+        extra={
+          <FilterChips
+            items={[
+              {
+                id: "company",
+                label: t("admin.settingsCompanyToc"),
+                href: "#settings-company",
+              },
+              {
+                id: "payments",
+                label: t("admin.settingsPaymentsToc"),
+                href: "#settings-payments",
+              },
+              {
+                id: "whatsapp",
+                label: t("admin.settingsWhatsappToc"),
+                href: "#settings-whatsapp",
+              },
+              {
+                id: "reorder",
+                label: t("admin.settingsReorderToc"),
+                href: "#settings-reorder",
+              },
+              {
+                id: "danger",
+                label: t("admin.settingsDangerToc"),
+                href: "#settings-danger",
+              },
+            ]}
+          />
+        }
+      />
 
-      <div className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5">
+      <div
+        id="settings-company"
+        className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5"
+      >
         <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-          Company
+          {t("admin.settingsCompany")}
         </p>
         <div>
-          <label className="tt-label">Company name</label>
+          <label className="tt-label">{t("admin.companyName")}</label>
           <input
             className="tt-input"
             defaultValue={db.settings.companyName}
@@ -168,7 +217,7 @@ export default function AdminSettingsPage() {
           />
         </div>
         <div>
-          <label className="tt-label">Phone</label>
+          <label className="tt-label">{t("common.phone")}</label>
           <input
             className="tt-input"
             defaultValue={db.settings.phone}
@@ -179,7 +228,7 @@ export default function AdminSettingsPage() {
           />
         </div>
         <div>
-          <label className="tt-label">Phone 2 (optional)</label>
+          <label className="tt-label">{t("admin.phone2")}</label>
           <input
             className="tt-input"
             defaultValue={db.settings.phone2 ?? ""}
@@ -190,7 +239,7 @@ export default function AdminSettingsPage() {
           />
         </div>
         <div>
-          <label className="tt-label">Address 1</label>
+          <label className="tt-label">{t("admin.address1")}</label>
           <textarea
             className="tt-textarea"
             defaultValue={db.settings.address}
@@ -201,7 +250,7 @@ export default function AdminSettingsPage() {
           />
         </div>
         <div>
-          <label className="tt-label">Address 2</label>
+          <label className="tt-label">{t("admin.address2")}</label>
           <textarea
             className="tt-textarea"
             defaultValue={db.settings.address2 ?? ""}
@@ -211,20 +260,12 @@ export default function AdminSettingsPage() {
             }}
           />
         </div>
-        <div>
-          <label className="tt-label">GSTIN</label>
-          <input
-            className="tt-input"
-            defaultValue={db.settings.gstin}
-            onBlur={(e) => {
-              saveSettings({ ...db.settings, gstin: e.target.value });
-              refresh();
-            }}
-          />
-        </div>
       </div>
 
-      <div className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5">
+      <div
+        id="settings-whatsapp"
+        className="mt-6 max-w-xl space-y-3 rounded-2xl border border-[var(--line)] bg-white p-5"
+      >
         <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
           {t("whatsapp.settingsTitle")}
         </p>
@@ -332,12 +373,13 @@ export default function AdminSettingsPage() {
         </div>
       </div>
 
-      <div className="mt-6 max-w-3xl space-y-4 rounded-2xl border border-[var(--line)] bg-white p-5">
+      <div
+        id="settings-payments"
+        className="mt-6 max-w-3xl space-y-4 rounded-2xl border border-[var(--line)] bg-white p-5"
+      >
         <div>
           <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-            {locale === "hi"
-              ? "पेमेंट सेटअप (नोट + UPI सीमा)"
-              : "Payment setup (note + UPI cap)"}
+            {t("admin.settingsPayments")}
           </p>
           <p className="mt-1 text-sm text-[var(--ink-muted)]">
             {locale === "hi"
@@ -754,7 +796,10 @@ export default function AdminSettingsPage() {
         ) : null}
       </div>
 
-      <div className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm">
+      <div
+        id="settings-reorder"
+        className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm"
+      >
         <p className="font-semibold text-[var(--ink)]">
           {t("admin.autoReorderTitle")}
         </p>
@@ -765,9 +810,10 @@ export default function AdminSettingsPage() {
         <p className="text-[var(--ink-muted)]">
           Weekly cron hits <code>/api/cron/reorder</code> with{" "}
           <code>Authorization: Bearer CRON_SECRET</code>. Products need a
-          preferred supplier. Draft POs also WhatsApp staff (orders). Overdue,
-          credit-limit, scheme-ending and stale-estimate WhatsApp:{" "}
-          <code>/api/cron/whatsapp-digest</code>. See <code>HOSTINGER.md</code>.
+          preferred supplier. Auto POs are marked ordered and WhatsApp the
+          owner only — not the mill. Overdue, credit-limit, scheme-ending and
+          stale-estimate WhatsApp: <code>/api/cron/whatsapp-digest</code>. See{" "}
+          <code>HOSTINGER.md</code>.
         </p>
         <label className="flex items-center gap-2">
           <input
@@ -935,6 +981,72 @@ export default function AdminSettingsPage() {
       </div>
 
       <div className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm">
+        <p className="font-semibold text-[var(--ink)]">
+          {locale === "hi" ? "मासिक ऑडिट नीति" : "Monthly audit policy"}
+        </p>
+        <p className="text-[var(--ink-muted)]">
+          {locale === "hi"
+            ? "आखिरी सप्ताह में याद दिलाना; महीने के बाद नई एंट्री तब तक न लगने देना जब तक ऑडिट स्टैम्प न हो — ओवरराइड से बिलिंग न रुके।"
+            : "Remind in the last week, then block new-month postings until the audit is stamped. An owner override keeps billing unblocked."}
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="tt-label">
+              {locale === "hi" ? "नीति" : "Policy"}
+            </label>
+            <select
+              className="tt-input"
+              value={db.settings.monthAuditPolicy || "escalating"}
+              onChange={(e) => {
+                const value = e.target.value as
+                  | "escalating"
+                  | "hard"
+                  | "reminder";
+                saveSettings({
+                  ...db.settings,
+                  monthAuditPolicy: value,
+                });
+                refresh();
+              }}
+            >
+              <option value="escalating">
+                {locale === "hi" ? "एस्केलेटिंग (डिफ़ॉल्ट)" : "Escalating (default)"}
+              </option>
+              <option value="hard">
+                {locale === "hi" ? "सख्त — महीने के बाद तुरंत ब्लॉक" : "Hard — block at month-end"}
+              </option>
+              <option value="reminder">
+                {locale === "hi" ? "केवल याद" : "Reminder only"}
+              </option>
+            </select>
+          </div>
+          <div>
+            <label className="tt-label">
+              {locale === "hi" ? "ग्रेस दिन" : "Grace days"}
+            </label>
+            <NumberField
+              className="tt-input"
+              min={0}
+              integer
+              emptyAs={0}
+              value={db.settings.monthAuditGraceDays ?? 0}
+              onValueChange={(v) => {
+                saveSettings({
+                  ...db.settings,
+                  monthAuditGraceDays:
+                    v === "" ? 0 : Math.max(0, Math.min(31, Number(v) || 0)),
+                });
+                refresh();
+              }}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div
+        id="settings-danger"
+        className="mt-8 space-y-3 rounded-2xl bg-[var(--surface-2)] p-5 text-sm"
+      >
         <p className="font-semibold text-[var(--ink)]">Live integrations</p>
         <ul className="space-y-2 text-[var(--ink-muted)]">
           <li>
@@ -981,6 +1093,11 @@ export default function AdminSettingsPage() {
         >
           Reset local demo data
         </button>
+      </div>
+      <div className="tt-sticky-bar">
+        <p className="text-sm text-[var(--ink-muted)]">
+          {t("admin.settingsSavedOnBlur")}
+        </p>
       </div>
     </AdminShell>
   );

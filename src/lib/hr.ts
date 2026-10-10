@@ -10,7 +10,7 @@ import type {
   UserProfile,
   UserRole,
 } from "@/lib/types";
-import type { CapabilityContext } from "@/lib/capabilities";
+import { userHasCapability, type CapabilityContext } from "@/lib/capabilities";
 
 export const WEAK_GPS_M = 100;
 
@@ -41,9 +41,121 @@ export function canManageHr(
     "role" | "extraCapabilities" | "deniedCapabilities" | "jobId"
   > | null
   | undefined,
-  _ctx?: CapabilityContext | null
+  ctx?: CapabilityContext | null
 ): boolean {
-  return actor?.role === "super_admin";
+  return userHasCapability(actor, "manage_hr", ctx);
+}
+
+/** Civil weekday of YYYY-MM-DD (0 Sunday … 6 Saturday). */
+export function weekdayIst(ymd: string): number {
+  const [y, m, d] = ymd.slice(0, 10).split("-").map(Number);
+  return new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1)).getUTCDay();
+}
+
+export function defaultHrTerms(userId: string, at = new Date().toISOString()): HrTerms {
+  return {
+    id: `ht_${crypto.randomUUID()}`,
+    userId,
+    payBasis: "monthly",
+    monthlySalary: 0,
+    joinDate: dateInIst(at),
+    weekOff: 0,
+    otRatePerHour: 0,
+    casualDaysPerYear: 6,
+    sickDaysPerYear: 6,
+    updatedAt: at,
+  };
+}
+
+/** Create empty terms for staff who have none so they appear on Pay. */
+export function ensureStaffHrTerms<T extends { hrTerms?: HrTerms[] }>(
+  db: T,
+  users: { id: string; role?: string; active?: boolean }[]
+): T {
+  const list = db.hrTerms ?? [];
+  const have = new Set(list.map((t) => t.userId));
+  const now = new Date().toISOString();
+  let added = false;
+  for (const u of users) {
+    if (!u.active || u.role === "customer") continue;
+    if (have.has(u.id)) continue;
+    list.push(defaultHrTerms(u.id, now));
+    have.add(u.id);
+    added = true;
+  }
+  if (added) db.hrTerms = list;
+  return db;
+}
+
+export type PunchGuardReason =
+  | "duplicate_in"
+  | "duplicate_out"
+  | "out_without_in"
+  | "month_locked";
+
+export function punchKindGuard(
+  punches: HrPunch[],
+  userId: string,
+  kind: HrPunch["kind"],
+  at: string
+): PunchGuardReason | null {
+  const day = dateInIst(at);
+  const existing = punchesForDay(punches, userId, day);
+  if (kind === "in" && existing.some((p) => p.kind === "in")) return "duplicate_in";
+  if (kind === "out" && existing.some((p) => p.kind === "out")) return "duplicate_out";
+  if (kind === "out" && !existing.some((p) => p.kind === "in")) return "out_without_in";
+  return null;
+}
+
+export function isActivePayslip(p: HrPayslip): boolean {
+  return !p.voided;
+}
+
+export function isHrMonthLocked(input: {
+  month: string;
+  userId?: string;
+  audits?: { month: string }[];
+  payslips?: HrPayslip[];
+}): boolean {
+  if ((input.audits ?? []).some((a) => a.month === input.month)) return true;
+  if (
+    input.userId &&
+    (input.payslips ?? []).some(
+      (p) => p.userId === input.userId && p.month === input.month && isActivePayslip(p)
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function leaveIsOpen(leave: Pick<HrLeave, "status">): boolean {
+  return leave.status === "pending" || leave.status === "approved";
+}
+
+export function leaveRangesOverlap(
+  a: Pick<HrLeave, "from" | "to">,
+  b: Pick<HrLeave, "from" | "to">
+): boolean {
+  return a.from <= b.to && a.to >= b.from;
+}
+
+export function leaveHasOverlap(
+  leaves: HrLeave[],
+  row: Pick<HrLeave, "id" | "userId" | "from" | "to" | "status">
+): boolean {
+  if (!leaveIsOpen(row)) return false;
+  return leaves.some(
+    (l) =>
+      l.id !== row.id &&
+      l.userId === row.userId &&
+      leaveIsOpen(l) &&
+      leaveRangesOverlap(l, row)
+  );
+}
+
+export function advanceExceedsNet(amount: number, net: number): boolean {
+  return amount > Math.max(0, net) + 0.001;
 }
 
 /** Staff GET: keep shift / OT rate, hide salary figures. */
@@ -320,10 +432,14 @@ export function leaveQuotaBlocked(
 }
 
 export function inclusiveLeaveDays(from: string, to: string): number {
-  const a = new Date(from.slice(0, 10) + "T00:00:00");
-  const b = new Date(to.slice(0, 10) + "T00:00:00");
-  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime()) || b < a) return 0;
-  return Math.floor((b.getTime() - a.getTime()) / 86400000) + 1;
+  const a = from.slice(0, 10);
+  const b = to.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(a) || !/^\d{4}-\d{2}-\d{2}$/.test(b) || b < a) {
+    return 0;
+  }
+  const aMs = Date.UTC(Number(a.slice(0, 4)), Number(a.slice(5, 7)) - 1, Number(a.slice(8, 10)));
+  const bMs = Date.UTC(Number(b.slice(0, 4)), Number(b.slice(5, 7)) - 1, Number(b.slice(8, 10)));
+  return Math.floor((bMs - aMs) / 86400000) + 1;
 }
 
 function leaveCovers(leave: HrLeave, date: string): boolean {
@@ -381,7 +497,7 @@ export function computePayroll(input: PayrollInput): PayrollResult {
   let workedMinutes = 0;
 
   for (const date of dates) {
-    const dow = new Date(date + "T00:00:00").getDay();
+    const dow = weekdayIst(date);
     if (dow === weekOff) continue;
     workingDays += 1;
     const paidLeave = input.leaves.some(
@@ -593,23 +709,36 @@ export function buildHrPunch(input: {
   userAgent?: string;
   sites: HrSite[];
   siteIds?: string[];
+  gpsFallback?: boolean;
+  note?: string;
+  correctedBy?: string;
 }): HrPunch {
   const at = input.at || new Date().toISOString();
-  const fence = matchGeofence(input.lat, input.lng, input.sites, input.siteIds);
-  const weakGps = isWeakGps(input.accuracyM);
+  const hasGps =
+    input.lat != null &&
+    input.lng != null &&
+    Number.isFinite(input.lat) &&
+    Number.isFinite(input.lng);
+  const fence = hasGps
+    ? matchGeofence(input.lat, input.lng, input.sites, input.siteIds)
+    : { insideFence: false, siteId: undefined, meters: undefined };
+  const weakGps = !hasGps || isWeakGps(input.accuracyM);
   return {
     id: `hrp_${crypto.randomUUID()}`,
     userId: input.userId,
     kind: input.kind,
     at,
-    lat: input.lat,
-    lng: input.lng,
-    accuracyM: input.accuracyM,
+    lat: hasGps ? input.lat : undefined,
+    lng: hasGps ? input.lng : undefined,
+    accuracyM: hasGps ? input.accuracyM : undefined,
     insideFence: fence.insideFence,
     siteId: fence.siteId,
     photoUrl: input.photoUrl,
     userAgent: input.userAgent,
     weakGps,
+    gpsFallback: input.gpsFallback || !hasGps || undefined,
+    note: input.note,
+    correctedBy: input.correctedBy,
     createdAt: at,
   };
 }

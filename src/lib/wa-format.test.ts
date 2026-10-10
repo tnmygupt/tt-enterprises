@@ -90,10 +90,10 @@ describe("wa-format", () => {
       company: "T T Enterprises",
       order: "TT-104",
       lr: "",
-      link: "https://tanmayphotos.space/o/TT-104",
+      link: "https://app.ttenterprises.shop/o/TT-104",
     });
     expect(text).toBe(
-      "*T T Enterprises*\nTT-104\n\nhttps://tanmayphotos.space/o/TT-104"
+      "*T T Enterprises*\nTT-104\n\nhttps://app.ttenterprises.shop/o/TT-104"
     );
   });
 

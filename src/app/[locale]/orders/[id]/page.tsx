@@ -101,6 +101,7 @@ export default function OrderDetailPage() {
 
   const [lineWeights, setLineWeights] = useState<string[]>([]);
   const [billFile, setBillFile] = useState<File | null>(null);
+  const [allowOverCredit, setAllowOverCredit] = useState(false);
   const [proofNote, setProofNote] = useState("");
   const [proofFiles, setProofFiles] = useState<File[]>([]);
   const [proofAmount, setProofAmount] = useState("");
@@ -292,6 +293,10 @@ export default function OrderDetailPage() {
   const canManage = session && checkCapability(session, db, "manage_orders");
   const canBill = session && checkCapability(session, db, "upload_bill");
   const canVerify = session && checkCapability(session, db, "verify_payment");
+  const canOverrideCredit =
+    !!session &&
+    (checkCapability(session, db, "manage_accounts") ||
+      checkCapability(session, db, "view_financials"));
   const canLr =
     session &&
     (checkCapability(session, db, "upload_lr") ||
@@ -589,7 +594,8 @@ export default function OrderDetailPage() {
         preview.grossBill,
         billFileDataUrl,
         weights,
-        session?.id || "system"
+        session?.id || "system",
+        { allowOverCredit }
       );
       setMsg(
         locale === "hi"
@@ -715,6 +721,14 @@ export default function OrderDetailPage() {
                             ? "यह ऑर्डर रद्द है।"
                             : "This order was cancelled."}
             </p>
+            {order.status === "payment_pending" ? (
+              <a
+                href="#pay-now"
+                className="tt-btn tt-btn-dark mt-4 inline-flex w-full justify-center lg:hidden"
+              >
+                {locale === "hi" ? "पेमेंट करें" : "Pay now"}
+              </a>
+            ) : null}
           </div>
           {isOwner && order.lines.length ? (
             <button
@@ -750,7 +764,7 @@ export default function OrderDetailPage() {
             </div>
             <div>
               <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-                GST / Aadhaar
+                {t("checkout.gstAadhar")}
               </p>
               <p className="mt-0.5 text-base font-bold break-all">
                 {order.gstOrAadhar || "—"}
@@ -940,7 +954,7 @@ export default function OrderDetailPage() {
                     />
                   </label>
                   <label className="block text-xs">
-                    <span className="tt-label">GST / ID</span>
+                    <span className="tt-label">{t("checkout.gstAadhar")}</span>
                     <input
                       className="tt-input"
                       value={editGst}
@@ -1570,6 +1584,7 @@ export default function OrderDetailPage() {
             </div>
           ) : null}
 
+          <div id="pay-now" className="scroll-mt-24 space-y-6">
           {(isOwner || canManage) &&
           (order.status === "payment_pending" ||
             order.status === "payment_verified") &&
@@ -2003,6 +2018,7 @@ export default function OrderDetailPage() {
               </div>
             );
           })()}
+          </div>
 
           {canManage ? (
             <div className="rounded-2xl border-2 border-[var(--line)] bg-white p-4 space-y-3">
@@ -2093,6 +2109,21 @@ export default function OrderDetailPage() {
                     : "Enter actual kg per item — bill is auto from rate × kg. Schemes use the same weights."}
                 </p>
               )}
+              {(order.creditBlockedOverBy ?? 0) > 0 ? (
+                <p className="rounded-lg border border-[var(--danger)]/40 bg-[var(--brand-soft)] px-3 py-2 text-xs font-semibold text-[var(--danger)]">
+                  {t("accounts.blockedOnCredit")} · ₹{order.creditBlockedOverBy}
+                </p>
+              ) : null}
+              {canOverrideCredit ? (
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={allowOverCredit}
+                    onChange={(e) => setAllowOverCredit(e.target.checked)}
+                  />
+                  {t("accounts.allowOverCreditBill")}
+                </label>
+              ) : null}
               <div className="space-y-2">
                 <p className="tt-label">
                   {locale === "hi"

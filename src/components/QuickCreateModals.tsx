@@ -147,7 +147,7 @@ export function CreatePartyModal({
           />
         </div>
         <div>
-          <label className="tt-label">GSTIN / Aadhaar</label>
+          <label className="tt-label">ID / Aadhaar</label>
           <input
             className="tt-input"
             value={gstin}

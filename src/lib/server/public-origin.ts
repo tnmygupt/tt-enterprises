@@ -21,6 +21,31 @@ export function isPrivateHost(host: string): boolean {
   return false;
 }
 
+const APP_HOST = "app.ttenterprises.shop";
+const LEGACY_HOSTS = new Set([
+  "tanmayphotos.space",
+  "www.tanmayphotos.space",
+]);
+
+/** Send the expired tanmayphotos.space hosts to the live app hostname. */
+export function wwwApexRedirect(req: NextRequest): NextResponse | null {
+  const host = hostnameOf(
+    firstHeader(req, "x-forwarded-host") || firstHeader(req, "host")
+  );
+  if (!LEGACY_HOSTS.has(host) || host === APP_HOST) return null;
+  const proto = firstHeader(req, "x-forwarded-proto") || "https";
+  const dest = new URL(req.nextUrl.pathname + req.nextUrl.search, req.nextUrl);
+  dest.protocol = proto === "http" ? "http:" : "https:";
+  dest.hostname = APP_HOST;
+  dest.port = "";
+  const res = NextResponse.redirect(dest, 308);
+  res.headers.set(
+    "Cache-Control",
+    "private, no-cache, no-store, max-age=0, must-revalidate"
+  );
+  return res;
+}
+
 /** Public https origin for redirects (never 0.0.0.0 / localhost). */
 export function publicOrigin(req: NextRequest): string {
   const candidates = [

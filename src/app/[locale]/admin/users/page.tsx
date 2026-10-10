@@ -1520,7 +1520,145 @@ export default function AdminUsersPage() {
             </div>
           </div>
 
-          <div className="tt-panel mt-5 overflow-x-auto">
+          <div className="tt-acct-cards mt-5 sm:hidden">
+            {visibleDealers.map((u) => (
+              <div key={u.id} className="tt-panel tt-acct-card space-y-3">
+                <div className="flex items-start gap-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={selectedDealers.has(u.id)}
+                    onChange={(e) => {
+                      setSelectedDealers((cur) => {
+                        const next = new Set(cur);
+                        if (e.target.checked) next.add(u.id);
+                        else next.delete(u.id);
+                        return next;
+                      });
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 text-left"
+                    onClick={() => setViewUserId(u.id)}
+                  >
+                    <p className="font-semibold text-[var(--brand)]">{u.name}</p>
+                    {u.company ? (
+                      <p className="text-xs text-[var(--ink-muted)]">{u.company}</p>
+                    ) : null}
+                    <p className="mt-0.5 font-mono text-sm">{u.phone}</p>
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {!u.active ? (
+                    <span
+                      className="text-xs font-semibold text-[var(--danger)]"
+                      title={
+                        u.revokedReason ||
+                        (u.revokedAt
+                          ? `Revoked ${new Date(u.revokedAt).toLocaleString(
+                              locale === "hi" ? "hi-IN" : "en-IN"
+                            )}`
+                          : "")
+                      }
+                    >
+                      {t("admin.peopleRevoked")}
+                    </span>
+                  ) : u.approved ? (
+                    <span className="text-xs font-semibold text-[var(--ok)]">
+                      {t("admin.peopleApproved")}
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="tt-btn tt-btn-dark px-3 py-1.5 text-xs"
+                        disabled={reviewBusyId === u.id}
+                        onClick={() => void reviewDealerCloud(u, "approve")}
+                      >
+                        {t("admin.approve")}
+                      </button>
+                      <button
+                        type="button"
+                        className="tt-btn tt-btn-outline px-3 py-1.5 text-xs text-[var(--danger)]"
+                        disabled={reviewBusyId === u.id}
+                        onClick={() => {
+                          if (!confirm(t("admin.peopleRejectConfirm"))) {
+                            return;
+                          }
+                          void reviewDealerCloud(u, "reject");
+                        }}
+                      >
+                        {t("admin.reject")}
+                      </button>
+                    </>
+                  )}
+                </div>
+                <p className="text-sm tabular-nums">
+                  {formatInr(u.walletBalance)}
+                  <span className="ml-2 text-xs text-[var(--ink-muted)]">
+                    {t("admin.peopleLifting")}: {u.liftingProgressKg}
+                  </span>
+                </p>
+                {canManageStaff ? renderPasswordCell(u) : null}
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="tt-btn tt-btn-outline px-3 py-1.5 text-xs"
+                    onClick={() => setViewUserId(u.id)}
+                  >
+                    {t("admin.peopleInfo")}
+                  </button>
+                  {canDeposit ? (
+                    <button
+                      type="button"
+                      className="tt-btn tt-btn-outline px-3 py-1.5 text-xs"
+                      onClick={() => promptDeposit(u.id, u.name)}
+                    >
+                      {t("admin.peopleDeposit")}
+                    </button>
+                  ) : null}
+                  {canManageDealerFile ? (
+                    u.active ? (
+                      <button
+                        type="button"
+                        className="tt-btn tt-btn-outline px-3 py-1.5 text-xs text-[var(--danger)]"
+                        disabled={reviewBusyId === u.id}
+                        onClick={() => void promptRevoke(u.id, u.name)}
+                      >
+                        {t("admin.peopleRevoke")}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="tt-btn tt-btn-outline px-3 py-1.5 text-xs"
+                        disabled={reviewBusyId === u.id}
+                        onClick={() => void doRestore(u.id, u.name)}
+                      >
+                        {t("admin.peopleRestore")}
+                      </button>
+                    )
+                  ) : null}
+                  {canManageStaff ? (
+                    <button
+                      type="button"
+                      className="tt-btn tt-btn-outline px-3 py-1.5 text-xs text-[var(--danger)]"
+                      onClick={() => promptDelete(u.id, u.name)}
+                    >
+                      {t("common.delete")}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+            {!visibleDealers.length ? (
+              <p className="p-2 text-sm text-[var(--ink-muted)]">
+                {t("common.empty")}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="tt-panel mt-5 hidden overflow-x-auto sm:block">
             <table className="tt-table min-w-[1200px]">
               <thead>
                 <tr>
@@ -1838,7 +1976,163 @@ export default function AdminUsersPage() {
               />
             </div>
           ) : null}
-          <div className="tt-panel mt-5 overflow-x-auto">
+          <div className="tt-acct-cards mt-5 sm:hidden">
+            {staff.map((u) => {
+              const otherOwners = staff.filter(
+                (x) =>
+                  x.id !== u.id && x.role === "super_admin" && x.active
+              ).length;
+              const locked =
+                u.id === session.id ||
+                (u.role === "super_admin" && otherOwners === 0);
+              return (
+                <div key={u.id} className="tt-panel tt-acct-card space-y-3">
+                  <div>
+                    <p className="font-semibold">
+                      {u.name}
+                      {u.id === session.id ? (
+                        <span className="ml-2 text-xs font-normal text-[var(--ink-muted)]">
+                          ({t("admin.peopleYou")})
+                        </span>
+                      ) : null}
+                    </p>
+                    <p className="mt-0.5 font-mono text-sm">{u.phone}</p>
+                    {!u.active ? (
+                      <p className="mt-1 text-xs font-semibold text-[var(--danger)]">
+                        {t("admin.peopleRevoked")}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-xs font-semibold text-[var(--ok)]">
+                        {t("admin.peopleActive")}
+                      </p>
+                    )}
+                  </div>
+                  <label className="tt-hr-field">
+                    <span className="tt-hr-label">{t("admin.peopleRole")}</span>
+                    <select
+                      className="tt-select"
+                      value={u.role}
+                      disabled={locked || !isOwner}
+                      onChange={(e) => {
+                        const nextRole = e.target.value as UserRole;
+                        if (
+                          u.role === "super_admin" &&
+                          nextRole !== "super_admin" &&
+                          otherOwners === 0
+                        ) {
+                          setMsg(t("admin.peopleLastOwnerDemote"));
+                          return;
+                        }
+                        upsertUser({
+                          ...u,
+                          role: nextRole,
+                          extraCapabilities: undefined,
+                          deniedCapabilities: undefined,
+                          jobId: undefined,
+                        });
+                        refresh();
+                      }}
+                    >
+                      {STAFF_ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {staffRoleLabel(r, locale)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {u.role === "super_admin" ? null : (
+                    <label className="tt-hr-field">
+                      <span className="tt-hr-label">{t("admin.peopleJob")}</span>
+                      <select
+                        className="tt-select"
+                        value={u.jobId || ""}
+                        disabled={locked || !isOwner}
+                        onChange={(e) => {
+                          try {
+                            assignStaffJob(
+                              u.id,
+                              e.target.value || null,
+                              session.id
+                            );
+                            setMsg(t("admin.peopleJobAssigned"));
+                            refresh();
+                          } catch (err) {
+                            setMsg(
+                              err instanceof Error
+                                ? err.message
+                                : t("admin.peopleJobAssigned")
+                            );
+                          }
+                        }}
+                      >
+                        <option value="">{t("admin.peopleNoJob")}</option>
+                        {(db?.staffJobs ?? []).map((job) => (
+                          <option key={job.id} value={job.id}>
+                            {staffJobLabel(job, locale)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {renderPasswordCell(u)}
+                  {locked && u.role === "super_admin" && otherOwners === 0 ? (
+                    <p className="text-xs text-[var(--ink-muted)]">
+                      {t("admin.peopleProtected")}
+                    </p>
+                  ) : locked ? (
+                    <p className="text-xs text-[var(--ink-muted)]">
+                      {t("admin.peopleSelf")}
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="tt-btn tt-btn-outline px-3 py-1.5 text-xs"
+                        onClick={() => setViewUserId(u.id)}
+                      >
+                        {t("admin.peopleInfo")}
+                      </button>
+                      {isOwner && u.role !== "super_admin" ? (
+                        <button
+                          type="button"
+                          className="tt-btn tt-btn-outline px-3 py-1.5 text-xs"
+                          onClick={() => setPermEditId(u.id)}
+                        >
+                          {t("admin.peopleCustomize")}
+                        </button>
+                      ) : null}
+                      {u.active ? (
+                        <button
+                          type="button"
+                          className="tt-btn tt-btn-outline px-3 py-1.5 text-xs text-[var(--danger)]"
+                          onClick={() => promptRevoke(u.id, u.name)}
+                        >
+                          {t("admin.peopleRevoke")}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="tt-btn tt-btn-outline px-3 py-1.5 text-xs"
+                          onClick={() => doRestore(u.id, u.name)}
+                        >
+                          {t("admin.peopleRestore")}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="tt-btn tt-btn-outline px-3 py-1.5 text-xs text-[var(--danger)]"
+                        onClick={() => promptDelete(u.id, u.name)}
+                      >
+                        {t("common.delete")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="tt-panel mt-5 hidden overflow-x-auto sm:block">
             <table className="tt-table min-w-[1100px]">
               <thead>
                 <tr>
@@ -2173,7 +2467,11 @@ export default function AdminUsersPage() {
               e.preventDefault();
               if (!assignForm.userId || !assignForm.schemeId) return;
               assignSchemeToUser(assignForm.userId, assignForm.schemeId);
-              setMsg(t("admin.peopleSchemeAssigned"));
+              setMsg(
+                checkCapability(session, db, "view_financials")
+                  ? t("admin.peopleSchemeAssigned")
+                  : t("admin.approvalQueued")
+              );
               refresh();
             }}
           >
@@ -2231,7 +2529,49 @@ export default function AdminUsersPage() {
               {t("admin.peopleLogHint")}
             </p>
           </div>
-          <table className="tt-table min-w-[900px]">
+          <div className="tt-acct-cards p-3 sm:hidden">
+            {(db?.peopleActivity ?? []).slice(0, 80).map((row) => {
+              const actionLabel =
+                row.action === "approve"
+                  ? t("admin.approve")
+                  : row.action === "reject"
+                    ? t("admin.reject")
+                    : row.action === "revoke"
+                      ? t("admin.peopleRevoke")
+                      : row.action === "restore"
+                        ? t("admin.peopleRestore")
+                        : t("admin.peopleLogEdit");
+              const detail = [
+                row.reason,
+                ...(row.changes ?? []).map(
+                  (c) => `${c.field}: ${c.from || "—"} → ${c.to || "—"}`
+                ),
+              ]
+                .filter(Boolean)
+                .join(" · ");
+              return (
+                <div key={row.id} className="tt-panel tt-acct-card space-y-1">
+                  <p className="text-xs text-[var(--ink-muted)]">
+                    {new Date(row.at).toLocaleString(
+                      locale === "hi" ? "hi-IN" : "en-IN"
+                    )}
+                  </p>
+                  <p className="text-sm font-semibold">{actionLabel}</p>
+                  <p className="text-sm">{row.userName}</p>
+                  <p className="font-mono text-xs text-[var(--ink-muted)]">
+                    {row.userPhone}
+                  </p>
+                  <p className="text-xs text-[var(--ink-muted)]">
+                    {t("admin.peopleLogWho")}: {row.actorName}
+                  </p>
+                  {detail ? (
+                    <p className="text-xs text-[var(--ink-muted)]">{detail}</p>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+          <table className="tt-table hidden min-w-[900px] sm:table">
             <thead>
               <tr>
                 <th>{t("admin.peopleLogWhen")}</th>

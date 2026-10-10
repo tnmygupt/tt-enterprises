@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, Suspense, useMemo, useState } from "react";
+import { FormEvent, Fragment, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { Link } from "@/i18n/routing";
@@ -16,9 +16,9 @@ import {
   catalogRowValue,
   deriveSecondaryQty,
   inventoryRows,
-  parseCatalogRowValue,
   voucherLineAmount,
 } from "@/lib/inventory";
+import { applyCatalogToVoucherLine } from "@/lib/voucher-line-catalog";
 import { ExportButtons } from "@/components/ExportButtons";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
 import {
@@ -34,26 +34,25 @@ import {
   checkAnyCapability,
   checkCapability,
   createVoucher,
+  cancelPurchaseOrder,
   markPurchaseOrderOrdered,
+  updateDraftPurchaseOrder,
 } from "@/lib/store/db";
-import type { PurchaseOrder, VoucherLine } from "@/lib/types";
+import type { PurchaseOrder, PurchaseOrderLine } from "@/lib/types";
+import {
+  blankLine,
+  isEmptyItemLine,
+  lastEmptyItemIndex,
+  lastItemLineIndex,
+  mergeFilledItemLine,
+  withTrailingBlankItem,
+} from "../vouchers/helpers";
 import {
   sendWhatsAppMessage,
   supplierPoWhatsAppText,
   whatsappCountryCode,
   whatsappResultCopy,
 } from "@/lib/whatsapp";
-
-function blankLine(): VoucherLine {
-  return {
-    id: `vl_${crypto.randomUUID()}`,
-    itemLabel: "",
-    qty: 1,
-    secondaryQty: 1,
-    rate: 0,
-    amount: 0,
-  };
-}
 
 export default function PurchasesPage() {
   return (
@@ -88,6 +87,11 @@ function PurchasesInner() {
   const [msg, setMsg] = useState("");
   const [saving, setSaving] = useState(false);
   const [poBusyId, setPoBusyId] = useState<string | null>(null);
+  const [editPoId, setEditPoId] = useState<string | null>(null);
+  const [waPreview, setWaPreview] = useState<{
+    poId: string;
+    text: string;
+  } | null>(null);
   const [packingFile, setPackingFile] = useState<File | null>(null);
   const [form, setForm] = useState({
     supplierId: "",
@@ -95,8 +99,20 @@ function PurchasesInner() {
     narration: "",
     lines: [blankLine()],
   });
+  const [focusLineId, setFocusLineId] = useState<string | null>(null);
+  const [focusNonce, setFocusNonce] = useState(0);
+  const lineCatalogRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const catalog = useMemo(() => (db ? inventoryRows(db) : []), [db]);
+  const catalogOptions = useMemo(
+    () =>
+      catalog.map((c) => ({
+        value: catalogRowValue(c),
+        label: `${c.sku} · ${c.name}`,
+        searchText: `${c.sku} ${c.name}`,
+      })),
+    [catalog]
+  );
   const suppliers =
     db?.parties.filter((p) => p.active && p.type === "supplier") ?? [];
   const purchases = useMemo(() => {
@@ -128,6 +144,11 @@ function PurchasesInner() {
     [db, locale, purchases, showRates, t]
   );
 
+  useEffect(() => {
+    if (!focusLineId) return;
+    lineCatalogRefs.current[focusLineId]?.focus();
+  }, [focusLineId, focusNonce]);
+
   if (!session || !checkAnyCapability(session, db, ["manage_accounts", "manage_reorder"])) {
     return (
       <AccountsShell>
@@ -135,6 +156,76 @@ function PurchasesInner() {
       </AccountsShell>
     );
   }
+
+  const catalogFillOpts = {
+    catalogItems: catalog,
+    products: db?.products ?? [],
+    type: "purchase" as const,
+    partyId: form.supplierId,
+    date: form.date,
+    contracts: db?.supplierContracts,
+  };
+
+  const applyLineCatalog = (index: number, val: string) => {
+    const current = form.lines[index];
+    if (!current) return;
+    const result = applyCatalogToVoucherLine({
+      ...catalogFillOpts,
+      line: current,
+      catalogValue: val,
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setError("");
+    const next = [...form.lines];
+    next[index] = result.line;
+    setForm({
+      ...form,
+      lines: result.cleared ? next : withTrailingBlankItem(next),
+    });
+  };
+
+  const quickAddCatalog = (val: string) => {
+    if (!val) return;
+    const idx = lastEmptyItemIndex(form.lines);
+    const source = idx >= 0 ? form.lines[idx]! : blankLine();
+    const result = applyCatalogToVoucherLine({
+      ...catalogFillOpts,
+      line: source,
+      catalogValue: val,
+    });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setError("");
+    setForm({
+      ...form,
+      lines: mergeFilledItemLine(form.lines, result.line),
+    });
+  };
+
+  const addBlankItemLine = () => {
+    const idx = lastEmptyItemIndex(form.lines);
+    if (idx >= 0) {
+      setFocusLineId(form.lines[idx]!.id);
+      setFocusNonce((n) => n + 1);
+      return;
+    }
+    const blank = blankLine();
+    setForm({ ...form, lines: [...form.lines, blank] });
+    setFocusLineId(blank.id);
+    setFocusNonce((n) => n + 1);
+  };
+
+  const onLastItemFieldEnter = (index: number) => {
+    if (index !== lastItemLineIndex(form.lines)) return;
+    const row = form.lines[index];
+    if (!row || isEmptyItemLine(row)) return;
+    addBlankItemLine();
+  };
 
   const onSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -191,7 +282,7 @@ function PurchasesInner() {
     }
   };
 
-  const onConfirmPo = async (po: PurchaseOrder) => {
+  const onConfirmPo = async (po: PurchaseOrder, waText?: string) => {
     if (!session || poBusyId) return;
     setPoBusyId(po.id);
     setError("");
@@ -200,31 +291,74 @@ function PurchasesInner() {
       markPurchaseOrderOrdered(po.id, session.id);
       refresh();
       const sup = db?.parties.find((p) => p.id === po.supplierId);
-      const wa = await sendWhatsAppMessage(
-        sup?.phone || "",
+      const text =
+        waText ??
         supplierPoWhatsAppText({
           po,
           companyName: db?.settings.companyName || "TT Enterprises",
           locale,
-        }),
-        whatsappCountryCode(db?.settings),
-        { outboxLabel: sup?.name }
-      );
-      setMsg(
-        `${t("accounts.poMarkedOrdered", { number: po.number })} · ${whatsappResultCopy(
-          wa,
-          {
-            sent: t("common.whatsappSent"),
-            opened: t("common.whatsappOpened"),
-            fail: t("common.whatsappSendFailed"),
-            noPhone: t("common.whatsappNoPhone"),
-          }
-        )}`
-      );
+        });
+      if (text.trim() && (sup?.phone || "").trim()) {
+        const wa = await sendWhatsAppMessage(
+          sup?.phone || "",
+          text,
+          whatsappCountryCode(db?.settings),
+          { outboxLabel: sup?.name }
+        );
+        setMsg(
+          `${t("accounts.poMarkedOrdered", { number: po.number })} · ${whatsappResultCopy(
+            wa,
+            {
+              sent: t("common.whatsappSent"),
+              opened: t("common.whatsappOpened"),
+              fail: t("common.whatsappSendFailed"),
+              noPhone: t("common.whatsappNoPhone"),
+            }
+          )}`
+        );
+      } else {
+        setMsg(t("accounts.poMarkedOrdered", { number: po.number }));
+      }
+      setWaPreview(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
     } finally {
       setPoBusyId(null);
+    }
+  };
+
+  const openWaPreview = (po: PurchaseOrder) => {
+    setWaPreview({
+      poId: po.id,
+      text: supplierPoWhatsAppText({
+        po,
+        companyName: db?.settings.companyName || "TT Enterprises",
+        locale,
+      }),
+    });
+  };
+
+  const saveDraftPo = (po: PurchaseOrder, lines: PurchaseOrderLine[]) => {
+    if (!session) return;
+    try {
+      updateDraftPurchaseOrder(po.id, session.id, { lines });
+      refresh();
+      setMsg(t("accounts.poDraftSaved", { number: po.number }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
+    }
+  };
+
+  const onCancelPo = (po: PurchaseOrder) => {
+    if (!session) return;
+    try {
+      cancelPurchaseOrder(po.id, session.id);
+      if (editPoId === po.id) setEditPoId(null);
+      if (waPreview?.poId === po.id) setWaPreview(null);
+      refresh();
+      setMsg(t("accounts.poCancelled", { number: po.number }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed");
     }
   };
 
@@ -330,15 +464,29 @@ function PurchasesInner() {
             label="Packing slip (photo or PDF)"
           />
 
+          <div className="sticky top-0 z-20 rounded-xl border border-[var(--brand)]/30 bg-white/95 p-3 shadow-sm backdrop-blur">
+            <label className="tt-label" htmlFor="purchase-quick-add">
+              {t("accounts.quickAddItem")}
+            </label>
+            <SearchSelect
+              id="purchase-quick-add"
+              options={catalogOptions}
+              value=""
+              onChange={quickAddCatalog}
+              placeholder="Search catalog…"
+              allowClear={false}
+              keepFocusOnPick
+            />
+            <p className="mt-1 text-xs text-[var(--ink-muted)]">
+              {t("accounts.quickAddItemHint")}
+            </p>
+          </div>
+
           {form.lines.map((l, i) => (
             <div key={l.id} className="grid gap-2 md:grid-cols-5">
               <SearchSelect
                 className="sm:col-span-2"
-                options={catalog.map((c) => ({
-                  value: catalogRowValue(c),
-                  label: `${c.sku} · ${c.name}`,
-                  searchText: `${c.sku} ${c.name}`,
-                }))}
+                options={catalogOptions}
                 value={
                   l.productId
                     ? catalogRowValue({
@@ -348,57 +496,13 @@ function PurchasesInner() {
                       })
                     : ""
                 }
-                onChange={(val) => {
-                  const next = [...form.lines];
-                  if (!val) {
-                    next[i] = {
-                      ...l,
-                      productId: undefined,
-                      variationId: undefined,
-                      colorId: undefined,
-                      itemLabel: "",
-                    };
-                    setForm({ ...form, lines: next });
-                    return;
-                  }
-                  const { productId, variationId, colorId } =
-                    parseCatalogRowValue(val);
-                  const item = catalog.find(
-                    (c) =>
-                      c.productId === productId &&
-                      (c.variationId ?? "") === (variationId || "") &&
-                      (c.colorId ?? "") === (colorId || "")
-                  );
-                  const product = db?.products.find((p) => p.id === productId);
-                  const variation = product?.variations.find(
-                    (v) => v.id === variationId
-                  );
-                  const rate =
-                    product && isSqftUnit(product.unit)
-                      ? resolveSqftPack(product, variation).ratePerSqft
-                      : variation?.rate ?? product?.baseRate ?? l.rate;
-                  const qty = l.qty || 1;
-                  const secondaryQty = product
-                    ? deriveSecondaryQty(product, qty, variationId || undefined)
-                    : qty;
-                  const updated: VoucherLine = {
-                    ...l,
-                    productId,
-                    variationId: variationId || undefined,
-                    colorId: colorId || undefined,
-                    itemLabel: item?.name || l.itemLabel,
-                    unit: product?.unit,
-                    qty,
-                    rate,
-                    secondaryQty,
-                    amount: 0,
-                  };
-                  updated.amount = voucherLineAmount(updated, product);
-                  next[i] = updated;
-                  setForm({ ...form, lines: next });
-                }}
+                onChange={(val) => applyLineCatalog(i, val)}
                 placeholder="Search catalog…"
                 emptyLabel="Catalog…"
+                autoFocus={l.id === focusLineId}
+                inputRef={(el) => {
+                  lineCatalogRefs.current[l.id] = el;
+                }}
               />
               <NumberField
                 className="tt-input"
@@ -446,6 +550,15 @@ function PurchasesInner() {
                   next[i] = updated;
                   setForm({ ...form, lines: next });
                 }}
+                onKeyDown={
+                  showRates
+                    ? undefined
+                    : (e) => {
+                        if (e.key !== "Enter") return;
+                        e.preventDefault();
+                        onLastItemFieldEnter(i);
+                      }
+                }
               />
               {showRates ? (
                 <div>
@@ -470,6 +583,11 @@ function PurchasesInner() {
                       updated.amount = voucherLineAmount(updated, product);
                       next[i] = updated;
                       setForm({ ...form, lines: next });
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      e.preventDefault();
+                      onLastItemFieldEnter(i);
                     }}
                   />
                   {isSqftUnit(l.unit) && l.productId && l.rate > 0
@@ -520,12 +638,10 @@ function PurchasesInner() {
 
           <button
             type="button"
-            className="text-sm font-semibold text-[var(--brand)]"
-            onClick={() =>
-              setForm({ ...form, lines: [...form.lines, blankLine()] })
-            }
+            className="tt-btn tt-btn-outline"
+            onClick={addBlankItemLine}
           >
-            + {locale === "hi" ? "लाइन" : "Line"}
+            + {t("accounts.addItem")}
           </button>
           <button type="submit" className="tt-btn tt-btn-dark block" disabled={saving}>
             {saving ? t("accounts.saving") : t("common.save")}
@@ -534,7 +650,7 @@ function PurchasesInner() {
       ) : null}
 
       {tab === "orders" ? (
-        <div className="tt-panel mt-6 overflow-x-auto">
+        <div className="tt-panel mt-6 tt-acct-table-wrap">
           <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
             {t("accounts.openPos")}
           </p>
@@ -552,38 +668,120 @@ function PurchasesInner() {
             <tbody>
               {openPos.map((po) => {
                 const sup = db?.parties.find((p) => p.id === po.supplierId);
+                const editing = editPoId === po.id;
+                const previewing = waPreview?.poId === po.id;
                 return (
-                  <tr key={po.id}>
-                    <td className="font-mono text-sm">{po.number}</td>
-                    <td>{po.date}</td>
-                    <td>{sup?.name || "—"}</td>
-                    <td className="capitalize">{po.status}</td>
-                    <td className="tabular-nums">{poRemainingQty(po)}</td>
-                    <td>
-                      <div className="flex flex-wrap gap-x-3">
-                        {po.status === "draft" ? (
-                          <button
-                            type="button"
-                            className="text-sm font-semibold text-[var(--brand-deep)] underline"
-                            disabled={poBusyId === po.id}
-                            onClick={() => void onConfirmPo(po)}
-                          >
-                            {poBusyId === po.id
-                              ? "…"
-                              : t("accounts.confirmPoWhatsApp")}
-                          </button>
-                        ) : null}
-                        {canBooks ? (
-                          <Link
-                            href="/admin/accounts/goods-received"
-                            className="text-sm font-semibold text-[var(--brand-deep)] underline"
-                          >
-                            {t("accounts.receiveAgainstPo")}
-                          </Link>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
+                  <Fragment key={po.id}>
+                    <tr>
+                      <td className="font-mono text-sm">{po.number}</td>
+                      <td>{po.date}</td>
+                      <td>{sup?.name || "—"}</td>
+                      <td className="capitalize">{po.status}</td>
+                      <td className="tabular-nums">{poRemainingQty(po)}</td>
+                      <td>
+                        <div className="flex flex-wrap gap-x-3">
+                          {po.status === "draft" ? (
+                            <>
+                              <button
+                                type="button"
+                                className="text-sm font-semibold text-[var(--brand-deep)] underline"
+                                onClick={() =>
+                                  setEditPoId(editing ? null : po.id)
+                                }
+                              >
+                                {editing
+                                  ? t("common.cancel")
+                                  : t("accounts.editDraftPo")}
+                              </button>
+                              <button
+                                type="button"
+                                className="text-sm font-semibold text-[var(--brand-deep)] underline"
+                                disabled={poBusyId === po.id}
+                                onClick={() => openWaPreview(po)}
+                              >
+                                {t("accounts.confirmPoWhatsApp")}
+                              </button>
+                              <button
+                                type="button"
+                                className="text-sm font-semibold text-[var(--danger)] underline"
+                                onClick={() => onCancelPo(po)}
+                              >
+                                {t("accounts.cancelPo")}
+                              </button>
+                            </>
+                          ) : null}
+                          {canBooks ? (
+                            <Link
+                              href="/admin/accounts/goods-received"
+                              className="text-sm font-semibold text-[var(--brand-deep)] underline"
+                            >
+                              {t("accounts.receiveAgainstPo")}
+                            </Link>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                    {editing && po.status === "draft" ? (
+                      <tr>
+                        <td colSpan={6} className="bg-[var(--surface)] p-3">
+                          <DraftPoEditor
+                            po={po}
+                            showRates={showRates}
+                            onSave={(lines) => saveDraftPo(po, lines)}
+                            onCancelPo={() => onCancelPo(po)}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                    {previewing ? (
+                      <tr>
+                        <td colSpan={6} className="bg-[var(--surface)] p-3">
+                          <p className="text-sm font-semibold">
+                            {t("accounts.whatsAppPreview")}
+                          </p>
+                          <textarea
+                            className="tt-input mt-2 min-h-32 w-full font-mono text-sm"
+                            value={waPreview.text}
+                            onChange={(e) =>
+                              setWaPreview({
+                                poId: po.id,
+                                text: e.target.value,
+                              })
+                            }
+                          />
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              className="tt-btn tt-btn-dark"
+                              disabled={poBusyId === po.id}
+                              onClick={() =>
+                                void onConfirmPo(po, waPreview.text)
+                              }
+                            >
+                              {poBusyId === po.id
+                                ? "…"
+                                : t("accounts.confirmAndSendWa")}
+                            </button>
+                            <button
+                              type="button"
+                              className="tt-btn tt-btn-outline"
+                              disabled={poBusyId === po.id}
+                              onClick={() => void onConfirmPo(po, " ")}
+                            >
+                              {t("accounts.confirmWithoutWa")}
+                            </button>
+                            <button
+                              type="button"
+                              className="tt-btn tt-btn-outline"
+                              onClick={() => setWaPreview(null)}
+                            >
+                              {t("common.cancel")}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -593,7 +791,7 @@ function PurchasesInner() {
           ) : null}
         </div>
       ) : (
-      <div className="tt-panel mt-6 overflow-x-auto">
+      <div className="tt-panel mt-6 tt-acct-table-wrap">
         <p className="border-b border-[var(--line)] px-4 py-3 text-sm font-semibold">
           {t("accounts.purchaseBills")}
         </p>
@@ -632,5 +830,85 @@ function PurchasesInner() {
       </div>
       )}
     </AccountsShell>
+  );
+}
+
+function DraftPoEditor({
+  po,
+  showRates,
+  onSave,
+  onCancelPo,
+}: {
+  po: PurchaseOrder;
+  showRates: boolean;
+  onSave: (lines: PurchaseOrderLine[]) => void;
+  onCancelPo: () => void;
+}) {
+  const t = useTranslations();
+  const [lines, setLines] = useState<PurchaseOrderLine[]>(() =>
+    po.lines.map((l) => ({ ...l }))
+  );
+
+  const patch = (i: number, next: Partial<PurchaseOrderLine>) => {
+    setLines((cur) => {
+      const copy = [...cur];
+      const row = { ...copy[i]!, ...next };
+      row.amount = (Number(row.qty) || 0) * (Number(row.rate) || 0);
+      copy[i] = row;
+      return copy;
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-semibold">{t("accounts.draftPoLines")}</p>
+      {lines.map((l, i) => (
+        <div key={l.id} className="grid gap-2 md:grid-cols-5">
+          <p className="self-center text-sm md:col-span-2">{l.itemLabel}</p>
+          <NumberField
+            className="tt-input"
+            integer
+            emptyAs={null}
+            value={l.qty}
+            onValueChange={(v) => patch(i, { qty: typeof v === "number" ? v : 0 })}
+          />
+          {showRates ? (
+            <NumberField
+              className="tt-input"
+              emptyAs={null}
+              value={l.rate}
+              onValueChange={(v) =>
+                patch(i, { rate: typeof v === "number" ? v : 0 })
+              }
+            />
+          ) : (
+            <span className="self-center text-xs text-[var(--ink-muted)]">••••</span>
+          )}
+          <button
+            type="button"
+            className="text-sm font-semibold text-[var(--danger)] underline"
+            onClick={() => setLines((cur) => cur.filter((_, j) => j !== i))}
+          >
+            {t("accounts.dropPoLine")}
+          </button>
+        </div>
+      ))}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="tt-btn tt-btn-dark"
+          onClick={() => onSave(lines)}
+        >
+          {t("common.save")}
+        </button>
+        <button
+          type="button"
+          className="tt-btn tt-btn-outline"
+          onClick={onCancelPo}
+        >
+          {t("accounts.cancelPo")}
+        </button>
+      </div>
+    </div>
   );
 }

@@ -5,8 +5,9 @@ import { Link, usePathname } from "@/i18n/routing";
 import { useLocale, useTranslations } from "next-intl";
 import { useDb, useSession } from "@/lib/hooks";
 import { getAdminQueues } from "@/lib/admin-queues";
+import { monthCloseObligation } from "@/lib/month-close-policy";
 import { checkCapability, isSalesDeskStaff, isStaff } from "@/lib/store/db";
-import { SALES_DESK_HREFS } from "@/lib/capabilities";
+import { SALES_DESK_HREFS, staffRoleLabel } from "@/lib/capabilities";
 import { refreshCloudDealerDirectory } from "@/lib/cloud-dealers";
 import { playStaffNewOrderChime } from "@/lib/whatsapp";
 import { notifyStaffPush } from "@/lib/push-client";
@@ -53,6 +54,12 @@ const GROUPS: NavGroup[] = [
     items: [
       { href: "/admin", labelKey: "admin.dashboard" },
       {
+        href: "/admin/orders",
+        labelKey: "admin.orders",
+        cap: "manage_orders",
+        badge: "need_confirm",
+      },
+      {
         href: "/admin/whatsapp",
         labelKey: "admin.whatsappDesk",
         anyCap: [
@@ -76,12 +83,18 @@ const GROUPS: NavGroup[] = [
       {
         href: "/admin/owner",
         labelKey: "admin.ownerTracking",
-        superOnly: true,
+        cap: "view_financials",
       },
       {
         href: "/admin/owner/monthly-audit",
         labelKey: "admin.monthlyAudit",
-        superOnly: true,
+        cap: "view_financials",
+      },
+      {
+        href: "/admin/owner/approvals",
+        labelKey: "admin.approvals",
+        cap: "view_financials",
+        badge: "need_owner_approval",
       },
       {
         href: "/admin/audit",
@@ -92,34 +105,13 @@ const GROUPS: NavGroup[] = [
           "view_financials",
         ],
       },
-      { href: "/admin/help", labelKey: "admin.helpGuide" },
-    ],
-  },
-  {
-    titleKey: "admin.moduleSelling",
-    items: [
-      {
-        href: "/admin/orders",
-        labelKey: "admin.orders",
-        cap: "manage_orders",
-        badge: "need_confirm",
-      },
-    ],
-  },
-  {
-    titleKey: "admin.moduleBooks",
-    items: [
-      {
-        href: "/admin/accounts",
-        labelKey: "admin.accountsBook",
-        cap: "manage_accounts",
-      },
       {
         href: "/admin/accounts/payments",
         labelKey: "admin.paymentsDesk",
         cap: "manage_accounts",
         badge: "need_verify_payment",
       },
+      { href: "/admin/help", labelKey: "admin.helpGuide" },
     ],
   },
   {
@@ -195,6 +187,16 @@ const GROUPS: NavGroup[] = [
     ],
   },
   {
+    titleKey: "admin.moduleBooks",
+    items: [
+      {
+        href: "/admin/accounts",
+        labelKey: "admin.accountsBook",
+        cap: "manage_accounts",
+      },
+    ],
+  },
+  {
     titleKey: "admin.moduleSetup",
     items: [
       {
@@ -227,6 +229,11 @@ export function AdminShell({
   const { session, ready } = useSession();
   const { db, refresh } = useDb();
   const queues = getAdminQueues(db);
+  const auditObligation = db ? monthCloseObligation(db) : null;
+  const showAuditBanner =
+    !!auditObligation &&
+    auditObligation.state !== "ok" &&
+    checkCapability(session, db, "view_financials");
   const salesDesk = isSalesDeskStaff(session, db);
   const [navOpen, setNavOpen] = useState(false);
   const [pendingOpen, setPendingOpen] = useState(false);
@@ -416,44 +423,50 @@ export function AdminShell({
     {
       key: "need_confirm",
       href: "/admin/orders?filter=estimate",
-      label: locale === "hi" ? "नए अनुमान" : "New estimates",
+      label: t("admin.queueEstimates"),
       count: queues.counts.need_confirm,
     },
     {
       key: "need_bill",
       href: "/admin/orders?filter=need_bill",
-      label: locale === "hi" ? "बिल बाकी" : "Bill pending",
+      label: t("admin.queueNeedBill"),
       count: queues.counts.need_bill,
     },
     {
       key: "need_verify",
       href: "/admin/orders?filter=need_verify",
-      label: locale === "hi" ? "पेमेंट जाँच" : "Verify payment",
+      label: t("admin.queueVerifyPay"),
       count: queues.counts.need_verify_payment,
     },
     {
       key: "need_lr",
       href: "/admin/orders?filter=need_lr",
-      label: locale === "hi" ? "LR → डिलीवर" : "LR → delivered",
+      label: t("admin.queueNeedLr"),
       count: queues.counts.need_lr,
     },
     {
       key: "full_truck",
       href: "/admin/orders?filter=full_truck",
-      label: locale === "hi" ? "फुल ट्रक" : "Full truck",
+      label: t("admin.queueFullTruck"),
       count: queues.counts.full_truck,
     },
     {
       key: "need_voucher",
       href: "/admin/orders?filter=need_voucher",
-      label: locale === "hi" ? "सेल वाउचर बाकी" : "Sale voucher due",
+      label: t("admin.queueNeedVoucher"),
       count: queues.counts.need_voucher,
     },
     {
       key: "need_reorder",
       href: "/admin/accounts/reports/stock-alerts",
-      label: locale === "hi" ? "रीऑर्डर स्टॉक" : "Reorder stock",
+      label: t("admin.queueReorder"),
       count: queues.counts.need_reorder,
+    },
+    {
+      key: "need_owner_approval",
+      href: "/admin/owner/approvals",
+      label: locale === "hi" ? "रेट / स्कीम अप्रूवल" : "Rate / scheme approval",
+      count: queues.counts.need_owner_approval,
     },
   ].filter((q) => {
     if (q.count <= 0) return false;
@@ -467,6 +480,9 @@ export function AdminShell({
         checkCapability(session, db, "manage_reorder")
       );
     }
+    if (q.key === "need_owner_approval") {
+      return checkCapability(session, db, "view_financials");
+    }
     return true;
   });
 
@@ -477,7 +493,7 @@ export function AdminShell({
         <div className="mb-3 flex items-center gap-2.5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/brand/tt-mark.svg"
+            src="/brand/tt-mark.png"
             alt=""
             className="h-10 w-10 rounded-[0.65rem]"
           />
@@ -491,7 +507,7 @@ export function AdminShell({
           </div>
         </div>
         <p className="text-xs capitalize text-[var(--ink-muted)]">
-          {session.role.replaceAll("_", " ")}
+          {staffRoleLabel(session.role, locale === "hi" ? "hi" : "en")}
         </p>
         {pendingQueues.length > 0 ? (
           <div className="mt-3">
@@ -506,13 +522,7 @@ export function AdminShell({
                 {pendingQueues.reduce((s, q) => s + q.count, 0)}
               </span>
               <span className="text-[10px] font-semibold opacity-80">
-                {pendingOpen
-                  ? locale === "hi"
-                    ? "छिपाएँ ▲"
-                    : "Hide ▲"
-                  : locale === "hi"
-                    ? "खोलें ▼"
-                    : "Open ▼"}
+                {pendingOpen ? t("admin.hidePending") : t("admin.openPending")}
               </span>
             </button>
             {pendingOpen ? (
@@ -543,9 +553,7 @@ export function AdminShell({
                     }}
                     className="flex min-h-9 items-center rounded-md px-2.5 py-1.5 text-[11px] font-medium text-[var(--ink-muted)] hover:bg-[var(--surface)] hover:text-[var(--ink)]"
                   >
-                    {locale === "hi"
-                      ? "सभी कतारें → डैशबोर्ड"
-                      : "All queues → dashboard"}
+                    {t("admin.allQueuesDashboard")}
                   </Link>
                 </li>
               </ul>
@@ -579,6 +587,10 @@ export function AdminShell({
                       : pathname === l.href ||
                         pathname.startsWith(`${l.href}/`);
                   const badgeCount = l.badge ? queues.counts[l.badge] : 0;
+                  const auditHot =
+                    l.href === "/admin/owner/monthly-audit" &&
+                    auditObligation &&
+                    auditObligation.state !== "ok";
                   const showBadge =
                     l.href === "/admin/orders"
                       ? pendingTotal
@@ -602,7 +614,19 @@ export function AdminShell({
                           ? t("admin.hrMyDesk")
                           : t(l.labelKey as "admin.dashboard")}
                       </span>
-                      {showBadge > 0 ? (
+                      {auditHot ? (
+                        <span
+                          className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
+                            auditObligation?.state === "blocking"
+                              ? "bg-red-600 text-white"
+                              : active
+                                ? "bg-white/25 text-white"
+                                : "bg-red-600 text-white"
+                          }`}
+                        >
+                          {locale === "hi" ? "ऑडिट" : "Audit"}
+                        </span>
+                      ) : showBadge > 0 ? (
                         <span
                           className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${
                             active
@@ -634,6 +658,34 @@ export function AdminShell({
 
   return (
     <div className="min-h-[70vh] border-t border-[var(--line)] bg-[var(--surface)]">
+      {showAuditBanner && auditObligation ? (
+        <Link
+          href={`/admin/owner/monthly-audit?month=${auditObligation.month}`}
+          className={`block px-4 py-2 text-sm font-semibold print:hidden ${
+            auditObligation.state === "blocking"
+              ? "bg-red-700 text-white"
+              : "bg-amber-100 text-amber-950"
+          }`}
+        >
+          {locale === "hi"
+            ? `मासिक ऑडिट ${auditObligation.month}: ${auditObligation.state === "blocking" ? "नए महीने की एंट्री बंद" : auditObligation.state === "overdue" ? "ओवरड्यू" : "इस सप्ताह करें"}`
+            : `Monthly audit ${auditObligation.month}: ${
+                auditObligation.state === "blocking"
+                  ? "new-month posting blocked"
+                  : auditObligation.state === "overdue"
+                    ? "overdue"
+                    : "due this week"
+              }`}
+          {auditObligation.override
+            ? locale === "hi"
+              ? " · ओवरराइड सक्रिय"
+              : " · override on"
+            : ""}
+          <span className="ml-2 underline">
+            {locale === "hi" ? "खोलें →" : "Open →"}
+          </span>
+        </Link>
+      ) : null}
       {toast ? (
         <Link
           href={toast.href}
@@ -643,7 +695,7 @@ export function AdminShell({
         >
           {toast.text}
           <span className="mt-1 block text-xs font-medium text-[var(--ink-muted)]">
-            {locale === "hi" ? "देखें →" : "View →"}
+            {t("admin.viewArrow")}
           </span>
         </Link>
       ) : null}
@@ -662,7 +714,9 @@ export function AdminShell({
             >
               {navOpen
                 ? closeLabel
-                : `${t("nav.admin")} menu${pendingTotal > 0 ? ` · ${pendingTotal}` : ""}`}
+                : pendingTotal > 0
+                  ? t("admin.adminMenuCount", { count: pendingTotal })
+                  : t("admin.adminMenu")}
             </button>
             {navOpen ? (
               <aside className="tt-panel mt-3 max-h-[min(70dvh,calc(100dvh-8rem))] overflow-y-auto p-0">

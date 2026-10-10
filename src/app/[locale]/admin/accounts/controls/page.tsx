@@ -209,6 +209,12 @@ export default function ControlsPage() {
             {t("accounts.healthCheck")}
           </Link>
           <Link
+            href="/admin/owner/monthly-audit"
+            className="tt-btn tt-btn-outline block text-center"
+          >
+            {t("accounts.monthClose")}
+          </Link>
+          <Link
             href="/admin/accounts/controls/flow-audit"
             className="tt-btn tt-btn-outline block text-center"
           >

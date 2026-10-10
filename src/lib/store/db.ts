@@ -32,10 +32,21 @@ import {
   assertPeriodOpen,
   buildBooksBackupPayload,
   isCashBankAccount,
+  postBalancedJournal,
+  voidJournalOn,
+  saleDueDate,
+  assertSaleUnderCredit,
+  voidBooksForCancelledOrders,
+  voidBooksForOrder,
   type BillCsvRow,
   type PartyCsvRow,
   type StockCsvRow,
 } from "../accounting";
+import { assertPriorMonthAudited } from "../month-close-policy";
+import {
+  draftCompanyBankAccount,
+  type NewCompanyBankInput,
+} from "../bank-accounts";
 import type {
   Account,
   AppSettings,
@@ -61,6 +72,7 @@ import type {
   BatchConsumption,
   StatementMatch,
   StatementMatchExtra,
+  BankAccountDetails,
   BankRecon,
   BankReconExtra,
   SupplierContract,
@@ -87,6 +99,9 @@ import type {
   StockCount,
   CashCount,
   MonthlyAudit,
+  Bom,
+  JobCard,
+  OwnerApproval,
 } from "../types";
 import type { WaInbox } from "../whatsapp-inbox";
 import { ROLE_CAPABILITIES, type Capability } from "../types";
@@ -113,12 +128,27 @@ import {
   roundOffRupees,
 } from "../pricing";
 import { calcShippingAmount } from "@/lib/shipping";
+import { shouldRetrySessionCookieCheck } from "@/lib/sync-errors";
 import { buildDraftPosFromAlerts } from "@/lib/reorder-po";
-import { confirmDraftPurchaseOrder } from "@/lib/purchase-orders";
+import { confirmDraftPurchaseOrder, cancelDraftPurchaseOrder } from "@/lib/purchase-orders";
 import { placeEstimateOnDatabase } from "@/lib/place-estimate";
+import {
+  cancelIssuedJobCardOn,
+  completeJobCardOn,
+  createJobCardOn,
+  issueJobCardOn,
+  upsertBomOn,
+} from "@/lib/production";
 import { stockAlertsFromDb } from "@/lib/accounting/analysis";
 import { normalizeProductLocalized } from "@/lib/localized";
-import { buildHrPunch, ensureHrAuditCollections } from "@/lib/hr";
+import {
+  buildHrPunch,
+  dateInIst,
+  ensureHrAuditCollections,
+  ensureStaffHrTerms,
+  isHrMonthLocked,
+  punchKindGuard,
+} from "@/lib/hr";
 import {
   adjustmentsFromApprovedLines,
   canEnterPhysicalCount,
@@ -126,6 +156,19 @@ import {
   startCashCountSession,
   startStockCountSession,
 } from "@/lib/stock-count";
+import {
+  applyOwnerApproval,
+  ensureOwnerApprovals,
+  extractSellingRates,
+  overlayLiveSellingRates,
+  productRatesTargetKey,
+  schemeAssignTargetKey,
+  schemeDeleteTargetKey,
+  schemeUpsertTargetKey,
+  schemesEffectivelyEqual,
+  sellingRatesEqual,
+  upsertPendingApproval,
+} from "@/lib/owner-approvals";
 export {
   calcWeightSlabShipping,
   calcShippingAmount,
@@ -241,6 +284,10 @@ export interface AppDatabase {
   stockCounts?: StockCount[];
   cashCounts?: CashCount[];
   monthlyAudits?: MonthlyAudit[];
+  boms?: Bom[];
+  jobCards?: JobCard[];
+  /** Staff selling-rate / scheme writes waiting for owner (`view_financials`). */
+  ownerApprovals?: OwnerApproval[];
 }
 
 function emptyDb(): AppDatabase {
@@ -286,6 +333,9 @@ function emptyDb(): AppDatabase {
     stockCounts: [],
     cashCounts: [],
     monthlyAudits: [],
+    boms: [],
+    jobCards: [],
+    ownerApprovals: [],
   };
 }
 
@@ -362,6 +412,9 @@ export function loadDb(): AppDatabase {
     if (!parsed.waInbox.reads) parsed.waInbox.reads = [];
     ensureHrAuditCollections(parsed);
     ensureCountCollections(parsed);
+    if (!parsed.boms) parsed.boms = [];
+    if (!parsed.jobCards) parsed.jobCards = [];
+    ensureOwnerApprovals(parsed);
 
     // Ensure perpetual accounting setup + FIFO migration
     const accountingMigrated = ensurePerpetualAccounting(parsed);
@@ -472,12 +525,15 @@ export function loadDb(): AppDatabase {
       }
     }
 
+    const cancelledBooks = voidBooksForCancelledOrders(parsed, "system");
+
     if (
       parsed.parties.length !== partyCountBefore ||
       stockMigrated ||
       localizedMigrated ||
       settledAny ||
-      accountingMigrated
+      accountingMigrated ||
+      cancelledBooks.changed
     ) {
       localStorage.setItem(DB_KEY, JSON.stringify(parsed));
     }
@@ -522,6 +578,7 @@ export function ensurePerpetualAccounting(db: AppDatabase): boolean {
   // Ensure new accounts exist (perpetual + M7 expense heads)
   const needed = [
     { id: ACCT.inventory, code: "1300", name: { en: "Inventory", hi: "इन्वेंटरी" }, type: "asset" as const },
+    { id: ACCT.wip, code: "1305", name: { en: "Work in progress", hi: "WIP" }, type: "asset" as const },
     { id: ACCT.cogs, code: "5002", name: { en: "Cost of Goods Sold", hi: "बेचे गए माल की लागत" }, type: "expense" as const },
     { id: ACCT.grni, code: "2105", name: { en: "Goods Received Not Billed", hi: "माल प्राप्त पर बिल नहीं" }, type: "liability" as const },
     { id: ACCT.freight, code: "5101", name: { en: "Freight / Cartage", hi: "भाड़ा" }, type: "expense" as const },
@@ -529,6 +586,7 @@ export function ensurePerpetualAccounting(db: AppDatabase): boolean {
     { id: ACCT.salary, code: "5103", name: { en: "Salary / Wages", hi: "वेतन" }, type: "expense" as const },
     { id: ACCT.electricity, code: "5104", name: { en: "Electricity", hi: "बिजली" }, type: "expense" as const },
     { id: ACCT.packing, code: "5105", name: { en: "Packing / Material", hi: "पैकिंग" }, type: "expense" as const },
+    { id: ACCT.wastage, code: "5106", name: { en: "Wastage / write-off", hi: "वेस्टेज" }, type: "expense" as const },
     { id: ACCT.miscExpense, code: "5199", name: { en: "Misc. Expense", hi: "अन्य खर्च" }, type: "expense" as const },
     {
       id: ACCT.freightCharges,
@@ -1053,6 +1111,28 @@ export async function syncSessionFromServer(): Promise<SessionUser | null> {
       return data.user;
     }
     if (res.status === 401) {
+      if (shouldRetrySessionCookieCheck(res.status, data.error, Boolean(getSession()))) {
+        await new Promise((r) => setTimeout(r, 300));
+        if (gen !== sessionSyncGen) return getSession();
+        const retry = await fetch("/api/account/login", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        const retryData = (await retry.json().catch(() => ({}))) as {
+          user?: SessionUser | null;
+          error?: string;
+        };
+        if (gen !== sessionSyncGen) return getSession();
+        if (retry.ok && retryData.user) {
+          setSession(retryData.user);
+          return retryData.user;
+        }
+        if (retry.status === 401 && (retryData.error || getSession())) {
+          setSession(null);
+          return null;
+        }
+        return getSession();
+      }
       // Deleted / disabled account: always drop leftover local session.
       // Missing cookie (no error): also drop leftover local session so the
       // login form is visible — in-flight GETs after login are ignored via gen.
@@ -1187,6 +1267,54 @@ function actorCan(
   db: AppDatabase
 ): boolean {
   return userHasCapability(actor, capability, capabilityContextFrom(db));
+}
+
+/** Owner (`view_financials`) writes live; missing session keeps tests writing live. */
+function actorWritesLiveCatalog(db: AppDatabase): boolean {
+  const session = getSession();
+  if (!session) return true;
+  const actor = db.users.find((u) => u.id === session.id);
+  if (actor) {
+    return userHasCapability(actor, "view_financials", capabilityContextFrom(db));
+  }
+  return hasCapability(session.role, "view_financials");
+}
+
+function sessionActorMeta(db: AppDatabase): { id: string; name: string } {
+  const session = getSession();
+  if (!session) return { id: "system", name: "System" };
+  const actor = db.users.find((u) => u.id === session.id);
+  return { id: session.id, name: actor?.name || session.name || session.id };
+}
+
+function notifyOwnerApprovalQueued(db: AppDatabase, title: string): void {
+  if (typeof window === "undefined") return;
+  const company = db.settings?.companyName || "TT Enterprises";
+  const text = `*${company}*\nOwner approval needed\n${title}\n/admin/owner/approvals`;
+  void (async () => {
+    try {
+      const { notifyStaffPush } = await import("@/lib/push-client");
+      await notifyStaffPush({
+        title: "Owner approval",
+        body: title,
+        url: "/en/admin/owner/approvals",
+      });
+    } catch {
+      /* best-effort */
+    }
+    try {
+      const { notifyStaffWhatsApp } = await import("@/lib/whatsapp");
+      await notifyStaffWhatsApp({
+        settings: db.settings,
+        users: db.users,
+        capability: "view_financials",
+        capabilityContext: capabilityContextFrom(db),
+        text,
+      });
+    } catch {
+      /* best-effort */
+    }
+  })();
 }
 
 /** Create or update the Accounts party linked to a dealer/customer user. */
@@ -2660,6 +2788,7 @@ export function updateOrderStatus(
 
 /**
  * Statuses where cancel is still allowed.
+ * Bill upload already posts a sale voucher, so cancel must void that bill.
  * Once payment is verified or the order dispatched, cancellation must go
  * through accounting (void voucher + refund flow) and is not a one-click op.
  */
@@ -2738,7 +2867,39 @@ export function cancelOrder(
         : " · no scheme weight (bill/actual not set)"),
   });
   saveDb(db);
-  return order;
+
+  const linked = loadDb().vouchers.filter(
+    (v) => v.linkedOrderId === orderId && !v.voided
+  );
+  const rank = (v: (typeof linked)[number]) =>
+    v.type === "sale" || v.type === "purchase" ? 1 : 0;
+  linked.sort((a, b) => rank(a) - rank(b));
+  const voidedNumbers: string[] = [];
+  for (const v of linked) {
+    try {
+      voidVoucher(v.id, byUserId);
+      voidedNumbers.push(v.number);
+    } catch {
+      /* period lock / already voided — ledger-only fallback below */
+    }
+  }
+  const fresh = loadDb();
+  const leftover = voidBooksForOrder(fresh, orderId, byUserId);
+  if (leftover.changed) {
+    for (const n of leftover.voidedNumbers) {
+      if (!voidedNumbers.includes(n)) voidedNumbers.push(n);
+    }
+  }
+  const o = fresh.orders.find((row) => row.id === orderId) ?? order;
+  if (voidedNumbers.length) {
+    o.timeline.push({
+      status: "cancelled",
+      at: new Date().toISOString(),
+      note: `Books: voided ${voidedNumbers.join(", ")} · removed from party overdue`,
+    });
+  }
+  saveDb(fresh);
+  return o;
 }
 
 /** Create packing slip for legacy orders that lack one. */
@@ -3093,6 +3254,7 @@ export function finalizePackingSlip(
     checkedBy?: string;
     manualDiscountKind?: "percent" | "flat";
     manualDiscountValue?: number;
+    allowOverCredit?: boolean;
   }
 ): Order {
   const db = loadDb();
@@ -3116,6 +3278,9 @@ export function finalizePackingSlip(
   }
   if (slip.status === "finalized") {
     throw new Error("Packing slip already finalized");
+  }
+  if (opts?.allowOverCredit) {
+    order.allowOverCredit = true;
   }
   const hasPktPcsQty = order.lines.some((line) => {
     const unit =
@@ -3186,6 +3351,15 @@ export function finalizePackingSlip(
   }
   slip.shippingAmount = ship;
   order.shippingAmount = ship;
+  const creditPreview = computeBillFromSlip(order, slip, {
+    shippingAmount: ship,
+  });
+  const creditBill = roundOffRupees(
+    Math.max(0, creditPreview.subtotal + ship)
+  );
+  if (creditBill > 0) {
+    enforceOrderCredit(db, order, creditBill);
+  }
   if (opts?.manualDiscountKind === "percent" || opts?.manualDiscountKind === "flat") {
     order.manualDiscountKind = opts.manualDiscountKind;
     order.manualDiscountValue =
@@ -3247,7 +3421,9 @@ export function finalizePackingSlip(
   const grossBill = roundOffRupees(
     Math.max(0, preview.subtotal + ship - schemeDisc)
   );
-  uploadBill(orderId, grossBill, undefined, undefined, staffId);
+  uploadBill(orderId, grossBill, undefined, undefined, staffId, {
+    allowOverCredit: opts?.allowOverCredit,
+  });
 
   const after = loadDb();
   const finalOrder = after.orders.find((o) => o.id === orderId)!;
@@ -3338,12 +3514,51 @@ export function reopenPackingSlip(orderId: string, staffId: string): Order {
   return order;
 }
 
+function customerPartyForOrder(
+  db: AppDatabase,
+  order: Order
+): Party | undefined {
+  const party = db.parties.find(
+    (p) => p.linkedUserId === order.userId && p.type === "customer"
+  );
+  if (party) return party;
+  const phone = (order.phone || "").trim();
+  if (!phone) return undefined;
+  return db.parties.find(
+    (p) => p.type === "customer" && p.active && p.phone === phone
+  );
+}
+
+function enforceOrderCredit(
+  db: AppDatabase,
+  order: Order,
+  saleTotal: number,
+  allowOverCredit?: boolean
+): void {
+  const party = customerPartyForOrder(db, order);
+  const check = assertSaleUnderCredit({
+    party,
+    ledgerEntries: db.ledgerEntries,
+    saleTotal,
+    allowOverCredit: allowOverCredit || order.allowOverCredit,
+  });
+  if (check.ok) {
+    order.creditBlockedOverBy = undefined;
+    return;
+  }
+  order.creditBlockedOverBy = check.overBy;
+  order.updatedAt = new Date().toISOString();
+  saveDb(db);
+  throw new Error(check.message);
+}
+
 export function uploadBill(
   orderId: string,
   actualAmount: number,
   billFileDataUrl?: string,
   lineActualWeights?: number[],
-  byUserId = "system"
+  byUserId = "system",
+  opts?: { allowOverCredit?: boolean }
 ): Order {
   const db = loadDb();
   const order = db.orders.find((o) => o.id === orderId);
@@ -3359,6 +3574,10 @@ export function uploadBill(
   if (!(actualAmount > 0)) {
     throw new Error("Enter a valid bill amount");
   }
+  if (opts?.allowOverCredit) {
+    order.allowOverCredit = true;
+  }
+  enforceOrderCredit(db, order, roundOffRupees(actualAmount));
   order.actualBillAmount = roundOffRupees(actualAmount);
   if (billFileDataUrl) order.billFileDataUrl = billFileDataUrl;
   order.billUploadedAt = new Date().toISOString();
@@ -3723,13 +3942,55 @@ export function upsertProduct(product: Product): void {
   normalizeProductLocalized(deduped);
   const normalized = normalizeProductStock(deduped);
   normalized.updatedAt = new Date().toISOString();
+  const liveWrite = actorWritesLiveCatalog(db);
   const idx = db.products.findIndex((p) => p.id === normalized.id);
+  const existing = idx >= 0 ? db.products[idx] : undefined;
+
+  if (!liveWrite) {
+    const proposed = extractSellingRates(normalized);
+    const liveSnapshot = existing
+      ? extractSellingRates(existing)
+      : extractSellingRates(zeroedCopy(normalized));
+    overlayLiveSellingRates(normalized, existing);
+    if (!sellingRatesEqual(liveSnapshot, proposed)) {
+      const actor = sessionActorMeta(db);
+      db.ownerApprovals = upsertPendingApproval(db.ownerApprovals, {
+        kind: "product_rates",
+        targetKey: productRatesTargetKey(normalized.id),
+        productId: normalized.id,
+        title: `Rate · ${normalized.code || normalized.name?.en || normalized.id}`,
+        snapshot: { before: liveSnapshot, proposed },
+        requestedBy: actor.id,
+        requestedByName: actor.name,
+      });
+      notifyOwnerApprovalQueued(
+        db,
+        `Rate · ${normalized.code || normalized.name?.en || normalized.id}`
+      );
+    }
+    // Keep in-memory callers (quick-create) on live rates so they cannot sell unapproved ₹.
+    overlayLiveSellingRates(product, normalized);
+  }
+
   if (idx >= 0) db.products[idx] = normalized;
   else {
     normalized.createdAt = normalized.updatedAt;
     db.products.unshift(normalized);
   }
   saveDb(db);
+}
+
+function zeroedCopy(product: Product): Product {
+  return {
+    ...product,
+    baseRate: 0,
+    ratePerSqft: 0,
+    variations: (product.variations ?? []).map((v) => ({
+      ...v,
+      rate: 0,
+      ratePerSqft: 0,
+    })),
+  };
 }
 
 export function markTallyError(message: string): void {
@@ -4009,6 +4270,7 @@ export function createStaffUser(input: {
     createdAt: new Date().toISOString(),
   };
   db.users.push(user);
+  ensureStaffHrTerms(db, db.users);
   saveDb(db);
   return user;
 }
@@ -4359,6 +4621,25 @@ export async function setUserPasswordAsync(
 
 export function upsertScheme(scheme: Scheme): void {
   const db = loadDb();
+  const liveWrite = actorWritesLiveCatalog(db);
+  if (!liveWrite) {
+    const existing = db.schemes.find((s) => s.id === scheme.id);
+    if (schemesEffectivelyEqual(existing, scheme)) return;
+    const actor = sessionActorMeta(db);
+    const title = `Scheme · ${scheme.name?.en || scheme.id}`;
+    db.ownerApprovals = upsertPendingApproval(db.ownerApprovals, {
+      kind: "scheme_upsert",
+      targetKey: schemeUpsertTargetKey(scheme.id),
+      schemeId: scheme.id,
+      title,
+      snapshot: { before: existing ? structuredClone(existing) : undefined, proposed: scheme },
+      requestedBy: actor.id,
+      requestedByName: actor.name,
+    });
+    notifyOwnerApprovalQueued(db, title);
+    saveDb(db);
+    return;
+  }
   const idx = db.schemes.findIndex((s) => s.id === scheme.id);
   if (idx >= 0) db.schemes[idx] = scheme;
   else db.schemes.unshift(scheme);
@@ -4368,11 +4649,27 @@ export function upsertScheme(scheme: Scheme): void {
 /** Permanently remove a scheme and detach it from dealers. */
 export function deleteScheme(schemeId: string): void {
   const db = loadDb();
-  const before = db.schemes.length;
-  db.schemes = db.schemes.filter((s) => s.id !== schemeId);
-  if (db.schemes.length === before) {
+  const existing = db.schemes.find((s) => s.id === schemeId);
+  if (!existing) {
     throw new Error("Scheme not found");
   }
+  if (!actorWritesLiveCatalog(db)) {
+    const actor = sessionActorMeta(db);
+    const title = `Delete scheme · ${existing.name?.en || schemeId}`;
+    db.ownerApprovals = upsertPendingApproval(db.ownerApprovals, {
+      kind: "scheme_delete",
+      targetKey: schemeDeleteTargetKey(schemeId),
+      schemeId,
+      title,
+      snapshot: { before: structuredClone(existing), proposed: { schemeId } },
+      requestedBy: actor.id,
+      requestedByName: actor.name,
+    });
+    notifyOwnerApprovalQueued(db, title);
+    saveDb(db);
+    return;
+  }
+  db.schemes = db.schemes.filter((s) => s.id !== schemeId);
   for (const user of db.users) {
     user.assignedSchemeIds = (user.assignedSchemeIds ?? []).filter(
       (id) => id !== schemeId
@@ -4395,9 +4692,53 @@ export function assignSchemeToUser(userId: string, schemeId: string): void {
   const db = loadDb();
   const user = db.users.find((u) => u.id === userId);
   if (!user) throw new Error("User not found");
-  if (!user.assignedSchemeIds.includes(schemeId)) {
-    user.assignedSchemeIds.push(schemeId);
+  if (user.assignedSchemeIds.includes(schemeId)) return;
+  if (!actorWritesLiveCatalog(db)) {
+    const actor = sessionActorMeta(db);
+    const scheme = db.schemes.find((s) => s.id === schemeId);
+    const title = `Assign · ${scheme?.name?.en || schemeId} → ${user.name || userId}`;
+    db.ownerApprovals = upsertPendingApproval(db.ownerApprovals, {
+      kind: "scheme_assign",
+      targetKey: schemeAssignTargetKey(userId, schemeId),
+      schemeId,
+      dealerId: userId,
+      title,
+      snapshot: {
+        before: { dealerId: userId, schemeId, assigned: false },
+        proposed: { dealerId: userId, schemeId, assigned: true },
+      },
+      requestedBy: actor.id,
+      requestedByName: actor.name,
+    });
+    notifyOwnerApprovalQueued(db, title);
+    saveDb(db);
+    return;
   }
+  user.assignedSchemeIds.push(schemeId);
+  saveDb(db);
+}
+
+export function decideOwnerApproval(
+  approvalId: string,
+  status: "approved" | "rejected",
+  note?: string
+): void {
+  const db = loadDb();
+  if (!actorWritesLiveCatalog(db)) {
+    throw new Error("Only the owner can approve or reject");
+  }
+  const row = (db.ownerApprovals ?? []).find((r) => r.id === approvalId);
+  if (!row || row.status !== "pending") {
+    throw new Error("Approval not found");
+  }
+  if (status === "approved") applyOwnerApproval(db, row);
+  const actor = sessionActorMeta(db);
+  const now = new Date().toISOString();
+  row.status = status;
+  row.note = note?.trim() || row.note;
+  row.decidedBy = actor.id;
+  row.decidedAt = now;
+  row.updatedAt = now;
   saveDb(db);
 }
 
@@ -4768,6 +5109,33 @@ export function upsertAccount(account: Account): void {
   if (i >= 0) db.accounts[i] = account;
   else db.accounts.push(account);
   saveDb(db);
+}
+
+/** Add another company bank: ledger in Cash/Bank book plus a dealer payment row. */
+export function addCompanyBankAccount(input: NewCompanyBankInput): {
+  account: Account;
+  payable: BankAccountDetails;
+} {
+  const label =
+    input.label.trim() ||
+    input.bankName?.trim() ||
+    input.accountName?.trim() ||
+    "";
+  if (!label) {
+    throw new Error("Enter a bank name or nickname");
+  }
+  const db = loadDb();
+  const drafted = draftCompanyBankAccount({
+    ledgerId: `acct_bank_${crypto.randomUUID()}`,
+    payableId: `bank_${crypto.randomUUID()}`,
+    accounts: db.accounts,
+    settings: db.settings,
+    input: { ...input, label },
+  });
+  db.accounts.push(drafted.account);
+  db.settings = { ...db.settings, bankAccounts: drafted.bankAccounts };
+  saveDb(db);
+  return { account: drafted.account, payable: drafted.payable };
 }
 
 export function upsertParty(party: Party): void {
@@ -5318,9 +5686,12 @@ export function createVoucher(input: {
   allocations?: { invoiceVoucherId: string; amount: number }[];
   /** Allow sale even if over credit limit */
   allowOverCredit?: boolean;
+  /** GRNI this purchase bill clears */
+  grniAmount?: number;
 }): Voucher {
   const db = loadDb();
   assertPeriodOpen(input.date, db.settings);
+  assertPriorMonthAudited(input.date, db);
   if (input.linkedOrderId && input.type === "sale") {
     const exists = db.vouchers.some(
       (v) =>
@@ -5474,6 +5845,7 @@ export function createVoucher(input: {
     linkedPurchaseId: input.linkedPurchaseId,
     linkedPoId: input.linkedPoId,
     linkedGrnId: input.linkedGrnId,
+    grniAmount: input.grniAmount,
     linkedPaymentProofItemId: input.linkedPaymentProofItemId,
     dueDate: input.dueDate?.slice(0, 10) || input.date.slice(0, 10),
     outstanding:
@@ -5749,10 +6121,10 @@ export function voidVoucher(voucherId: string, voidedBy = "system"): void {
   v.voided = true;
   v.voidedAt = new Date().toISOString();
   v.voidedBy = voidedBy;
-  
+
   // Reverse FIFO costing
   reverseVoucherCosting(db.stockBatches, db.batchConsumptions, voucherId);
-  
+
   for (const e of db.ledgerEntries) {
     if (e.voucherId === voucherId) e.voided = true;
   }
@@ -5796,6 +6168,9 @@ export function voidVoucher(voucherId: string, voidedBy = "system"): void {
   }
   if (v.type === "sale" || v.type === "purchase") {
     v.outstanding = 0;
+  }
+  if (v.type === "purchase" && v.linkedGrnId) {
+    reaccrueGrniAfterVoidedBill(db, v, voidedBy);
   }
   // Refresh invoices that had allocations from this voucher
   for (const inv of db.vouchers) {
@@ -5963,7 +6338,7 @@ function applyStockAdjust(db: AppDatabase, input: StockAdjustInput): void {
       })
     );
   } else if (input.direction === "out" && secondary > 0) {
-    consumeFifo(db.stockBatches, db.batchConsumptions, {
+    const fifo = consumeFifo(db.stockBatches, db.batchConsumptions, {
       voucherId: `adj_${movementId}`,
       date: new Date().toISOString().slice(0, 10),
       lines: [
@@ -5976,6 +6351,28 @@ function applyStockAdjust(db: AppDatabase, input: StockAdjustInput): void {
       ],
       allowShortfall: false,
     });
+    if (fifo.totalCost > 0.009) {
+      const journal = postBalancedJournal(db, {
+        date: new Date().toISOString().slice(0, 10),
+        narration: input.note?.trim() || `Write-off ${product.name.en}`,
+        createdBy: input.createdBy,
+        legs: [
+          {
+            accountId: ACCT.wastage,
+            debit: fifo.totalCost,
+            itemLabel: product.name.en,
+          },
+          {
+            accountId: ACCT.inventory,
+            credit: fifo.totalCost,
+            itemLabel: product.name.en,
+          },
+        ],
+      });
+      for (const c of db.batchConsumptions) {
+        if (c.voucherId === `adj_${movementId}`) c.voucherId = journal.id;
+      }
+    }
   }
 }
 
@@ -5996,6 +6393,54 @@ export function adjustStockBatch(inputs: StockAdjustInput[]): number {
   return inputs.length;
 }
 
+function asProductionDb(db: AppDatabase) {
+  if (!db.boms) db.boms = [];
+  if (!db.jobCards) db.jobCards = [];
+  return db as AppDatabase & {
+    boms: NonNullable<AppDatabase["boms"]>;
+    jobCards: NonNullable<AppDatabase["jobCards"]>;
+  };
+}
+
+export function upsertBom(input: Parameters<typeof upsertBomOn>[1]) {
+  const db = loadDb();
+  const bom = upsertBomOn(asProductionDb(db), input);
+  saveDb(db);
+  return bom;
+}
+
+export function createJobCard(input: Parameters<typeof createJobCardOn>[1]) {
+  const db = loadDb();
+  const job = createJobCardOn(asProductionDb(db), input);
+  saveDb(db);
+  return job;
+}
+
+export function issueJobCard(jobId: string, createdBy: string) {
+  const db = loadDb();
+  const job = issueJobCardOn(asProductionDb(db), jobId, createdBy);
+  saveDb(db);
+  return job;
+}
+
+export function completeJobCard(input: {
+  jobId: string;
+  actualQty: number;
+  createdBy: string;
+}) {
+  const db = loadDb();
+  const job = completeJobCardOn(asProductionDb(db), input);
+  saveDb(db);
+  return job;
+}
+
+export function cancelIssuedJobCard(jobId: string, createdBy: string) {
+  const db = loadDb();
+  const job = cancelIssuedJobCardOn(asProductionDb(db), jobId, createdBy);
+  saveDb(db);
+  return job;
+}
+
 export function clockStaffPunch(input: {
   userId: string;
   kind: HrPunch["kind"];
@@ -6004,12 +6449,36 @@ export function clockStaffPunch(input: {
   accuracyM?: number;
   photoUrl?: string;
   userAgent?: string;
+  gpsFallback?: boolean;
+  at?: string;
+  skipKindGuard?: boolean;
+  correctedBy?: string;
+  note?: string;
 }): HrPunch {
   const db = loadDb();
   ensureHrAuditCollections(db);
+  const at = input.at || new Date().toISOString();
+  const month = dateInIst(at).slice(0, 7);
+  if (
+    isHrMonthLocked({
+      month,
+      userId: input.userId,
+      audits: db.monthlyAudits,
+      payslips: db.hrPayslips,
+    })
+  ) {
+    throw new Error("Payroll locked for this month");
+  }
+  if (!input.skipKindGuard) {
+    const guard = punchKindGuard(db.hrPunches ?? [], input.userId, input.kind, at);
+    if (guard === "duplicate_in") throw new Error("Already clocked in today");
+    if (guard === "duplicate_out") throw new Error("Already clocked out today");
+    if (guard === "out_without_in") throw new Error("Clock in before clocking out");
+  }
   const terms = (db.hrTerms ?? []).find((t) => t.userId === input.userId);
   const punch = buildHrPunch({
     ...input,
+    at,
     sites: db.hrSites ?? [],
     siteIds: terms?.siteIds,
   });
@@ -6217,19 +6686,23 @@ export function createSaleVoucherFromOrder(
   );
   const skipInventory = !!order.stockReserved && hasReserveMovement;
 
+  const billDate = (
+    order.billUploadedAt ||
+    order.updatedAt ||
+    new Date().toISOString()
+  ).slice(0, 10);
+
   return createVoucher({
     type: "sale",
-    date: (order.billUploadedAt || order.updatedAt || new Date().toISOString()).slice(
-      0,
-      10
-    ),
+    date: billDate,
+    dueDate: saleDueDate(billDate, party.creditDays),
     partyId: party.id,
     narration: `Auto sale from order ${order.orderNumber}`,
     lines,
     linkedOrderId: order.id,
     createdBy,
     skipInventory,
-    allowOverCredit: true,
+    allowOverCredit: !!order.allowOverCredit,
   });
 }
 
@@ -6423,12 +6896,13 @@ export function syncOrderPaymentReceipts(
 
 /**
  * Repair common books gaps: missing sales for billed orders, party openings,
- * and per-item receipts for verified payments.
+ * cancelled orders that still have live sale vouchers, and per-item receipts.
  */
 export function repairBooksIntegrity(createdBy = "system"): {
   salesCreated: number;
   salesFailed: string[];
   receiptsSynced: number;
+  cancelledVoided: number;
   openingsSynced: boolean;
 } {
   const db = loadDb();
@@ -6438,6 +6912,7 @@ export function repairBooksIntegrity(createdBy = "system"): {
     db.ledgerEntries,
     new Date().toISOString().slice(0, 10)
   );
+  const cancelledVoid = voidBooksForCancelledOrders(db, createdBy);
   saveDb(db);
 
   let salesCreated = 0;
@@ -6493,6 +6968,7 @@ export function repairBooksIntegrity(createdBy = "system"): {
     salesCreated,
     salesFailed,
     receiptsSynced,
+    cancelledVoided: cancelledVoid.voidedNumbers.length,
     openingsSynced: true,
   };
 }
@@ -6513,6 +6989,68 @@ function nextGrnNumber(receipts: GoodsReceipt[]): string {
     if (!Number.isNaN(n) && n > max) max = n;
   }
   return `GRN-${max + 1}`;
+}
+
+function postGrniAccrual(
+  db: AppDatabase,
+  grn: GoodsReceipt,
+  supplierId: string,
+  createdBy: string
+): void {
+  const accrued = roundMoney(grn.accruedAmount || 0);
+  if (!(accrued > 0.009)) return;
+  const accrual = postBalancedJournal(db, {
+    date: grn.date,
+    narration: `GRNI ${grn.number}`,
+    createdBy,
+    partyId: supplierId,
+    linkedGrnId: grn.id,
+    legs: [
+      { accountId: ACCT.inventory, debit: accrued, itemLabel: grn.number },
+      { accountId: ACCT.grni, credit: accrued, itemLabel: grn.number },
+    ],
+  });
+  grn.accrualVoucherId = accrual.id;
+  grn.accruedAmount = accrued;
+}
+
+function reaccrueGrniAfterVoidedBill(
+  db: AppDatabase,
+  bill: Voucher,
+  voidedBy: string
+): void {
+  const grnId = bill.linkedGrnId;
+  if (!grnId) return;
+  const grn = db.goodsReceipts.find((g) => g.id === grnId);
+  if (!grn || grn.voided) return;
+  const po = db.purchaseOrders.find(
+    (p) => p.id === (bill.linkedPoId || grn.poId)
+  );
+  if (po) {
+    for (const line of grn.lines) {
+      const poLine = po.lines.find((x) => x.id === line.poLineId);
+      if (poLine) {
+        poLine.billedQty = roundMoney(
+          Math.max(0, (poLine.billedQty ?? 0) - line.qty)
+        );
+      }
+    }
+    syncPoStatus(db, po.id);
+  }
+  const stillBilled = db.vouchers.some(
+    (x) =>
+      x.id !== bill.id &&
+      x.type === "purchase" &&
+      !x.voided &&
+      x.linkedGrnId === grn.id
+  );
+  if (stillBilled) return;
+  if (!((grn.accruedAmount || 0) > 0.009)) return;
+  const existing = grn.accrualVoucherId
+    ? db.vouchers.find((x) => x.id === grn.accrualVoucherId)
+    : undefined;
+  if (existing && !existing.voided) return;
+  postGrniAccrual(db, grn, po?.supplierId || bill.partyId || "", voidedBy);
 }
 
 function syncPoStatus(db: AppDatabase, poId: string): void {
@@ -6628,6 +7166,59 @@ export function markPurchaseOrderOrdered(
   return po;
 }
 
+export function updateDraftPurchaseOrder(
+  poId: string,
+  byUserId: string,
+  patch: { lines?: PurchaseOrder["lines"]; narration?: string }
+): PurchaseOrder {
+  const db = loadDb();
+  const actor = db.users.find((u) => u.id === byUserId);
+  if (
+    !actor ||
+    (!actorCan(actor, "manage_reorder", db) &&
+      !actorCan(actor, "manage_accounts", db))
+  ) {
+    throw new Error("Not allowed to edit purchase orders");
+  }
+  const po = db.purchaseOrders.find((p) => p.id === poId);
+  if (!po) throw new Error("PO not found");
+  if (po.status !== "draft") {
+    throw new Error("Only draft purchase orders can be edited");
+  }
+  if (patch.lines) {
+    po.lines = patch.lines
+      .filter((l) => l.qty > 0)
+      .map((l) => ({
+        ...l,
+        amount: roundMoney((Number(l.qty) || 0) * (Number(l.rate) || 0)),
+      }));
+    po.total = roundMoney(po.lines.reduce((s, l) => s + l.amount, 0));
+  }
+  if (patch.narration !== undefined) po.narration = patch.narration;
+  saveDb(db);
+  return po;
+}
+
+export function cancelPurchaseOrder(
+  poId: string,
+  byUserId: string
+): PurchaseOrder {
+  const db = loadDb();
+  const actor = db.users.find((u) => u.id === byUserId);
+  if (
+    !actor ||
+    (!actorCan(actor, "manage_reorder", db) &&
+      !actorCan(actor, "manage_accounts", db))
+  ) {
+    throw new Error("Not allowed to cancel purchase orders");
+  }
+  const po = db.purchaseOrders.find((p) => p.id === poId);
+  if (!po) throw new Error("PO not found");
+  Object.assign(po, cancelDraftPurchaseOrder(po));
+  saveDb(db);
+  return po;
+}
+
 export function createGoodsReceipt(input: {
   poId: string;
   date: string;
@@ -6694,16 +7285,14 @@ export function createGoodsReceipt(input: {
   }
   applyGrnStock(db, grn, input.createdBy, false);
 
-  // Provisional FIFO layers (rate 0) until the owner prices the bill
+  // FIFO layers — accrue at PO/contract rate when known; else rate 0 until priced
   db.stockBatches = db.stockBatches || [];
+  let accrued = 0;
   for (const line of grn.lines) {
     const poLine = po.lines.find((l) => l.id === line.poLineId);
     const productId = line.productId || poLine?.productId;
     if (!productId) continue;
     const product = db.products.find((p) => p.id === productId);
-    // Must match applyGrnStock exactly or the FIFO layer and the physical
-    // stock disagree — a kg product with no explicit weight adds
-    // bundles × kg to stock but would otherwise layer only the bundle count.
     const measure = product
       ? deriveSecondaryQty(
           product,
@@ -6713,6 +7302,22 @@ export function createGoodsReceipt(input: {
         )
       : line.secondaryQty ?? line.qty;
     if (measure <= 0) continue;
+    const contract = resolveOpenContract(
+      db.supplierContracts,
+      db.products,
+      po.supplierId,
+      productId,
+      grn.date,
+      {
+        contractId: poLine?.contractId,
+        variationId: line.variationId || poLine?.variationId,
+      }
+    );
+    const rate = roundMoney(
+      (poLine?.rate && poLine.rate > 0 ? poLine.rate : 0) ||
+        (contract?.rate && contract.rate > 0 ? contract.rate : 0)
+    );
+    if (rate > 0) accrued = roundMoney(accrued + measure * rate);
     db.stockBatches.push(
       createBatchFromLine({
         date: grn.date,
@@ -6720,13 +7325,17 @@ export function createGoodsReceipt(input: {
         variationId: line.variationId || poLine?.variationId,
         colorId: line.colorId || poLine?.colorId,
         qty: measure,
-        rate: 0,
+        rate,
         unit: line.unit || poLine?.unit || product?.unit,
         source: "grn",
         grnId: grn.id,
         provisional: true,
       })
     );
+  }
+  if (accrued > 0.009) {
+    grn.accruedAmount = accrued;
+    postGrniAccrual(db, grn, po.supplierId, input.createdBy);
   }
 
   syncPoStatus(db, po.id);
@@ -6802,6 +7411,9 @@ export function voidGoodsReceipt(grnId: string, voidedBy = "system"): void {
 
   applyGrnStock(db, grn, voidedBy, true);
   db.stockBatches = db.stockBatches.filter((b) => b.grnId !== grn.id);
+  if (grn.accrualVoucherId) {
+    voidJournalOn(db, grn.accrualVoucherId, voidedBy);
+  }
 
   grn.voided = true;
   grn.voidedAt = new Date().toISOString();
@@ -7079,6 +7691,7 @@ export function createPurchaseBillFromGrn(input: {
     lines,
     linkedPoId: po.id,
     linkedGrnId: grn.id,
+    grniAmount: grn.accruedAmount || 0,
     packingSlipDataUrl: grn.packingSlipDataUrl,
     packingSlipName: grn.packingSlipName,
     createdBy: input.createdBy,

@@ -89,14 +89,148 @@ export function resolveRate(
   return variation?.rate ?? product.baseRate;
 }
 
-/** Weight of one bundle/piece. Variation weight wins when set; else product base. */
-export function resolveUnitWeightKg(
-  product: Pick<Product, "baseWeightKg">,
-  variation?: Pick<ProductVariation, "weightKg"> | null
+/** 1 ft² = 0.092903 m². kg = L(ft) × W(ft) × GSM × 0.092903 / 1000 */
+export const SQFT_TO_SQM = 0.092903;
+
+export function pieceWeightGFromGsm(
+  lengthFt: number,
+  widthFt: number,
+  gsm: number
 ): number {
-  if (variation?.weightKg != null && variation.weightKg > 0) {
-    return variation.weightKg;
+  const l = Number(lengthFt) || 0;
+  const w = Number(widthFt) || 0;
+  const g = Number(gsm) || 0;
+  if (!(l > 0) || !(w > 0) || !(g > 0)) return 0;
+  return roundMoney(l * w * g * SQFT_TO_SQM);
+}
+
+export function pieceWeightKgFromGsm(
+  lengthFt: number,
+  widthFt: number,
+  gsm: number
+): number {
+  const grams = pieceWeightGFromGsm(lengthFt, widthFt, gsm);
+  if (!(grams > 0)) return 0;
+  return roundMoney(grams / 1000);
+}
+
+export function packetWeightKgFromGsm(
+  lengthFt: number,
+  widthFt: number,
+  gsm: number,
+  pcsPerPacket: number
+): number {
+  const l = Number(lengthFt) || 0;
+  const w = Number(widthFt) || 0;
+  const g = Number(gsm) || 0;
+  const pcs = Number(pcsPerPacket) || 0;
+  if (!(l > 0) || !(w > 0) || !(g > 0) || !(pcs > 0)) return 0;
+  return roundMoney((l * w * g * pcs * SQFT_TO_SQM) / 1000);
+}
+
+export function piecesInPacketLine(
+  pcs: number,
+  locale: "en" | "hi" = "en"
+): string {
+  const n = Number(pcs) || 0;
+  if (!(n > 0)) return "";
+  return locale === "hi" ? `${n} पीस 1 पैकेट में` : `${n} pieces in 1 packet`;
+}
+
+export function resolvePcsPerPacket(
+  product?: {
+    pcsPerPacket?: number;
+    lengthFt?: number;
+    widthFt?: number;
+    ratePerSqft?: number;
+    baseRate?: number;
+  } | null,
+  variation?: {
+    pcsPerPacket?: number;
+    lengthFt?: number;
+    widthFt?: number;
+    ratePerSqft?: number;
+    rate?: number;
+  } | null
+): number {
+  const fromVar = Number(variation?.pcsPerPacket);
+  if (fromVar > 0) return Math.round(fromVar);
+  const fromProd = Number(product?.pcsPerPacket);
+  if (fromProd > 0) return Math.round(fromProd);
+  if (!product) return 0;
+  const lengthFt = Number(variation?.lengthFt ?? product.lengthFt) || 0;
+  const widthFt = Number(variation?.widthFt ?? product.widthFt) || 0;
+  const rps =
+    Number(variation?.ratePerSqft ?? product.ratePerSqft ?? product.baseRate) ||
+    0;
+  const pc = ratePerPiece(rps, lengthFt, widthFt);
+  const pkt = Number(variation?.rate) || 0;
+  if (pc > 0 && pkt > 0) {
+    const inferred = Math.round(pkt / pc);
+    if (inferred > 0) return inferred;
   }
+  return 0;
+}
+
+export function pcsPerPacketLabel(
+  pcs: number,
+  locale: "en" | "hi" = "en"
+): string {
+  const n = Number(pcs) || 0;
+  if (!(n > 0)) return "";
+  return locale === "hi" ? `${n} पीस/पैकेट` : `${n} pcs/pkt`;
+}
+
+export function resolveGsmPacketWeightKg(
+  product: Pick<Product, "gsm" | "lengthFt" | "widthFt" | "pcsPerPacket">,
+  variation?: Pick<
+    ProductVariation,
+    "lengthFt" | "widthFt" | "pcsPerPacket"
+  > | null
+): number {
+  const lengthFt = Number(variation?.lengthFt ?? product.lengthFt) || 0;
+  const widthFt = Number(variation?.widthFt ?? product.widthFt) || 0;
+  const pcs = resolvePcsPerPacket(product, variation);
+  const gsm = Number(product.gsm) || 0;
+  return packetWeightKgFromGsm(lengthFt, widthFt, gsm, pcs);
+}
+
+function isDummyPackWeightKg(
+  product: Pick<Product, "unit" | "baseWeightKg">,
+  typedKg: number,
+  gsmPacketKg: number
+): boolean {
+  // Old admin required pack kg and defaulted it to 1. That leftover must not
+  // hide GSM shipping weight on sqft/pkt/pcs silpauline.
+  return (
+    isPackCountUnit(product.unit) &&
+    gsmPacketKg > 0 &&
+    typedKg === 1 &&
+    (product.baseWeightKg == null || product.baseWeightKg === 1)
+  );
+}
+
+/**
+ * Weight of one bundle/packet/piece.
+ * Typed variation.weightKg wins (except leftover dummy 1 on pack goods);
+ * else GSM × size × pcs/pkt; else product base.
+ */
+export function resolveUnitWeightKg(
+  product: Pick<
+    Product,
+    "baseWeightKg" | "gsm" | "lengthFt" | "widthFt" | "pcsPerPacket" | "unit"
+  >,
+  variation?: Pick<
+    ProductVariation,
+    "weightKg" | "lengthFt" | "widthFt" | "pcsPerPacket"
+  > | null
+): number {
+  const gsmWt = resolveGsmPacketWeightKg(product, variation);
+  const typed = Number(variation?.weightKg) || 0;
+  if (typed > 0 && !isDummyPackWeightKg(product, typed, gsmWt)) {
+    return typed;
+  }
+  if (gsmWt > 0) return gsmWt;
   return product.baseWeightKg ?? 0;
 }
 
@@ -285,13 +419,12 @@ export function resolveSqftPack(
   >,
   variation?: Pick<
     ProductVariation,
-    "lengthFt" | "widthFt" | "pcsPerPacket" | "ratePerSqft"
+    "lengthFt" | "widthFt" | "pcsPerPacket" | "ratePerSqft" | "rate"
   > | null
 ): SqftPackSpec {
   const lengthFt = Number(variation?.lengthFt ?? product.lengthFt) || 0;
   const widthFt = Number(variation?.widthFt ?? product.widthFt) || 0;
-  const pcsPerPacket =
-    Number(variation?.pcsPerPacket ?? product.pcsPerPacket) || 0;
+  const pcsPerPacket = resolvePcsPerPacket(product, variation);
   const ratePerSqft =
     Number(variation?.ratePerSqft ?? product.ratePerSqft ?? product.baseRate) ||
     0;

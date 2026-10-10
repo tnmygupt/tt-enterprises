@@ -40,6 +40,8 @@ function StockMovementsInner() {
   const [type, setType] = useState("");
   const [direction, setDirection] = useState<"" | "in" | "out">("");
   const [q, setQ] = useState("");
+  const [page, setPage] = useState(0);
+  const pageSize = 100;
 
   const products = useMemo(
     () =>
@@ -49,7 +51,7 @@ function StockMovementsInner() {
     [db]
   );
 
-  const rows = useMemo(() => {
+  const allRows = useMemo(() => {
     if (!db) return [];
     return filterStockMovements(db.stockMovements ?? [], {
       from: from || undefined,
@@ -58,8 +60,12 @@ function StockMovementsInner() {
       type: type || undefined,
       direction,
       q,
-    }).slice(0, 500);
+    });
   }, [db, from, to, productId, type, direction, q]);
+
+  const pageCount = Math.max(1, Math.ceil(allRows.length / pageSize));
+  const safePage = Math.min(page, pageCount - 1);
+  const rows = allRows.slice(safePage * pageSize, (safePage + 1) * pageSize);
 
   const exportOptions = useMemo(
     () => ({
@@ -67,7 +73,7 @@ function StockMovementsInner() {
       subtitle: `${from || "…"} → ${to}`,
       filename: `stock-movements-${to}.pdf`,
       columns: ["Date", "Type", "Product", "Dir", "Bundles", "Kg/Pcs", "Note"],
-      rows: rows.map((m) => {
+      rows: allRows.map((m) => {
         const p = db?.products.find((x) => x.id === m.productId);
         return [
           m.date,
@@ -80,7 +86,7 @@ function StockMovementsInner() {
         ];
       }),
     }),
-    [db, from, rows, to]
+    [allRows, db, from, to]
   );
 
   if (!session || !checkCapability(session, db, "manage_accounts")) {
@@ -108,7 +114,10 @@ function StockMovementsInner() {
         <select
           className="tt-select min-w-[180px]"
           value={productId}
-          onChange={(e) => setProductId(e.target.value)}
+          onChange={(e) => {
+            setProductId(e.target.value);
+            setPage(0);
+          }}
         >
           <option value="">{t("accounts.allProducts")}</option>
           {products.map((p) => (
@@ -120,7 +129,10 @@ function StockMovementsInner() {
         <select
           className="tt-select"
           value={type}
-          onChange={(e) => setType(e.target.value)}
+          onChange={(e) => {
+            setType(e.target.value);
+            setPage(0);
+          }}
         >
           <option value="">{t("accounts.allTypes")}</option>
           {TYPES.map((t) => (
@@ -132,9 +144,10 @@ function StockMovementsInner() {
         <select
           className="tt-select"
           value={direction}
-          onChange={(e) =>
-            setDirection(e.target.value as "" | "in" | "out")
-          }
+          onChange={(e) => {
+            setDirection(e.target.value as "" | "in" | "out");
+            setPage(0);
+          }}
         >
           <option value="">In + out</option>
           <option value="in">In</option>
@@ -144,12 +157,15 @@ function StockMovementsInner() {
           className="tt-input min-w-[140px]"
           placeholder="Search note…"
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setPage(0);
+          }}
         />
         <ExportButtons options={exportOptions} disabled={!rows.length} />
       </div>
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <div className="tt-panel mt-5 tt-acct-table-wrap">
         <table className="tt-table min-w-[720px]">
           <thead>
             <tr>
@@ -181,15 +197,35 @@ function StockMovementsInner() {
             })}
           </tbody>
         </table>
-        {!rows.length ? (
+        {!allRows.length ? (
           <p className="p-4 text-sm text-[var(--ink-muted)]">
             No movements match these filters.
           </p>
-        ) : rows.length >= 500 ? (
-          <p className="p-3 text-xs text-[var(--ink-muted)]">
-            Showing first 500 — narrow the date range.
-          </p>
-        ) : null}
+        ) : (
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm text-[var(--ink-muted)]">
+            <span>
+              {allRows.length} rows · page {safePage + 1} / {pageCount}
+            </span>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline text-xs"
+                disabled={safePage <= 0}
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+              >
+                Prev
+              </button>
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline text-xs"
+                disabled={safePage >= pageCount - 1}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </AccountsShell>
   );

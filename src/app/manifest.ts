@@ -16,8 +16,8 @@ export default function manifest(): MetadataRoute.Manifest {
     display_override: ["standalone", "minimal-ui", "browser"],
     launch_handler: { client_mode: ["navigate-existing", "auto"] },
     // Do NOT set orientation — unsupported on iOS and can break home-screen launch
-    background_color: "#f4f7f8",
-    theme_color: "#0b7ea4",
+    background_color: "#faf6f5",
+    theme_color: "#ff3131",
     categories: ["business", "shopping"],
     icons: [
       {

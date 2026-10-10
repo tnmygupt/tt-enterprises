@@ -113,6 +113,27 @@ const COOKIE = "tt_sid";
 /** Shorter TTL so demoted staff lose cookie-gated admin access sooner. */
 const MAX_AGE_SEC = 60 * 60 * 24 * 2; // 2 days
 
+/** Share login cookies across apex + www so phones do not auto-logout. */
+export function sessionCookieDomainFromHost(hostHeader: string): string | undefined {
+  const host = hostHeader
+    .split(",")[0]
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .replace(/:\d+$/, "")
+    .toLowerCase();
+  if (host === "tanmayphotos.space" || host === "www.tanmayphotos.space") {
+    return "tanmayphotos.space";
+  }
+  return undefined;
+}
+
+function cookieDomain(req?: Request | null): string | undefined {
+  if (!req) return undefined;
+  const host =
+    req.headers.get("x-forwarded-host") || req.headers.get("host") || "";
+  return sessionCookieDomainFromHost(host);
+}
+
 function sign(payload: string): string {
   return createHmac("sha256", getSessionSecret())
     .update(payload)
@@ -161,7 +182,8 @@ export function verifySessionToken(
   }
 }
 
-export function sessionCookieOptions(token: string) {
+export function sessionCookieOptions(token: string, req?: Request | null) {
+  const domain = cookieDomain(req);
   return {
     name: COOKIE,
     value: token,
@@ -170,10 +192,12 @@ export function sessionCookieOptions(token: string) {
     sameSite: "lax" as const,
     path: "/",
     maxAge: MAX_AGE_SEC,
+    ...(domain ? { domain } : {}),
   };
 }
 
-export function clearSessionCookieOptions() {
+export function clearSessionCookieOptions(req?: Request | null) {
+  const domain = cookieDomain(req);
   return {
     name: COOKIE,
     value: "",
@@ -182,6 +206,7 @@ export function clearSessionCookieOptions() {
     sameSite: "lax" as const,
     path: "/",
     maxAge: 0,
+    ...(domain ? { domain } : {}),
   };
 }
 

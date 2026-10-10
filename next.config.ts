@@ -10,6 +10,22 @@ const nextConfig: NextConfig = {
   // Standalone build is best for Hostinger VPS / Node.js hosting
   output: "standalone",
   outputFileTracingRoot: projectRoot,
+  async redirects() {
+    return [
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "tanmayphotos.space" }],
+        destination: "https://app.ttenterprises.shop/:path*",
+        permanent: true,
+      },
+      {
+        source: "/:path*",
+        has: [{ type: "host", value: "www.tanmayphotos.space" }],
+        destination: "https://app.ttenterprises.shop/:path*",
+        permanent: true,
+      },
+    ];
+  },
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "images.unsplash.com" },

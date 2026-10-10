@@ -1,5 +1,10 @@
 import type { Party, Voucher, VoucherType } from "../types";
 import { roundMoney } from "../pricing";
+import {
+  cancelledOrderIdSet,
+  invoiceLinkedToCancelledOrder,
+  type CancelledOrderRef,
+} from "./cancelled-order-books";
 
 export type PartyGoodsLine = {
   date: string;
@@ -22,16 +27,19 @@ export function partyGoodsLines(
   party: Party,
   vouchers: Voucher[],
   from: string,
-  to: string
+  to: string,
+  orders?: CancelledOrderRef[]
 ): PartyGoodsLine[] {
   const wantType: VoucherType =
     party.type === "supplier" ? "purchase" : "sale";
+  const cancelledIds = cancelledOrderIdSet(orders);
   const out: PartyGoodsLine[] = [];
   for (const v of vouchers) {
     if (v.voided) continue;
     if (v.partyId !== party.id) continue;
     if (v.type !== wantType) continue;
     if (v.date < from || v.date > to) continue;
+    if (invoiceLinkedToCancelledOrder(v, cancelledIds)) continue;
     for (const line of v.lines) {
       if (!line.productId && !line.itemLabel) continue;
       // Skip pure account charge lines on mixed vouchers

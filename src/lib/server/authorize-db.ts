@@ -17,9 +17,11 @@ import type {
   UserRole,
   Voucher,
   WalletDeposit,
+  JobCard,
 } from "@/lib/types";
 import { OWNER_SENSITIVE_ACCOUNTS } from "@/lib/accounting/seed";
 import { isPurchaseCostVoucherType } from "@/lib/owner-sensitive";
+import { resolveUnitWeightKg } from "@/lib/pricing";
 import { trimAccessPlaces } from "@/lib/server/access-log";
 import {
   capabilityContextFrom,
@@ -45,8 +47,14 @@ import {
   restoreStockCountRates,
   stripStockCountRates,
 } from "@/lib/stock-count";
-import type { ServerSession } from "@/lib/server/session";
-import { isStaffRole } from "@/lib/server/session";
+import { liveSessionUser } from "@/lib/server/live-login";
+import {
+  applyNewlyApprovedOwnerApprovals,
+  mergeOwnerApprovalsForStaff,
+  restoreAssignedSchemeIds,
+  restoreSellingRatesFromCloud,
+} from "@/lib/owner-approvals";
+import { isStaffRole, type ServerSession } from "@/lib/server/session";
 import { calcShippingAmount } from "@/lib/shipping";
 import { roundOffRupees } from "@/lib/pricing";
 import { applyOrderEstimateStock } from "@/lib/inventory";
@@ -405,6 +413,9 @@ export function publicCatalogProjection(db: AppDatabase): AppDatabase {
     stockCounts: [],
     cashCounts: [],
     monthlyAudits: [],
+    boms: [],
+    jobCards: [],
+    ownerApprovals: [],
   };
 
   return omitWaInbox({
@@ -469,6 +480,7 @@ export function dealerScopedProjection(
     stockCounts: [],
     cashCounts: [],
     monthlyAudits: [],
+    ownerApprovals: [],
   });
   projected.parties = attachDealerStatement(
     projected.parties,
@@ -522,6 +534,13 @@ export function staffScopedProjection(
       );
     }
   }
+  if (!cap("manage_accounts") && !cap("view_financials")) {
+    out.jobCards = (out.jobCards ?? []).map((j) => ({
+      ...j,
+      issuedCost: undefined,
+      wastageCost: undefined,
+    }));
+  }
   out.tallyPosts = [];
   if (!cap("manage_wallet") && !cap("view_financials")) {
     out.walletTransactions = [];
@@ -560,7 +579,8 @@ export function staffScopedProjection(
   } else if (
     !cap("verify_payment") &&
     !cap("manage_orders") &&
-    !cap("manage_wallet")
+    !cap("manage_wallet") &&
+    !cap("manage_accounts")
   ) {
     out.settings = stripPaymentSettings(out.settings);
   }
@@ -651,10 +671,7 @@ function lookupCatalog(
     ? product.variations.find((v) => v.id === line.variationId)
     : product.variations[0];
   const rate = Number(variation?.rate ?? product.baseRate) || 0;
-  const rawVarWt = Number(variation?.weightKg);
-  const rawBaseWt = Number(product.baseWeightKg);
-  const unitWeightKg =
-    rawVarWt > 0 ? rawVarWt : rawBaseWt > 0 ? rawBaseWt : 0;
+  const unitWeightKg = resolveUnitWeightKg(product, variation);
   return {
     rate,
     unitWeightKg,
@@ -1096,6 +1113,33 @@ function mergeByIdUnion<T extends { id: string }>(
   return [...byId.values()];
 }
 
+const JOB_STATUS_RANK: Record<JobCard["status"], number> = {
+  draft: 0,
+  issued: 1,
+  completed: 2,
+  cancelled: 2,
+};
+
+/** Plant GET strips rupees — never let a stale client wipe posted job books. */
+function mergeJobCards(
+  cloudItems: JobCard[] | undefined,
+  incomingItems: JobCard[] | undefined
+): JobCard[] {
+  const byId = new Map((cloudItems ?? []).map((x) => [x.id, x] as const));
+  for (const item of incomingItems ?? []) {
+    const existing = byId.get(item.id);
+    if (
+      existing &&
+      existing.status !== "draft" &&
+      JOB_STATUS_RANK[existing.status] >= JOB_STATUS_RANK[item.status]
+    ) {
+      continue;
+    }
+    byId.set(item.id, item);
+  }
+  return [...byId.values()];
+}
+
 /**
  * Keep rows that exist on only one side (dealer estimate on cloud, punch on
  * this device). For the same id, keep the newer `updatedAt`; ties prefer the
@@ -1277,7 +1321,9 @@ function mergeStaffLimitedPush(
     touched = true;
   }
   if (can("manage_schemes")) {
-    out.schemes = mergeByUpdatedAtKeepBoth(incoming.schemes, out.schemes);
+    if (ownerReview) {
+      out.schemes = mergeByUpdatedAtKeepBoth(incoming.schemes, out.schemes);
+    }
     touched = true;
   }
   if (can("manage_shipping")) {
@@ -1400,6 +1446,16 @@ function mergeStaffLimitedPush(
     touched = true;
   }
 
+  if (
+    can("manage_accounts") ||
+    can("manage_products") ||
+    can("manage_reorder")
+  ) {
+    out.boms = mergeByIdUnion(out.boms ?? [], incoming.boms ?? []);
+    out.jobCards = mergeJobCards(out.jobCards ?? [], incoming.jobCards ?? []);
+    touched = true;
+  }
+
   if (!touched) {
     throw new Error("Your role cannot sync database changes");
   }
@@ -1413,6 +1469,28 @@ function mergeStaffLimitedPush(
     out.peopleActivity = mergeByIdUnion(
       incoming.peopleActivity ?? [],
       cloud.peopleActivity ?? []
+    );
+  }
+
+  if (!ownerReview) {
+    out.products = restoreSellingRatesFromCloud(out.products, cloud.products);
+    out.schemes = cloud.schemes ?? [];
+    out.users = restoreAssignedSchemeIds(out.users, cloud.users);
+    out.ownerApprovals = mergeOwnerApprovalsForStaff(
+      incoming.ownerApprovals,
+      cloud.ownerApprovals,
+      false
+    );
+  } else {
+    out.ownerApprovals = mergeOwnerApprovalsForStaff(
+      incoming.ownerApprovals,
+      cloud.ownerApprovals,
+      true
+    );
+    applyNewlyApprovedOwnerApprovals(
+      out,
+      incoming.ownerApprovals,
+      cloud.ownerApprovals
     );
   }
 
@@ -1431,9 +1509,12 @@ export function resolveCloudActor(
   existing: AppDatabase,
   session: ServerSession
 ): { actor: UserProfile; role: UserRole } {
-  const actor = (existing.users ?? []).find((u) => u.id === session.id);
-  if (!actor) throw new Error("Account not found in cloud database");
-  if (!actor.active) throw new Error("Account is disabled");
+  const actor = liveSessionUser(existing, session.id);
+  if (!actor) {
+    const row = (existing.users ?? []).find((u) => u.id === session.id);
+    if (row && !row.active) throw new Error("Account is disabled");
+    throw new Error("Account not found in cloud database");
+  }
   return { actor, role: actor.role };
 }
 
@@ -1701,6 +1782,11 @@ export function mergeAuthorizedPush(
     const out = stripPrePurgeOps(ensureUniqueOrderNumbers(merged));
     reconcileEstimateStockReserves(out);
     out.waInbox = existing.waInbox;
+    applyNewlyApprovedOwnerApprovals(
+      out,
+      incoming.ownerApprovals,
+      existing.ownerApprovals
+    );
     return { db: out };
   }
 

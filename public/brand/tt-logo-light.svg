@@ -1,6 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 56" fill="none" role="img" aria-label="TT Enterprises">
-  <rect x="0" y="6" width="44" height="44" rx="11" fill="#FFFFFF"/>
-  <text x="22" y="36" text-anchor="middle" fill="#0B7EA4" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" letter-spacing="-1">TT</text>
+  <rect x="0" y="6" width="44" height="44" rx="10" fill="#FF3131"/>
+  <g fill="#FFFFFF" transform="translate(22 28) skewX(-14) translate(-22 -28)">
+    <rect x="7" y="10" width="16" height="16" rx="3.2"/>
+    <rect x="25" y="16.5" width="9" height="9.5" rx="2.2"/>
+    <rect x="7" y="28" width="9" height="9.5" rx="2.2"/>
+    <rect x="17.5" y="28" width="16" height="16" rx="3.2"/>
+  </g>
   <text x="56" y="25" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" letter-spacing="-0.4">TT Enterprises</text>
-  <text x="56" y="42" fill="#B8DCE8" font-family="Arial, Helvetica, sans-serif" font-size="9.5" font-weight="600" letter-spacing="2.2">WHOLESALE</text>
+  <text x="56" y="42" fill="#FFC7C7" font-family="Arial, Helvetica, sans-serif" font-size="9.5" font-weight="600" letter-spacing="2.2">WHOLESALE</text>
 </svg>

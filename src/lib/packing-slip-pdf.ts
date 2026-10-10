@@ -287,16 +287,11 @@ function renderSlipPdf(
   doc.text("Om Ganeshaya Namah", pageW - M, y + 4, { align: "right" });
   y += 8;
 
-  // Address / GSTIN / phone come from admin settings so the slip stays a
-  // valid business document when those details change.
+  // Address / phone come from admin settings so the slip stays current
+  // when those details change. Company GSTIN is not printed on slips.
   const letterhead = [
     [company.address, company.address2].filter(Boolean).join(", "),
-    [
-      company.gstin ? `GSTIN ${company.gstin}` : "",
-      [company.phone, company.phone2].filter(Boolean).join(", "),
-    ]
-      .filter(Boolean)
-      .join("  |  "),
+    [company.phone, company.phone2].filter(Boolean).join(", "),
   ].filter(Boolean);
   if (letterhead.length) {
     doc.setFont("helvetica", "normal");

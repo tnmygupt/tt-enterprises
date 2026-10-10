@@ -6,9 +6,11 @@ import { Link } from "@/i18n/routing";
 import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AccountsShell } from "@/components/AccountsShell";
+import { TableWrap } from "@/components/admin/TableWrap";
 import { ExportButtons } from "@/components/ExportButtons";
 import { NumberField } from "@/components/NumberField";
 import { stockAlertsFromDb } from "@/lib/accounting";
+import { countReorderBlockers } from "@/lib/reorder-po";
 import { useDb, useSession } from "@/lib/hooks";
 import {
   checkAnyCapability,
@@ -43,10 +45,13 @@ export default function StockAlertsPage() {
   );
 
   const counts = useMemo(() => {
+    const blockers = countReorderBlockers(all);
     return {
       reorder: all.filter((r) => r.kind === "reorder").length,
       dead: all.filter((r) => r.kind === "dead").length,
       slow: all.filter((r) => r.kind === "slow").length,
+      missingSupplier: blockers.missingSupplier,
+      contractExhausted: blockers.contractExhausted,
     };
   }, [all]);
 
@@ -111,7 +116,9 @@ export default function StockAlertsPage() {
       });
       if (!created.length) {
         setMsg(
-          "No draft PO created — set preferred supplier on products, and pick lines with suggested qty."
+          counts.missingSupplier
+            ? t("accounts.noDraftPoMissingSupplier")
+            : "No draft PO created — set preferred supplier on products, and pick lines with suggested qty."
         );
       } else {
         setMsg(
@@ -153,6 +160,16 @@ export default function StockAlertsPage() {
         }
       />
 
+      {counts.missingSupplier ? (
+        <p className="mt-4 rounded-xl border border-[var(--danger)] bg-[var(--danger-soft,transparent)] px-4 py-3 text-sm font-semibold text-[var(--danger)]">
+          {t("accounts.missingSupplierBlocker", { count: counts.missingSupplier })}
+        </p>
+      ) : null}
+      {counts.contractExhausted ? (
+        <p className="mt-2 rounded-xl border border-[var(--line)] px-4 py-3 text-sm">
+          {t("accounts.contractExhaustedBlocker", { count: counts.contractExhausted })}
+        </p>
+      ) : null}
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
         {(
           [
@@ -247,7 +264,7 @@ export default function StockAlertsPage() {
         <p className="mt-2 text-sm text-[var(--brand-deep)]">{msg}</p>
       ) : null}
 
-      <div className="tt-panel mt-5 overflow-x-auto">
+      <TableWrap className="tt-panel mt-5">
         <table className="tt-table min-w-[1180px]">
           <thead>
             <tr>
@@ -260,6 +277,7 @@ export default function StockAlertsPage() {
               <th>Incoming</th>
               <th>Committed</th>
               <th>Suggested</th>
+              <th>Blocker</th>
               <th>Supplier</th>
               <th>Last out</th>
               <th>Action</th>
@@ -315,8 +333,16 @@ export default function StockAlertsPage() {
                     {r.kind === "reorder" && r.coverMode ? (
                       <span className="block text-xs font-normal text-[var(--ink-muted)]">
                         {r.coverMode}
+                        {r.contractCapped ? " · capped" : ""}
                       </span>
                     ) : null}
+                  </td>
+                  <td className="text-sm text-[var(--danger)]">
+                    {r.blockers?.includes("missing_supplier")
+                      ? t("accounts.setPreferredSupplier")
+                      : r.blockers?.includes("contract_exhausted")
+                        ? t("accounts.contractExhausted")
+                        : "—"}
                   </td>
                   <td className="text-sm">
                     {sup?.name || (
@@ -386,7 +412,7 @@ export default function StockAlertsPage() {
               : "No alerts. Set min stock on products, or wait for sales velocity."}
           </p>
         ) : null}
-      </div>
+      </TableWrap>
     </AccountsShell>
   );
 }

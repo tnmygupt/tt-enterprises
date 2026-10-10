@@ -285,6 +285,155 @@ describe("stockAlerts formula", () => {
     expect(rows[0]?.suggestedQty).toBe(3);
   });
 
+  it("falls back to supplier MOQ when the product has none", () => {
+    const supplier = {
+      id: "s1",
+      name: "Patel",
+      phone: "9999999999",
+      type: "supplier" as const,
+      openingBalance: 0,
+      active: true,
+      createdAt: "2026-01-01",
+      minOrderQty: 10,
+    };
+    const rows = stockAlerts(
+      [product({ stock: 0, minStockLevel: 5, minOrderQty: undefined, preferredSupplierId: "s1" })],
+      [],
+      {
+        settings: settings(),
+        parties: [supplier],
+        asOf: "2026-07-15",
+      }
+    ).filter((r) => r.kind === "reorder");
+    expect(rows[0]?.suggestedQty).toBe(10);
+  });
+
+  it("uses supplier lead time when the product has none", () => {
+    const supplier = {
+      id: "s1",
+      name: "Patel",
+      phone: "9999999999",
+      type: "supplier" as const,
+      openingBalance: 0,
+      active: true,
+      createdAt: "2026-01-01",
+      leadTimeDays: 20,
+    };
+    const rows = stockAlerts(
+      [
+        product({
+          stock: 0,
+          minStockLevel: 0,
+          preferredSupplierId: "s1",
+          leadTimeDays: undefined,
+        }),
+      ],
+      [movement({ qty: 30, date: "2026-07-01" })],
+      {
+        settings: settings({ autoReorderLeadTimeDays: 1, autoReorderSafetyDays: 0 }),
+        parties: [supplier],
+        asOf: "2026-07-15",
+      }
+    ).filter((r) => r.kind === "reorder");
+    // 1/day × (20 lead + 0 safety) × 1.4 season = 28
+    expect(rows[0]?.suggestedQty).toBe(28);
+    expect(rows[0]?.coverMode).toBe("velocity");
+  });
+
+  it("flags missing preferred supplier as a blocker", () => {
+    const rows = stockAlerts(
+      [product({ stock: 1, minStockLevel: 5, preferredSupplierId: undefined })],
+      [],
+      { settings: settings(), asOf: "2026-07-15" }
+    ).filter((r) => r.kind === "reorder");
+    expect(rows[0]?.blockers).toContain("missing_supplier");
+    expect(rows[0]?.suggestedQty).toBe(4);
+  });
+
+  it("caps suggested qty to remaining contract headroom", () => {
+    const supplier = {
+      id: "s1",
+      name: "Patel",
+      phone: "9999999999",
+      type: "supplier" as const,
+      openingBalance: 0,
+      active: true,
+      createdAt: "2026-01-01",
+    };
+    const contract = {
+      id: "c1",
+      number: "SC-1",
+      supplierId: "s1",
+      date: "2026-01-01",
+      validFrom: "2026-01-01",
+      scope: "product" as const,
+      productId: "p1",
+      itemLabel: "HDPE",
+      unit: "kg" as const,
+      rate: 100,
+      contractedQty: 6,
+      usedQty: 4,
+      lockMode: "qty" as const,
+      active: true,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "test",
+    };
+    const rows = stockAlerts(
+      [product({ stock: 0, minStockLevel: 5, preferredSupplierId: "s1" })],
+      [],
+      {
+        settings: settings(),
+        parties: [supplier],
+        supplierContracts: [contract],
+        asOf: "2026-07-15",
+      }
+    ).filter((r) => r.kind === "reorder");
+    expect(rows[0]?.suggestedQty).toBe(2);
+    expect(rows[0]?.contractCapped).toBe(true);
+  });
+
+  it("blocks reorder when the matching contract is exhausted", () => {
+    const supplier = {
+      id: "s1",
+      name: "Patel",
+      phone: "9999999999",
+      type: "supplier" as const,
+      openingBalance: 0,
+      active: true,
+      createdAt: "2026-01-01",
+    };
+    const contract = {
+      id: "c1",
+      number: "SC-1",
+      supplierId: "s1",
+      date: "2026-01-01",
+      validFrom: "2026-01-01",
+      scope: "product" as const,
+      productId: "p1",
+      itemLabel: "HDPE",
+      unit: "kg" as const,
+      rate: 100,
+      contractedQty: 6,
+      usedQty: 6,
+      lockMode: "qty" as const,
+      active: true,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      createdBy: "test",
+    };
+    const rows = stockAlerts(
+      [product({ stock: 0, minStockLevel: 5, preferredSupplierId: "s1" })],
+      [],
+      {
+        settings: settings(),
+        parties: [supplier],
+        supplierContracts: [contract],
+        asOf: "2026-07-15",
+      }
+    ).filter((r) => r.kind === "reorder");
+    expect(rows[0]?.suggestedQty).toBe(0);
+    expect(rows[0]?.blockers).toContain("contract_exhausted");
+  });
+
   it("tracks last OUT per colour SKU for slow/dead", () => {
     const v = {
       id: "v1",

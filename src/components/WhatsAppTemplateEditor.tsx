@@ -73,8 +73,8 @@ export function WhatsAppTemplateEditor({
               : "Packing slip PDF is attached in this chat.",
           link:
             lang === "hi"
-              ? "ऑर्डर खोलें (स्टेटस / पेमेंट / स्लिप):\nhttps://tanmayphotos.space/o/TT-104?pay=1"
-              : "Open your order (status / pay / slip):\nhttps://tanmayphotos.space/o/TT-104?pay=1",
+              ? "ऑर्डर खोलें (स्टेटस / पेमेंट / स्लिप):\nhttps://app.ttenterprises.shop/o/TT-104?pay=1"
+              : "Open your order (status / pay / slip):\nhttps://app.ttenterprises.shop/o/TT-104?pay=1",
         },
         {
           ...settings,
