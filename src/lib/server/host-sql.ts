@@ -45,6 +45,8 @@ export const COLLECTION_TABLES: ReadonlyArray<{
   { key: "stockCounts", table: "stock_counts" },
   { key: "cashCounts", table: "cash_counts" },
   { key: "monthlyAudits", table: "monthly_audits" },
+  { key: "boms", table: "boms" },
+  { key: "jobCards", table: "job_cards" },
   { key: "ownerApprovals", table: "owner_approvals" },
 ];
 
