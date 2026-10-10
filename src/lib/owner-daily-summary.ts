@@ -71,7 +71,8 @@ export function listOverdueParties(
     db.parties,
     db.vouchers,
     db.billAllocations ?? [],
-    today
+    today,
+    db.orders
   ).filter((r) => r.daysOverdue > 0 && r.outstanding > 0.009);
   const byParty = new Map<string, typeof open>();
   for (const row of open) {

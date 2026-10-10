@@ -71,6 +71,45 @@ describe("owner daily summary", () => {
     expect(text.text).toContain("TT-9");
   });
 
+  it("does not list a cancelled order's sale as overdue", () => {
+    const party: Party = {
+      id: "p1",
+      name: "Ravi Traders",
+      phone: "9876543210",
+      type: "customer",
+      openingBalance: 0,
+      active: true,
+      createdAt: "2026-01-01",
+    };
+    const voucher: Voucher = {
+      id: "v1",
+      number: "S-1",
+      type: "sale",
+      date: "2026-08-01",
+      partyId: "p1",
+      linkedOrderId: "ord_cancel",
+      lines: [],
+      subtotal: 1000,
+      taxAmount: 0,
+      total: 1000,
+      outstanding: 1000,
+      dueDate: "2026-08-10",
+      voided: false,
+      createdAt: "2026-08-01",
+      createdBy: "admin",
+    };
+    const cancelled = {
+      id: "ord_cancel",
+      orderNumber: "TT-1",
+      status: "cancelled",
+    } as Order;
+    const overdue = listOverdueParties(
+      db({ parties: [party], vouchers: [voucher], orders: [cancelled] }),
+      "2026-08-22"
+    );
+    expect(overdue).toHaveLength(0);
+  });
+
   it("includes payables and creditor closing in the owner WhatsApp text", () => {
     const supplier: Party = {
       id: "s1",

@@ -205,7 +205,13 @@ export function computeCommandDesk(
   const parties = db.parties ?? [];
   const allocations = db.billAllocations ?? [];
   const products = db.products ?? [];
-  const openRx = allOpenReceivables(parties, vouchers, allocations, today);
+  const openRx = allOpenReceivables(
+    parties,
+    vouchers,
+    allocations,
+    today,
+    db.orders
+  );
   const receivables = roundMoney(
     openRx.reduce((s, r) => s + r.outstanding, 0)
   );

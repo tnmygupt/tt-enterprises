@@ -240,7 +240,8 @@ export function buildMonthlyAuditReport(
     db.parties,
     db.vouchers,
     db.billAllocations ?? [],
-    today
+    today,
+    db.orders
   );
   const apRows = allOpenPayables(
     db.parties,

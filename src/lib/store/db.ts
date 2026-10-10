@@ -36,6 +36,8 @@ import {
   voidJournalOn,
   saleDueDate,
   assertSaleUnderCredit,
+  voidBooksForCancelledOrders,
+  voidBooksForOrder,
   type BillCsvRow,
   type PartyCsvRow,
   type StockCsvRow,
@@ -505,12 +507,15 @@ export function loadDb(): AppDatabase {
       }
     }
 
+    const cancelledBooks = voidBooksForCancelledOrders(parsed, "system");
+
     if (
       parsed.parties.length !== partyCountBefore ||
       stockMigrated ||
       localizedMigrated ||
       settledAny ||
-      accountingMigrated
+      accountingMigrated ||
+      cancelledBooks.changed
     ) {
       localStorage.setItem(DB_KEY, JSON.stringify(parsed));
     }
@@ -2717,6 +2722,7 @@ export function updateOrderStatus(
 
 /**
  * Statuses where cancel is still allowed.
+ * Bill upload already posts a sale voucher, so cancel must void that bill.
  * Once payment is verified or the order dispatched, cancellation must go
  * through accounting (void voucher + refund flow) and is not a one-click op.
  */
@@ -2795,7 +2801,39 @@ export function cancelOrder(
         : " · no scheme weight (bill/actual not set)"),
   });
   saveDb(db);
-  return order;
+
+  const linked = loadDb().vouchers.filter(
+    (v) => v.linkedOrderId === orderId && !v.voided
+  );
+  const rank = (v: (typeof linked)[number]) =>
+    v.type === "sale" || v.type === "purchase" ? 1 : 0;
+  linked.sort((a, b) => rank(a) - rank(b));
+  const voidedNumbers: string[] = [];
+  for (const v of linked) {
+    try {
+      voidVoucher(v.id, byUserId);
+      voidedNumbers.push(v.number);
+    } catch {
+      /* period lock / already voided — ledger-only fallback below */
+    }
+  }
+  const fresh = loadDb();
+  const leftover = voidBooksForOrder(fresh, orderId, byUserId);
+  if (leftover.changed) {
+    for (const n of leftover.voidedNumbers) {
+      if (!voidedNumbers.includes(n)) voidedNumbers.push(n);
+    }
+  }
+  const o = fresh.orders.find((row) => row.id === orderId) ?? order;
+  if (voidedNumbers.length) {
+    o.timeline.push({
+      status: "cancelled",
+      at: new Date().toISOString(),
+      note: `Books: voided ${voidedNumbers.join(", ")} · removed from party overdue`,
+    });
+  }
+  saveDb(fresh);
+  return o;
 }
 
 /** Create packing slip for legacy orders that lack one. */
@@ -6671,12 +6709,13 @@ export function syncOrderPaymentReceipts(
 
 /**
  * Repair common books gaps: missing sales for billed orders, party openings,
- * and per-item receipts for verified payments.
+ * cancelled orders that still have live sale vouchers, and per-item receipts.
  */
 export function repairBooksIntegrity(createdBy = "system"): {
   salesCreated: number;
   salesFailed: string[];
   receiptsSynced: number;
+  cancelledVoided: number;
   openingsSynced: boolean;
 } {
   const db = loadDb();
@@ -6686,6 +6725,7 @@ export function repairBooksIntegrity(createdBy = "system"): {
     db.ledgerEntries,
     new Date().toISOString().slice(0, 10)
   );
+  const cancelledVoid = voidBooksForCancelledOrders(db, createdBy);
   saveDb(db);
 
   let salesCreated = 0;
@@ -6741,6 +6781,7 @@ export function repairBooksIntegrity(createdBy = "system"): {
     salesCreated,
     salesFailed,
     receiptsSynced,
+    cancelledVoided: cancelledVoid.voidedNumbers.length,
     openingsSynced: true,
   };
 }

@@ -48,11 +48,16 @@ export function overdueOpenReceivables(
   parties: Party[],
   vouchers: Voucher[],
   allocations: BillAllocation[],
-  asOf: string
+  asOf: string,
+  orders?: Order[]
 ): OpenInvoice[] {
-  return allOpenReceivables(parties, vouchers, allocations, asOf).filter(
-    (row) => row.daysOverdue > 0
-  );
+  return allOpenReceivables(
+    parties,
+    vouchers,
+    allocations,
+    asOf,
+    orders
+  ).filter((row) => row.daysOverdue > 0);
 }
 
 export function overLimitCustomers(

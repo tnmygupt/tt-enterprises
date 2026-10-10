@@ -116,7 +116,8 @@ export default function PaymentsDeskPage() {
           db.vouchers,
           db.billAllocations ?? [],
           today,
-          "sale"
+          "sale",
+          db.orders
         );
         return { ...row, open };
       });

@@ -67,7 +67,8 @@ function ReceivablesInner() {
       db.parties,
       db.vouchers,
       db.billAllocations ?? [],
-      asOf
+      asOf,
+      db.orders
     );
     if (partyId) rows = rows.filter((r) => r.voucher.partyId === partyId);
     if (overdueOnly) rows = rows.filter((r) => r.daysOverdue > 0);
@@ -142,7 +143,8 @@ function ReceivablesInner() {
           db.vouchers,
           db.billAllocations ?? [],
           asOf,
-          "sale"
+          "sale",
+          db.orders
         );
         empty.current += a.current;
         empty.d1_30 += a.d1_30;
@@ -158,7 +160,8 @@ function ReceivablesInner() {
       db.vouchers,
       db.billAllocations ?? [],
       asOf,
-      "sale"
+      "sale",
+      db.orders
     );
   }, [db, partyId, asOf]);
 

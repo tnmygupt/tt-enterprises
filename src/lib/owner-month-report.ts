@@ -442,7 +442,8 @@ export function buildOwnerMonthReport(
     db.parties,
     db.vouchers,
     db.billAllocations ?? [],
-    to
+    to,
+    db.orders
   );
   const ap = allOpenPayables(
     db.parties,

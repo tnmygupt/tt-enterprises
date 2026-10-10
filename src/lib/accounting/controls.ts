@@ -222,7 +222,8 @@ export function runBooksHealthCheck(input: {
     input.parties,
     input.vouchers,
     input.billAllocations ?? [],
-    asOf
+    asOf,
+    input.orders
   );
   const openSum = roundMoney(
     openRecv.reduce((s, r) => s + r.outstanding, 0)
@@ -257,6 +258,28 @@ export function runBooksHealthCheck(input: {
         : `${missingSale.length} missing sale: ${missingSale
             .slice(0, 5)
             .map((o) => o.orderNumber || o.id)
+            .join(", ")}`,
+  });
+
+  const cancelledLiveSales = input.vouchers.filter(
+    (v) =>
+      !v.voided &&
+      v.type === "sale" &&
+      v.linkedOrderId &&
+      input.orders.some(
+        (o) => o.id === v.linkedOrderId && o.status === "cancelled"
+      )
+  );
+  items.push({
+    id: "cancelled_sales",
+    label: "Cancelled orders are not still receivable",
+    ok: cancelledLiveSales.length === 0,
+    detail:
+      cancelledLiveSales.length === 0
+        ? "No live sale bills on cancelled orders"
+        : `${cancelledLiveSales.length} still open: ${cancelledLiveSales
+            .slice(0, 5)
+            .map((v) => v.number)
             .join(", ")}`,
   });
 
