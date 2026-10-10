@@ -21,16 +21,22 @@ export function isPrivateHost(host: string): boolean {
   return false;
 }
 
-/** Force www.tanmayphotos.space onto the apex so login cookies stick. */
+const APP_HOST = "app.ttenterprises.shop";
+const LEGACY_HOSTS = new Set([
+  "tanmayphotos.space",
+  "www.tanmayphotos.space",
+]);
+
+/** Send the expired tanmayphotos.space hosts to the live app hostname. */
 export function wwwApexRedirect(req: NextRequest): NextResponse | null {
   const host = hostnameOf(
     firstHeader(req, "x-forwarded-host") || firstHeader(req, "host")
   );
-  if (host !== "www.tanmayphotos.space") return null;
+  if (!LEGACY_HOSTS.has(host) || host === APP_HOST) return null;
   const proto = firstHeader(req, "x-forwarded-proto") || "https";
   const dest = new URL(req.nextUrl.pathname + req.nextUrl.search, req.nextUrl);
   dest.protocol = proto === "http" ? "http:" : "https:";
-  dest.hostname = "tanmayphotos.space";
+  dest.hostname = APP_HOST;
   dest.port = "";
   const res = NextResponse.redirect(dest, 308);
   res.headers.set(

@@ -14,8 +14,14 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/:path*",
+        has: [{ type: "host", value: "tanmayphotos.space" }],
+        destination: "https://app.ttenterprises.shop/:path*",
+        permanent: true,
+      },
+      {
+        source: "/:path*",
         has: [{ type: "host", value: "www.tanmayphotos.space" }],
-        destination: "https://tanmayphotos.space/:path*",
+        destination: "https://app.ttenterprises.shop/:path*",
         permanent: true,
       },
     ];

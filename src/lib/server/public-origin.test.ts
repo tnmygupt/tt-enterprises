@@ -33,7 +33,7 @@ describe("publicOrigin", () => {
     expect(isPrivateHost("tanmayphotos.space")).toBe(false);
   });
 
-  it("redirects www onto the apex host", () => {
+  it("redirects the expired tanmayphotos hosts onto the app hostname", () => {
     const res = wwwApexRedirect(
       req("https://www.tanmayphotos.space/en/admin", {
         host: "www.tanmayphotos.space",
@@ -44,13 +44,23 @@ describe("publicOrigin", () => {
     expect(res).not.toBeNull();
     expect(res?.status).toBe(308);
     expect(res?.headers.get("location")).toBe(
-      "https://tanmayphotos.space/en/admin"
+      "https://app.ttenterprises.shop/en/admin"
+    );
+    const apex = wwwApexRedirect(
+      req("https://tanmayphotos.space/en?v=4", {
+        host: "tanmayphotos.space",
+        "x-forwarded-host": "tanmayphotos.space",
+        "x-forwarded-proto": "https",
+      })
+    );
+    expect(apex?.headers.get("location")).toBe(
+      "https://app.ttenterprises.shop/en?v=4"
     );
     expect(
       wwwApexRedirect(
-        req("https://tanmayphotos.space/en", {
-          host: "tanmayphotos.space",
-          "x-forwarded-host": "tanmayphotos.space",
+        req("https://app.ttenterprises.shop/en", {
+          host: "app.ttenterprises.shop",
+          "x-forwarded-host": "app.ttenterprises.shop",
         })
       )
     ).toBeNull();
