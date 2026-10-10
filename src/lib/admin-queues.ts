@@ -1,8 +1,10 @@
 import { stockAlertsFromDb } from "@/lib/accounting/analysis";
 import { orderHasLr } from "@/lib/store/db";
+import { pendingOwnerApprovals } from "@/lib/owner-approvals";
 import type {
   AppSettings,
   Order,
+  OwnerApproval,
   Product,
   PurchaseOrder,
   StockMovement,
@@ -16,7 +18,8 @@ export type AdminQueueKey =
   | "need_lr"
   | "full_truck"
   | "need_voucher"
-  | "need_reorder";
+  | "need_reorder"
+  | "need_owner_approval";
 
 export function orderNeedsSaleVoucher(
   order: Order,
@@ -40,6 +43,7 @@ export function getAdminQueues(
         stockMovements?: StockMovement[];
         purchaseOrders?: PurchaseOrder[];
         settings?: AppSettings;
+        ownerApprovals?: OwnerApproval[];
       }
     | null
     | undefined
@@ -51,6 +55,7 @@ export function getAdminQueues(
   fullTruck: Order[];
   needVoucher: Order[];
   reorderCount: number;
+  needOwnerApproval: number;
   counts: Record<AdminQueueKey, number>;
 } {
   const orders = db?.orders ?? [];
@@ -88,6 +93,7 @@ export function getAdminQueues(
         settings: db.settings,
       }).filter((row) => row.kind === "reorder").length
     : 0;
+  const needOwnerApproval = pendingOwnerApprovals(db?.ownerApprovals).length;
 
   return {
     needConfirm,
@@ -97,6 +103,7 @@ export function getAdminQueues(
     fullTruck,
     needVoucher,
     reorderCount,
+    needOwnerApproval,
     counts: {
       need_confirm: needConfirm.length,
       need_bill: needBill.length,
@@ -105,6 +112,7 @@ export function getAdminQueues(
       full_truck: fullTruck.length,
       need_voucher: needVoucher.length,
       need_reorder: reorderCount,
+      need_owner_approval: needOwnerApproval,
     },
   };
 }

@@ -48,6 +48,12 @@ import {
   stripStockCountRates,
 } from "@/lib/stock-count";
 import { liveSessionUser } from "@/lib/server/live-login";
+import {
+  applyNewlyApprovedOwnerApprovals,
+  mergeOwnerApprovalsForStaff,
+  restoreAssignedSchemeIds,
+  restoreSellingRatesFromCloud,
+} from "@/lib/owner-approvals";
 import { isStaffRole, type ServerSession } from "@/lib/server/session";
 import { calcShippingAmount } from "@/lib/shipping";
 import { roundOffRupees } from "@/lib/pricing";
@@ -409,6 +415,7 @@ export function publicCatalogProjection(db: AppDatabase): AppDatabase {
     monthlyAudits: [],
     boms: [],
     jobCards: [],
+    ownerApprovals: [],
   };
 
   return omitWaInbox({
@@ -473,6 +480,7 @@ export function dealerScopedProjection(
     stockCounts: [],
     cashCounts: [],
     monthlyAudits: [],
+    ownerApprovals: [],
   });
   projected.parties = attachDealerStatement(
     projected.parties,
@@ -1313,7 +1321,9 @@ function mergeStaffLimitedPush(
     touched = true;
   }
   if (can("manage_schemes")) {
-    out.schemes = mergeByUpdatedAtKeepBoth(incoming.schemes, out.schemes);
+    if (ownerReview) {
+      out.schemes = mergeByUpdatedAtKeepBoth(incoming.schemes, out.schemes);
+    }
     touched = true;
   }
   if (can("manage_shipping")) {
@@ -1459,6 +1469,28 @@ function mergeStaffLimitedPush(
     out.peopleActivity = mergeByIdUnion(
       incoming.peopleActivity ?? [],
       cloud.peopleActivity ?? []
+    );
+  }
+
+  if (!ownerReview) {
+    out.products = restoreSellingRatesFromCloud(out.products, cloud.products);
+    out.schemes = cloud.schemes ?? [];
+    out.users = restoreAssignedSchemeIds(out.users, cloud.users);
+    out.ownerApprovals = mergeOwnerApprovalsForStaff(
+      incoming.ownerApprovals,
+      cloud.ownerApprovals,
+      false
+    );
+  } else {
+    out.ownerApprovals = mergeOwnerApprovalsForStaff(
+      incoming.ownerApprovals,
+      cloud.ownerApprovals,
+      true
+    );
+    applyNewlyApprovedOwnerApprovals(
+      out,
+      incoming.ownerApprovals,
+      cloud.ownerApprovals
     );
   }
 
@@ -1750,6 +1782,11 @@ export function mergeAuthorizedPush(
     const out = stripPrePurgeOps(ensureUniqueOrderNumbers(merged));
     reconcileEstimateStockReserves(out);
     out.waInbox = existing.waInbox;
+    applyNewlyApprovedOwnerApprovals(
+      out,
+      incoming.ownerApprovals,
+      existing.ownerApprovals
+    );
     return { db: out };
   }
 

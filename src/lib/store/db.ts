@@ -101,6 +101,7 @@ import type {
   MonthlyAudit,
   Bom,
   JobCard,
+  OwnerApproval,
 } from "../types";
 import type { WaInbox } from "../whatsapp-inbox";
 import { ROLE_CAPABILITIES, type Capability } from "../types";
@@ -155,6 +156,19 @@ import {
   startCashCountSession,
   startStockCountSession,
 } from "@/lib/stock-count";
+import {
+  applyOwnerApproval,
+  ensureOwnerApprovals,
+  extractSellingRates,
+  overlayLiveSellingRates,
+  productRatesTargetKey,
+  schemeAssignTargetKey,
+  schemeDeleteTargetKey,
+  schemeUpsertTargetKey,
+  schemesEffectivelyEqual,
+  sellingRatesEqual,
+  upsertPendingApproval,
+} from "@/lib/owner-approvals";
 export {
   calcWeightSlabShipping,
   calcShippingAmount,
@@ -272,6 +286,8 @@ export interface AppDatabase {
   monthlyAudits?: MonthlyAudit[];
   boms?: Bom[];
   jobCards?: JobCard[];
+  /** Staff selling-rate / scheme writes waiting for owner (`view_financials`). */
+  ownerApprovals?: OwnerApproval[];
 }
 
 function emptyDb(): AppDatabase {
@@ -319,6 +335,7 @@ function emptyDb(): AppDatabase {
     monthlyAudits: [],
     boms: [],
     jobCards: [],
+    ownerApprovals: [],
   };
 }
 
@@ -397,6 +414,7 @@ export function loadDb(): AppDatabase {
     ensureCountCollections(parsed);
     if (!parsed.boms) parsed.boms = [];
     if (!parsed.jobCards) parsed.jobCards = [];
+    ensureOwnerApprovals(parsed);
 
     // Ensure perpetual accounting setup + FIFO migration
     const accountingMigrated = ensurePerpetualAccounting(parsed);
@@ -1249,6 +1267,54 @@ function actorCan(
   db: AppDatabase
 ): boolean {
   return userHasCapability(actor, capability, capabilityContextFrom(db));
+}
+
+/** Owner (`view_financials`) writes live; missing session keeps tests writing live. */
+function actorWritesLiveCatalog(db: AppDatabase): boolean {
+  const session = getSession();
+  if (!session) return true;
+  const actor = db.users.find((u) => u.id === session.id);
+  if (actor) {
+    return userHasCapability(actor, "view_financials", capabilityContextFrom(db));
+  }
+  return hasCapability(session.role, "view_financials");
+}
+
+function sessionActorMeta(db: AppDatabase): { id: string; name: string } {
+  const session = getSession();
+  if (!session) return { id: "system", name: "System" };
+  const actor = db.users.find((u) => u.id === session.id);
+  return { id: session.id, name: actor?.name || session.name || session.id };
+}
+
+function notifyOwnerApprovalQueued(db: AppDatabase, title: string): void {
+  if (typeof window === "undefined") return;
+  const company = db.settings?.companyName || "TT Enterprises";
+  const text = `*${company}*\nOwner approval needed\n${title}\n/admin/owner/approvals`;
+  void (async () => {
+    try {
+      const { notifyStaffPush } = await import("@/lib/push-client");
+      await notifyStaffPush({
+        title: "Owner approval",
+        body: title,
+        url: "/en/admin/owner/approvals",
+      });
+    } catch {
+      /* best-effort */
+    }
+    try {
+      const { notifyStaffWhatsApp } = await import("@/lib/whatsapp");
+      await notifyStaffWhatsApp({
+        settings: db.settings,
+        users: db.users,
+        capability: "view_financials",
+        capabilityContext: capabilityContextFrom(db),
+        text,
+      });
+    } catch {
+      /* best-effort */
+    }
+  })();
 }
 
 /** Create or update the Accounts party linked to a dealer/customer user. */
@@ -3876,13 +3942,55 @@ export function upsertProduct(product: Product): void {
   normalizeProductLocalized(deduped);
   const normalized = normalizeProductStock(deduped);
   normalized.updatedAt = new Date().toISOString();
+  const liveWrite = actorWritesLiveCatalog(db);
   const idx = db.products.findIndex((p) => p.id === normalized.id);
+  const existing = idx >= 0 ? db.products[idx] : undefined;
+
+  if (!liveWrite) {
+    const proposed = extractSellingRates(normalized);
+    const liveSnapshot = existing
+      ? extractSellingRates(existing)
+      : extractSellingRates(zeroedCopy(normalized));
+    overlayLiveSellingRates(normalized, existing);
+    if (!sellingRatesEqual(liveSnapshot, proposed)) {
+      const actor = sessionActorMeta(db);
+      db.ownerApprovals = upsertPendingApproval(db.ownerApprovals, {
+        kind: "product_rates",
+        targetKey: productRatesTargetKey(normalized.id),
+        productId: normalized.id,
+        title: `Rate · ${normalized.code || normalized.name?.en || normalized.id}`,
+        snapshot: { before: liveSnapshot, proposed },
+        requestedBy: actor.id,
+        requestedByName: actor.name,
+      });
+      notifyOwnerApprovalQueued(
+        db,
+        `Rate · ${normalized.code || normalized.name?.en || normalized.id}`
+      );
+    }
+    // Keep in-memory callers (quick-create) on live rates so they cannot sell unapproved ₹.
+    overlayLiveSellingRates(product, normalized);
+  }
+
   if (idx >= 0) db.products[idx] = normalized;
   else {
     normalized.createdAt = normalized.updatedAt;
     db.products.unshift(normalized);
   }
   saveDb(db);
+}
+
+function zeroedCopy(product: Product): Product {
+  return {
+    ...product,
+    baseRate: 0,
+    ratePerSqft: 0,
+    variations: (product.variations ?? []).map((v) => ({
+      ...v,
+      rate: 0,
+      ratePerSqft: 0,
+    })),
+  };
 }
 
 export function markTallyError(message: string): void {
@@ -4513,6 +4621,25 @@ export async function setUserPasswordAsync(
 
 export function upsertScheme(scheme: Scheme): void {
   const db = loadDb();
+  const liveWrite = actorWritesLiveCatalog(db);
+  if (!liveWrite) {
+    const existing = db.schemes.find((s) => s.id === scheme.id);
+    if (schemesEffectivelyEqual(existing, scheme)) return;
+    const actor = sessionActorMeta(db);
+    const title = `Scheme · ${scheme.name?.en || scheme.id}`;
+    db.ownerApprovals = upsertPendingApproval(db.ownerApprovals, {
+      kind: "scheme_upsert",
+      targetKey: schemeUpsertTargetKey(scheme.id),
+      schemeId: scheme.id,
+      title,
+      snapshot: { before: existing ? structuredClone(existing) : undefined, proposed: scheme },
+      requestedBy: actor.id,
+      requestedByName: actor.name,
+    });
+    notifyOwnerApprovalQueued(db, title);
+    saveDb(db);
+    return;
+  }
   const idx = db.schemes.findIndex((s) => s.id === scheme.id);
   if (idx >= 0) db.schemes[idx] = scheme;
   else db.schemes.unshift(scheme);
@@ -4522,11 +4649,27 @@ export function upsertScheme(scheme: Scheme): void {
 /** Permanently remove a scheme and detach it from dealers. */
 export function deleteScheme(schemeId: string): void {
   const db = loadDb();
-  const before = db.schemes.length;
-  db.schemes = db.schemes.filter((s) => s.id !== schemeId);
-  if (db.schemes.length === before) {
+  const existing = db.schemes.find((s) => s.id === schemeId);
+  if (!existing) {
     throw new Error("Scheme not found");
   }
+  if (!actorWritesLiveCatalog(db)) {
+    const actor = sessionActorMeta(db);
+    const title = `Delete scheme · ${existing.name?.en || schemeId}`;
+    db.ownerApprovals = upsertPendingApproval(db.ownerApprovals, {
+      kind: "scheme_delete",
+      targetKey: schemeDeleteTargetKey(schemeId),
+      schemeId,
+      title,
+      snapshot: { before: structuredClone(existing), proposed: { schemeId } },
+      requestedBy: actor.id,
+      requestedByName: actor.name,
+    });
+    notifyOwnerApprovalQueued(db, title);
+    saveDb(db);
+    return;
+  }
+  db.schemes = db.schemes.filter((s) => s.id !== schemeId);
   for (const user of db.users) {
     user.assignedSchemeIds = (user.assignedSchemeIds ?? []).filter(
       (id) => id !== schemeId
@@ -4549,9 +4692,53 @@ export function assignSchemeToUser(userId: string, schemeId: string): void {
   const db = loadDb();
   const user = db.users.find((u) => u.id === userId);
   if (!user) throw new Error("User not found");
-  if (!user.assignedSchemeIds.includes(schemeId)) {
-    user.assignedSchemeIds.push(schemeId);
+  if (user.assignedSchemeIds.includes(schemeId)) return;
+  if (!actorWritesLiveCatalog(db)) {
+    const actor = sessionActorMeta(db);
+    const scheme = db.schemes.find((s) => s.id === schemeId);
+    const title = `Assign · ${scheme?.name?.en || schemeId} → ${user.name || userId}`;
+    db.ownerApprovals = upsertPendingApproval(db.ownerApprovals, {
+      kind: "scheme_assign",
+      targetKey: schemeAssignTargetKey(userId, schemeId),
+      schemeId,
+      dealerId: userId,
+      title,
+      snapshot: {
+        before: { dealerId: userId, schemeId, assigned: false },
+        proposed: { dealerId: userId, schemeId, assigned: true },
+      },
+      requestedBy: actor.id,
+      requestedByName: actor.name,
+    });
+    notifyOwnerApprovalQueued(db, title);
+    saveDb(db);
+    return;
   }
+  user.assignedSchemeIds.push(schemeId);
+  saveDb(db);
+}
+
+export function decideOwnerApproval(
+  approvalId: string,
+  status: "approved" | "rejected",
+  note?: string
+): void {
+  const db = loadDb();
+  if (!actorWritesLiveCatalog(db)) {
+    throw new Error("Only the owner can approve or reject");
+  }
+  const row = (db.ownerApprovals ?? []).find((r) => r.id === approvalId);
+  if (!row || row.status !== "pending") {
+    throw new Error("Approval not found");
+  }
+  if (status === "approved") applyOwnerApproval(db, row);
+  const actor = sessionActorMeta(db);
+  const now = new Date().toISOString();
+  row.status = status;
+  row.note = note?.trim() || row.note;
+  row.decidedBy = actor.id;
+  row.decidedAt = now;
+  row.updatedAt = now;
   saveDb(db);
 }
 

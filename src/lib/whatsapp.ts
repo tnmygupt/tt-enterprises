@@ -511,6 +511,7 @@ export async function notifyStaffWhatsApp(input: {
       body: JSON.stringify({
         text: input.text,
         skipUserIds: input.skipUserIds,
+        capability: input.capability,
       }),
     });
     if (res.ok) {

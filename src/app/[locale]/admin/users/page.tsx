@@ -2467,7 +2467,11 @@ export default function AdminUsersPage() {
               e.preventDefault();
               if (!assignForm.userId || !assignForm.schemeId) return;
               assignSchemeToUser(assignForm.userId, assignForm.schemeId);
-              setMsg(t("admin.peopleSchemeAssigned"));
+              setMsg(
+                checkCapability(session, db, "view_financials")
+                  ? t("admin.peopleSchemeAssigned")
+                  : t("admin.approvalQueued")
+              );
               refresh();
             }}
           >

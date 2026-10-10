@@ -45,6 +45,7 @@ export const COLLECTION_TABLES: ReadonlyArray<{
   { key: "stockCounts", table: "stock_counts" },
   { key: "cashCounts", table: "cash_counts" },
   { key: "monthlyAudits", table: "monthly_audits" },
+  { key: "ownerApprovals", table: "owner_approvals" },
 ];
 
 function parseJson(value: unknown): unknown {

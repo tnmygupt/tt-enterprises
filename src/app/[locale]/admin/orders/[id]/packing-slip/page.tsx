@@ -1347,6 +1347,7 @@ export default function AdminPackingSlipPage() {
                     onValueChange={setDiscValue}
                     locale={locale}
                     disabled={locked}
+                    allowManual={checkCapability(session, db, "view_financials")}
                   />
                 </div>
                 <div className="flex justify-between">

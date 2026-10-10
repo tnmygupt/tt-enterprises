@@ -1560,3 +1560,35 @@ export interface JobCard {
   completedAt?: string;
   cancelledAt?: string;
 }
+
+/** Staff selling-rate / scheme writes that wait for an owner (`view_financials`). */
+export type OwnerApprovalKind =
+  | "product_rates"
+  | "scheme_upsert"
+  | "scheme_delete"
+  | "scheme_assign";
+
+export type OwnerApprovalStatus = "pending" | "approved" | "rejected";
+
+export interface OwnerApproval {
+  id: string;
+  kind: OwnerApprovalKind;
+  status: OwnerApprovalStatus;
+  /** e.g. product_rates:p1, scheme_upsert:s1, scheme_assign:u1:s1 */
+  targetKey: string;
+  productId?: string;
+  schemeId?: string;
+  dealerId?: string;
+  title: string;
+  snapshot: {
+    before?: unknown;
+    proposed?: unknown;
+  };
+  requestedBy: string;
+  requestedByName?: string;
+  requestedAt: string;
+  decidedBy?: string;
+  decidedAt?: string;
+  note?: string;
+  updatedAt: string;
+}

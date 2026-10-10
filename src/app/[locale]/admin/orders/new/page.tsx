@@ -902,6 +902,7 @@ export default function AdminPunchOrderPage() {
                   onKindChange={setDiscKind}
                   onValueChange={setDiscValue}
                   locale={locale}
+                  allowManual={checkCapability(session, db, "view_financials")}
                 />
               </div>
               {(billNow && billFromKg
