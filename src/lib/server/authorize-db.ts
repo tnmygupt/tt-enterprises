@@ -29,6 +29,7 @@ import {
   sanitizeStaffJobs,
   userHasCapability,
 } from "@/lib/capabilities";
+import { isPublicCatalogProduct } from "@/lib/catalog-visibility";
 import { isSchemeActiveNow } from "@/lib/schemes";
 import { omitWaInbox } from "@/lib/whatsapp-inbox";
 import {
@@ -420,7 +421,7 @@ export function publicCatalogProjection(db: AppDatabase): AppDatabase {
 
   return omitWaInbox({
     ...empty,
-    products: (db.products ?? []).filter((p) => p.active),
+    products: (db.products ?? []).filter((p) => isPublicCatalogProduct(p)),
     schemes: (db.schemes ?? []).filter((s) => isSchemeActiveNow(s)),
     categories: db.categories ?? [],
     shippingRules: db.shippingRules ?? [],
@@ -665,7 +666,9 @@ function lookupCatalog(
   productName: OrderLine["productName"];
   pricingMode: OrderLine["pricingMode"];
 } | null {
-  const product = products.find((p) => p.id === line.productId && p.active);
+  const product = products.find(
+    (p) => p.id === line.productId && isPublicCatalogProduct(p)
+  );
   if (!product) return null;
   const variation = line.variationId
     ? product.variations.find((v) => v.id === line.variationId)

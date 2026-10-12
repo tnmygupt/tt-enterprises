@@ -8,6 +8,7 @@ import { Link, useRouter } from "@/i18n/routing";
 import { NumberField } from "@/components/NumberField";
 import { FilePick } from "@/components/FilePick";
 import { PaymentInstructions } from "@/components/PaymentInstructions";
+import { isPublicCatalogProduct } from "@/lib/catalog-visibility";
 import { fileToDataUrl, useDb, useSession } from "@/lib/hooks";
 import { calcLineTotal, computeBillFromActualWeights, formatInr } from "@/lib/pricing";
 import { nextPayRefFromItems } from "@/lib/pay-ref";
@@ -1067,7 +1068,7 @@ export default function OrderDetailPage() {
                         {locale === "hi" ? "प्रोडक्ट" : "Product"}
                       </option>
                       {db.products
-                        .filter((p) => p.active !== false)
+                        .filter((p) => isPublicCatalogProduct(p))
                         .map((p) => (
                           <option key={p.id} value={p.id}>
                             {p.name[locale] || p.name.en}

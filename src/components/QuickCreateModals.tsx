@@ -189,6 +189,7 @@ export function CreateProductModal({
   const [lengthFt, setLengthFt] = useState<number | "">("");
   const [widthFt, setWidthFt] = useState<number | "">("");
   const [pcsPerPacket, setPcsPerPacket] = useState<number | "">("");
+  const [rawMaterial, setRawMaterial] = useState(false);
   const [error, setError] = useState("");
 
   const onSubmit = (e: FormEvent) => {
@@ -268,6 +269,7 @@ export function CreateProductModal({
       logoUrl: "",
       active: true,
       featured: false,
+      rawMaterial,
       stock: 0,
       stockSecondary: 0,
       createdAt: now,
@@ -425,6 +427,14 @@ export function CreateProductModal({
             onValueChange={setWeightKg}
           />
         </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={rawMaterial}
+            onChange={(e) => setRawMaterial(e.target.checked)}
+          />
+          Raw material — hide from the public site
+        </label>
         {error ? <p className="text-sm text-[var(--danger)]">{error}</p> : null}
         <button type="submit" className="tt-btn tt-btn-dark">
           Save item

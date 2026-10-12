@@ -211,6 +211,11 @@ export interface Product {
   active: boolean;
   featured: boolean;
   /**
+   * Plant input (resin, pigment, granules). Hidden from the public catalog
+   * and dealer orders. Still used in stock, purchases, and production.
+   */
+  rawMaterial?: boolean;
+  /**
    * Stock per size × color (bundles).
    * Key: `${variationId}__${colorId}` — source of truth when colors exist.
    */

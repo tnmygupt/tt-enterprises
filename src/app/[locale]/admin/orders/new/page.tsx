@@ -9,6 +9,7 @@ import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { AdminShell } from "@/components/AdminShell";
 import { NumberField } from "@/components/NumberField";
 import { SearchSelect } from "@/components/SearchSelect";
+import { isRawMaterial } from "@/lib/catalog-visibility";
 import {
   catalogRowValue,
   getSizeColorStock,
@@ -133,8 +134,11 @@ export default function AdminPunchOrderPage() {
 
   const catalogOptions = useMemo(() => {
     if (!db) return [];
+    const rawIds = new Set(
+      (db.products ?? []).filter((p) => isRawMaterial(p)).map((p) => p.id)
+    );
     return inventoryRows(db)
-      .filter((c) => c.stock > 0)
+      .filter((c) => c.stock > 0 && !rawIds.has(c.productId))
       .map((c) => {
         const used = rows.reduce((s, r) => {
           if (

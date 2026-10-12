@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { useRouter } from "@/i18n/routing";
 import { NumberField } from "@/components/NumberField";
 import { sanitizeHtml, hasRichContent } from "@/components/RichTextEditor";
+import { isRawMaterial } from "@/lib/catalog-visibility";
 import { categoryLabel } from "@/lib/categories";
 import { useDb, useSession } from "@/lib/hooks";
 import {
@@ -42,7 +43,9 @@ export default function ProductDetailPage() {
   const { db } = useDb();
   const { session, ready } = useSession();
   const loggedIn = ready && !!session;
-  const product = db?.products.find((p) => p.id === params.id);
+  const product = db?.products.find(
+    (p) => p.id === params.id && !isRawMaterial(p)
+  );
 
   const [variationId, setVariationId] = useState<string>("");
   const [colorId, setColorId] = useState<string>("");

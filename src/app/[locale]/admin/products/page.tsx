@@ -650,9 +650,11 @@ export default function AdminProductsPage() {
         }
       }
       if (session?.role === "super_admin") {
-        p.featured = homeNew;
+        const showHome = !p.rawMaterial && homeNew;
+        const showPromo = !p.rawMaterial && homePromo;
+        p.featured = showHome;
         upsertProduct(p);
-        setProductHomePlacement(p.id, { homeNew, homePromo });
+        setProductHomePlacement(p.id, { homeNew: showHome, homePromo: showPromo });
       } else {
         upsertProduct(p);
       }
@@ -786,7 +788,14 @@ export default function AdminProductsPage() {
                   <p className="text-xs text-[var(--ink-muted)]">
                     {categoryLabel(db?.categories, p.category, locale)}
                   </p>
-                  <p className="font-semibold">{loc(p.name, locale, p.code)}</p>
+                  <p className="font-semibold">
+                    {loc(p.name, locale, p.code)}
+                    {p.rawMaterial ? (
+                      <span className="ml-2 text-xs font-medium text-[var(--ink-muted)]">
+                        {t("admin.rawMaterialBadge")}
+                      </span>
+                    ) : null}
+                  </p>
                   <p className="font-mono text-xs text-[var(--ink-muted)]">
                     {p.code}
                     {p.gsm ? ` · ${p.gsm} GSM` : ""}
@@ -864,7 +873,14 @@ export default function AdminProductsPage() {
                         {categoryLabel(db?.categories, p.category, locale)}
                       </td>
                       <td>
-                        <div className="font-medium">{loc(p.name, locale, p.code)}</div>
+                        <div className="font-medium">
+                          {loc(p.name, locale, p.code)}
+                          {p.rawMaterial ? (
+                            <span className="ml-2 text-xs font-medium text-[var(--ink-muted)]">
+                              {t("admin.rawMaterialBadge")}
+                            </span>
+                          ) : null}
+                        </div>
                         <div className="font-mono text-xs text-[var(--ink-muted)]">
                           {p.code}
                           {p.gsm ? ` · ${p.gsm} GSM` : ""}
@@ -2731,6 +2747,24 @@ export default function AdminProductsPage() {
             />
             Active on store
           </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={!!editing.rawMaterial}
+              onChange={(e) => {
+                const rawMaterial = e.target.checked;
+                setEditing({ ...editing, rawMaterial });
+                if (rawMaterial) {
+                  setHomeNew(false);
+                  setHomePromo(false);
+                }
+              }}
+            />
+            {t("admin.rawMaterial")}
+          </label>
+          <p className="-mt-2 text-xs text-[var(--ink-muted)]">
+            {t("admin.rawMaterialHint")}
+          </p>
           {session.role === "super_admin" ? (
             <>
           <label className="flex items-center gap-2 text-sm">

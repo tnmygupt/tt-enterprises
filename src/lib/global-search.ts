@@ -1,3 +1,4 @@
+import { isPublicCatalogProduct } from "./catalog-visibility";
 import { loc } from "./localized";
 import { productStockSummary } from "./inventory";
 import { formatInr } from "./pricing";
@@ -50,7 +51,7 @@ export function searchGlobal(
   const hits: GlobalHit[] = [];
 
   for (const p of db.products ?? []) {
-    if (!p?.active) continue;
+    if (!isPublicCatalogProduct(p)) continue;
     const title = loc(p.name, opts.locale, p.code || "Product");
     const hay = `${p.code || ""} ${loc(p.name, "en")} ${loc(p.name, "hi")} ${
       loc(p.itemName, "en") || ""
