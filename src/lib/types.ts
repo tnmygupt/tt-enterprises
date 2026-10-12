@@ -1537,16 +1537,33 @@ export interface JobCardLine {
   bundles: number;
 }
 
+/** One finished SKU on a job card. A card can finish several. */
+export interface JobCardOutput {
+  id: string;
+  productId: string;
+  variationId?: string;
+  colorId?: string;
+  itemLabel: string;
+  plannedQty: number;
+  actualQty?: number;
+  bomId?: string;
+}
+
 export interface JobCard {
   id: string;
   number: string;
   bomId?: string;
   date: string;
+  /** First finished line, kept so older cards and readers still load. */
   outputProductId: string;
   outputVariationId?: string;
   outputColorId?: string;
+  /** Planned qty of the first finished line. */
   plannedQty: number;
+  /** Actual qty of the first finished line. */
   actualQty?: number;
+  /** Every finished SKU on this card. */
+  outputs?: JobCardOutput[];
   status: JobCardStatus;
   inputLines: JobCardLine[];
   issuedCost?: number;

@@ -6,10 +6,15 @@ import type {
   BomLine,
   JobCard,
   JobCardLine,
+  JobCardOutput,
   LedgerEntry,
+  Party,
   Product,
+  PurchaseOrder,
+  PurchaseOrderLine,
   StockBatch,
   StockMovement,
+  SupplierContract,
   Voucher,
 } from "./types";
 import {
@@ -23,9 +28,11 @@ import { accountBalance } from "./accounting/engine";
 import {
   applyProductQtyDelta,
   deriveSecondaryQty,
+  inventoryRows,
   secondaryPerBundle,
 } from "./inventory";
 import { roundMoney } from "./pricing";
+import { resolveOpenContract } from "./contracts";
 import { assertPeriodOpen } from "./accounting/controls";
 
 export type ProductionDb = {
@@ -39,6 +46,18 @@ export type ProductionDb = {
   batchConsumptions: BatchConsumption[];
   accounts: Pick<Account, "id" | "type" | "openingBalance" | "active">[];
   settings: Pick<AppSettings, "lockedThroughDate">;
+  parties?: Party[];
+  purchaseOrders?: PurchaseOrder[];
+  supplierContracts?: SupplierContract[];
+};
+
+export type JobOutputInput = {
+  id?: string;
+  productId: string;
+  variationId?: string;
+  colorId?: string;
+  plannedQty: number;
+  bomId?: string;
 };
 
 export function scaleBomLines(bom: Bom, plannedQty: number): JobCardLine[] {
@@ -52,6 +71,91 @@ export function scaleBomLines(bom: Bom, plannedQty: number): JobCardLine[] {
     qty: roundMoney(line.qty * factor),
     bundles: 0,
   }));
+}
+
+function skuKey(line: {
+  productId?: string;
+  variationId?: string;
+  colorId?: string;
+}): string {
+  return `${line.productId ?? ""}|${line.variationId ?? ""}|${line.colorId ?? ""}`;
+}
+
+/** Sum identical raw SKUs (product + variation + color) onto one issue line. */
+export function clubJobLines(lines: JobCardLine[]): JobCardLine[] {
+  const map = new Map<string, JobCardLine>();
+  for (const line of lines) {
+    if (!line.productId || !(line.qty > 0)) continue;
+    const key = skuKey(line);
+    const prev = map.get(key);
+    if (!prev) {
+      map.set(key, { ...line, qty: roundMoney(line.qty) });
+      continue;
+    }
+    prev.qty = roundMoney(prev.qty + line.qty);
+    prev.bundles = roundMoney((prev.bundles || 0) + (line.bundles || 0));
+    if (
+      (!prev.itemLabel || prev.itemLabel === prev.productId) &&
+      line.itemLabel &&
+      line.itemLabel !== line.productId
+    ) {
+      prev.itemLabel = line.itemLabel;
+    }
+  }
+  return [...map.values()];
+}
+
+/** Finished lines, synthesizing one from the legacy single-output fields. */
+export function jobCardOutputs(job: JobCard): JobCardOutput[] {
+  if (job.outputs?.length) return job.outputs;
+  return [
+    {
+      id: `${job.id}_out`,
+      productId: job.outputProductId,
+      variationId: job.outputVariationId,
+      colorId: job.outputColorId,
+      itemLabel: job.outputProductId,
+      plannedQty: job.plannedQty,
+      actualQty: job.actualQty,
+      bomId: job.bomId,
+    },
+  ];
+}
+
+function mirrorLegacyOutput(job: JobCard): void {
+  const first = job.outputs?.[0];
+  if (!first) return;
+  job.outputProductId = first.productId;
+  job.outputVariationId = first.variationId;
+  job.outputColorId = first.colorId;
+  job.plannedQty = first.plannedQty;
+  job.bomId = first.bomId || job.bomId;
+  job.actualQty = first.actualQty;
+}
+
+function outputLabel(
+  db: ProductionDb,
+  productId: string,
+  variationId?: string
+): string {
+  const product = db.products.find((p) => p.id === productId);
+  if (!product) throw new Error("Finished product not found");
+  const variation = variationId
+    ? product.variations.find((v) => v.id === variationId)
+    : undefined;
+  return [product.name.en, variation?.label.en].filter(Boolean).join(" · ");
+}
+
+export function onHandSecondary(
+  db: { products: Product[] },
+  line: { productId: string; variationId?: string; colorId?: string }
+): number {
+  const row = inventoryRows({ products: db.products, stockMovements: [] }).find(
+    (r) => skuKey(r) === skuKey(line)
+  );
+  if (row) return row.stockSecondary;
+  const product = db.products.find((p) => p.id === line.productId);
+  return product?.stockSecondary ?? 0;
 }
 
 function fillLineLabels(
@@ -187,47 +291,94 @@ export function upsertBomOn(
   return bom;
 }
 
+function explodeOutputs(
+  db: ProductionDb,
+  outputs: JobOutputInput[]
+): JobCardLine[] {
+  const raw: JobCardLine[] = [];
+  for (const output of outputs) {
+    if (!output.bomId || !(output.plannedQty > 0)) continue;
+    const bom = db.boms.find((b) => b.id === output.bomId && b.active);
+    if (!bom) throw new Error("BOM not found");
+    raw.push(...scaleBomLines(bom, output.plannedQty));
+  }
+  return raw;
+}
+
 export function createJobCardOn(
   db: ProductionDb,
   input: {
     date: string;
     createdBy: string;
     bomId?: string;
-    outputProductId: string;
+    outputProductId?: string;
     outputVariationId?: string;
     outputColorId?: string;
-    plannedQty: number;
+    plannedQty?: number;
     inputLines?: Omit<JobCardLine, "itemLabel">[];
+    outputs?: JobOutputInput[];
   }
 ): JobCard {
   assertPeriodOpen(input.date, db.settings);
-  if (!(input.plannedQty > 0)) throw new Error("Planned qty must be greater than zero");
-  let lines: JobCardLine[] = [];
-  if (input.bomId) {
+  const explicitOutputs = (input.outputs ?? []).filter(
+    (o) => o.productId && o.plannedQty > 0
+  );
+  const outputs: JobOutputInput[] = explicitOutputs.length
+    ? explicitOutputs
+    : [
+        {
+          productId: input.outputProductId || "",
+          variationId: input.outputVariationId,
+          colorId: input.outputColorId,
+          plannedQty: input.plannedQty || 0,
+          bomId: input.bomId,
+        },
+      ];
+  if (!outputs.some((o) => o.productId && o.plannedQty > 0)) {
+    throw new Error("Planned qty must be greater than zero");
+  }
+
+  const manual = (input.inputLines ?? []).filter((l) => l.productId && l.qty > 0);
+  let raw: JobCardLine[];
+  if (explicitOutputs.length && manual.length) {
+    raw = manual.map((l) => ({ ...l, itemLabel: l.productId, bundles: l.bundles || 0 }));
+  } else if (explicitOutputs.length) {
+    raw = explodeOutputs(db, outputs);
+  } else if (input.bomId) {
     const bom = db.boms.find((b) => b.id === input.bomId && b.active);
     if (!bom) throw new Error("BOM not found");
-    lines = fillLineLabels(db, scaleBomLines(bom, input.plannedQty));
-  } else if (input.inputLines?.length) {
-    lines = fillLineLabels(
-      db,
-      input.inputLines.map((l) => ({
-        ...l,
-        itemLabel: l.productId,
-      }))
-    );
+    raw = scaleBomLines(bom, input.plannedQty || 0);
+  } else if (manual.length) {
+    raw = manual.map((l) => ({ ...l, itemLabel: l.productId, bundles: l.bundles || 0 }));
   } else {
-    throw new Error("Pick a BOM or enter input lines");
+    raw = [];
   }
+  if (!raw.length) throw new Error("Pick a BOM or enter input lines");
+  const lines = fillLineLabels(db, clubJobLines(raw));
+
+  const finished: JobCardOutput[] = outputs
+    .filter((o) => o.productId && o.plannedQty > 0)
+    .map((o) => ({
+      id: o.id || `jo_${crypto.randomUUID()}`,
+      productId: o.productId,
+      variationId: o.variationId,
+      colorId: o.colorId,
+      itemLabel: outputLabel(db, o.productId, o.variationId),
+      plannedQty: roundMoney(o.plannedQty),
+      bomId: o.bomId,
+    }));
+
   const job: JobCard = {
     id: `job_${crypto.randomUUID()}`,
     number: nextJobNumber(db.jobCards),
-    bomId: input.bomId,
+    bomId: finished[0]?.bomId,
     date: input.date.slice(0, 10),
-    outputProductId: input.outputProductId,
-    outputVariationId: input.outputVariationId,
-    outputColorId: input.outputColorId,
-    plannedQty: roundMoney(input.plannedQty),
+    outputProductId: finished[0]!.productId,
+    outputVariationId: finished[0]?.variationId,
+    outputColorId: finished[0]?.colorId,
+    plannedQty: finished[0]!.plannedQty,
     status: "draft",
+    outputs: finished,
     inputLines: lines,
     createdAt: new Date().toISOString(),
     createdBy: input.createdBy,
@@ -294,35 +445,73 @@ export function issueJobCardOn(db: ProductionDb, jobId: string, createdBy: strin
 
 export function completeJobCardOn(
   db: ProductionDb,
-  input: { jobId: string; actualQty: number; createdBy: string }
+  input: {
+    jobId: string;
+    actualQty?: number;
+    actuals?: { id?: string; actualQty: number }[];
+    createdBy: string;
+  }
 ): JobCard {
   const job = db.jobCards.find((j) => j.id === input.jobId);
   if (!job) throw new Error("Job card not found");
   if (job.status !== "issued") throw new Error("Issue materials before completing");
   assertPeriodOpen(job.date, db.settings);
-  const actual = roundMoney(input.actualQty);
-  if (!(actual >= 0)) throw new Error("Enter actual output qty");
+  if (!job.outputs?.length) job.outputs = jobCardOutputs(job);
+
+  const outputs = job.outputs;
+  if (input.actuals?.length) {
+    outputs.forEach((output, index) => {
+      const match =
+        input.actuals!.find((a) => a.id && a.id === output.id) ??
+        input.actuals![index];
+      output.actualQty = roundMoney(match?.actualQty ?? 0);
+    });
+  } else if (outputs.length <= 1) {
+    const actual = roundMoney(input.actualQty ?? 0);
+    if (!(actual >= 0)) throw new Error("Enter actual output qty");
+    if (outputs[0]) outputs[0].actualQty = actual;
+  } else {
+    throw new Error("Enter actual qty for each finished item");
+  }
+
+  const plannedTotal = roundMoney(
+    outputs.reduce((s, o) => s + (o.plannedQty || 0), 0)
+  );
+  const actualTotal = roundMoney(
+    outputs.reduce((s, o) => s + (o.actualQty ?? 0), 0)
+  );
+  if (!(actualTotal >= 0)) throw new Error("Enter actual output qty");
   const issuedCost = job.issuedCost ?? 0;
   const yieldPct =
-    job.plannedQty > 0 ? Math.min(1, actual / job.plannedQty) : 1;
+    plannedTotal > 0 ? Math.min(1, actualTotal / plannedTotal) : 1;
   const wastageCost =
-    actual + 0.0001 < job.plannedQty
+    actualTotal + 0.0001 < plannedTotal
       ? roundMoney(issuedCost * (1 - yieldPct))
       : 0;
   const fgCost = roundMoney(issuedCost - wastageCost);
 
-  const product = db.products.find((p) => p.id === job.outputProductId);
-  if (!product) throw new Error("Finished product not found");
-  const per = secondaryPerBundle(product, job.outputVariationId) || 1;
-  const bundles = per > 0 ? roundMoney(actual / per) || (actual > 0 ? 1 : 0) : actual;
-  if (actual > 0) {
+  const positive = outputs.filter((o) => (o.actualQty ?? 0) > 0);
+  const batchIds: string[] = [];
+  let allocated = 0;
+  positive.forEach((output, index) => {
+    const actual = output.actualQty ?? 0;
+    const lineCost =
+      index === positive.length - 1
+        ? roundMoney(fgCost - allocated)
+        : roundMoney(actualTotal > 0 ? (fgCost * actual) / actualTotal : 0);
+    allocated = roundMoney(allocated + lineCost);
+    const product = db.products.find((p) => p.id === output.productId);
+    if (!product) throw new Error("Finished product not found");
+    const per = secondaryPerBundle(product, output.variationId) || 1;
+    const bundles =
+      per > 0 ? roundMoney(actual / per) || 1 : actual;
     moveStock(
       db,
       {
-        productId: job.outputProductId,
-        variationId: job.outputVariationId,
-        colorId: job.outputColorId,
-        itemLabel: product.name.en,
+        productId: output.productId,
+        variationId: output.variationId,
+        colorId: output.colorId,
+        itemLabel: output.itemLabel || product.name.en,
         qty: actual,
         bundles: bundles || 1,
       },
@@ -331,22 +520,21 @@ export function completeJobCardOn(
       input.createdBy,
       `${job.number} complete`
     );
-    const rate = actual > 0 ? roundMoney(fgCost / actual) : 0;
-    db.stockBatches.push(
-      createBatchFromLine({
-        date: job.date,
-        productId: job.outputProductId,
-        variationId: job.outputVariationId,
-        colorId: job.outputColorId,
-        qty: actual,
-        rate,
-        unit: product.unit,
-        source: "production",
-        voucherId: undefined,
-        provisional: false,
-      })
-    );
-  }
+    const batch = createBatchFromLine({
+      date: job.date,
+      productId: output.productId,
+      variationId: output.variationId,
+      colorId: output.colorId,
+      qty: actual,
+      rate: actual > 0 ? roundMoney(lineCost / actual) : 0,
+      unit: product.unit,
+      source: "production",
+      voucherId: undefined,
+      provisional: false,
+    });
+    db.stockBatches.push(batch);
+    batchIds.push(batch.id);
+  });
 
   const legs = [
     ...(fgCost > 0.009
@@ -380,15 +568,15 @@ export function completeJobCardOn(
     linkedJobId: job.id,
     legs,
   });
-  const fgBatch = db.stockBatches[db.stockBatches.length - 1];
-  if (fgBatch && fgBatch.source === "production" && !fgBatch.voucherId) {
-    fgBatch.voucherId = voucher.id;
+  for (const id of batchIds) {
+    const batch = db.stockBatches.find((b) => b.id === id);
+    if (batch && !batch.voucherId) batch.voucherId = voucher.id;
   }
 
   job.status = "completed";
   job.completedAt = new Date().toISOString();
-  job.actualQty = actual;
-  job.wastageQty = roundMoney(Math.max(0, job.plannedQty - actual));
+  mirrorLegacyOutput(job);
+  job.wastageQty = roundMoney(Math.max(0, plannedTotal - actualTotal));
   job.wastageCost = wastageCost;
   job.completeVoucherId = voucher.id;
   return job;
@@ -428,6 +616,136 @@ export function cancelIssuedJobCardOn(
   job.status = "cancelled";
   job.cancelledAt = new Date().toISOString();
   return job;
+}
+
+export type MaterialOrderResult = {
+  orders: PurchaseOrder[];
+  missingSupplier: { itemLabel: string; qty: number }[];
+};
+
+function nextPoNumber(orders: PurchaseOrder[]): string {
+  let max = 1000;
+  for (const order of orders) {
+    const n = Number(order.number.replace(/\D/g, ""));
+    if (!Number.isNaN(n) && n > max) max = n;
+  }
+  return `PO-${max + 1}`;
+}
+
+function alreadyOrderedForJob(
+  orders: PurchaseOrder[],
+  jobNumber: string,
+  key: string
+): number {
+  let qty = 0;
+  for (const po of orders) {
+    if (po.status === "cancelled") continue;
+    if (!po.narration?.includes(jobNumber)) continue;
+    for (const line of po.lines) {
+      if (skuKey(line) !== key) continue;
+      qty += line.secondaryQty ?? line.qty;
+    }
+  }
+  return roundMoney(qty);
+}
+
+/** Draft purchase orders for clubbed inputs that stock cannot cover. */
+export function orderJobMaterialsOn(
+  db: ProductionDb,
+  jobId: string,
+  createdBy: string
+): MaterialOrderResult {
+  const job = db.jobCards.find((j) => j.id === jobId);
+  if (!job) throw new Error("Job card not found");
+  if (job.status !== "draft") {
+    throw new Error("Material orders are for draft jobs");
+  }
+  if (!db.purchaseOrders) db.purchaseOrders = [];
+  if (!db.parties) db.parties = [];
+  if (!db.supplierContracts) db.supplierContracts = [];
+
+  const missingSupplier: MaterialOrderResult["missingSupplier"] = [];
+  const bySupplier = new Map<string, { line: JobCardLine; short: number }[]>();
+
+  for (const line of job.inputLines) {
+    if (!(line.qty > 0)) continue;
+    const onHand = onHandSecondary(db, line);
+    const already = alreadyOrderedForJob(
+      db.purchaseOrders,
+      job.number,
+      skuKey(line)
+    );
+    const short = roundMoney(line.qty - onHand - already);
+    if (!(short > 0.009)) continue;
+    const product = db.products.find((p) => p.id === line.productId);
+    const supplierId = product?.preferredSupplierId;
+    const party = supplierId
+      ? db.parties.find(
+          (p) => p.id === supplierId && p.type === "supplier" && p.active
+        )
+      : undefined;
+    if (!party) {
+      missingSupplier.push({
+        itemLabel: line.itemLabel || line.productId,
+        qty: short,
+      });
+      continue;
+    }
+    const list = bySupplier.get(party.id) ?? [];
+    list.push({ line, short });
+    bySupplier.set(party.id, list);
+  }
+
+  if (!bySupplier.size) {
+    return { orders: [], missingSupplier };
+  }
+
+  const orders: PurchaseOrder[] = [];
+  const now = new Date().toISOString();
+  for (const [supplierId, rows] of bySupplier) {
+    const lines: PurchaseOrderLine[] = rows.map(({ line, short }) => {
+      const product = db.products.find((p) => p.id === line.productId);
+      const contract = resolveOpenContract(
+        db.supplierContracts ?? [],
+        db.products,
+        supplierId,
+        line.productId,
+        job.date,
+        { variationId: line.variationId }
+      );
+      const rate = contract?.rate ?? 0;
+      return {
+        id: `pol_${crypto.randomUUID()}`,
+        productId: line.productId,
+        variationId: line.variationId,
+        colorId: line.colorId,
+        itemLabel: line.itemLabel,
+        qty: short,
+        secondaryQty: short,
+        unit: product?.unit,
+        rate,
+        amount: roundMoney(short * rate),
+        contractId: contract?.id,
+        receivedQty: 0,
+        billedQty: 0,
+      };
+    });
+    const po: PurchaseOrder = {
+      id: `po_${crypto.randomUUID()}`,
+      number: nextPoNumber(db.purchaseOrders),
+      supplierId,
+      date: job.date,
+      status: "draft",
+      lines,
+      narration: `Materials for ${job.number}`,
+      total: roundMoney(lines.reduce((s, l) => s + l.amount, 0)),
+      createdAt: now,
+      createdBy,
+    };
+    db.purchaseOrders.unshift(po);
+    orders.push(po);
+  }
+  return { orders, missingSupplier };
 }
 
 export function wipBalance(
