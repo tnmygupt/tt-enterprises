@@ -21,22 +21,37 @@ import { loc } from "@/lib/localized";
 import { useDb, useSession } from "@/lib/hooks";
 import { formatInr } from "@/lib/pricing";
 import {
+  clubJobLines,
+  jobCardOutputs,
+  onHandSecondary,
+  scaleBomLines,
+} from "@/lib/production";
+import {
   cancelIssuedJobCard,
   checkAnyCapability,
   checkCapability,
   completeJobCard,
   createJobCard,
   issueJobCard,
+  orderJobMaterials,
   replaceDbFromCloud,
   upsertBom,
 } from "@/lib/store/db";
-import type { BomLine, JobCardLine } from "@/lib/types";
+import type { BomLine, JobCard, JobCardLine } from "@/lib/types";
 
 type CatalogPick = {
   productId: string;
   variationId?: string;
   colorId?: string;
   qty: number;
+};
+
+type FinishDraft = {
+  productId: string;
+  variationId?: string;
+  colorId?: string;
+  plannedQty: number;
+  bomId: string;
 };
 
 function blankPick(): CatalogPick {
@@ -68,10 +83,11 @@ export default function ProductionPage() {
   const [bomInputs, setBomInputs] = useState<CatalogPick[]>([blankPick()]);
 
   const [jobDate, setJobDate] = useState(toDateInputValue());
-  const [jobBomId, setJobBomId] = useState("");
-  const [jobPlanned, setJobPlanned] = useState("1");
-  const [jobOutputKey, setJobOutputKey] = useState("");
-  const [adhocInputs, setAdhocInputs] = useState<CatalogPick[]>([blankPick()]);
+  const [finishes, setFinishes] = useState<FinishDraft[]>([
+    { productId: "", plannedQty: 1, bomId: "" },
+  ]);
+  const [adhocInputs, setAdhocInputs] = useState<CatalogPick[]>([]);
+  const [inputsEdited, setInputsEdited] = useState(false);
   const [actualQty, setActualQty] = useState<Record<string, string>>({});
 
   const catalog = useMemo(() => (db ? inventoryRows(db) : []), [db]);
@@ -122,7 +138,12 @@ export default function ProductionPage() {
     };
   };
 
-  const runLocal = (body: Record<string, unknown>) => {
+  const runLocal = (
+    body: Record<string, unknown>
+  ): {
+    poNumbers?: string[];
+    missingSupplier?: { itemLabel: string; qty: number }[];
+  } => {
     const createdBy = session.id;
     const action = String(body.action || "");
     if (action === "upsertBom") {
@@ -142,15 +163,15 @@ export default function ProductionPage() {
       createJobCard({
         date: String(body.date || toDateInputValue()),
         createdBy,
-        bomId: body.bomId ? String(body.bomId) : undefined,
-        outputProductId: String(body.outputProductId || ""),
-        outputVariationId: body.outputVariationId
-          ? String(body.outputVariationId)
-          : undefined,
-        outputColorId: body.outputColorId
-          ? String(body.outputColorId)
-          : undefined,
-        plannedQty: Number(body.plannedQty) || 0,
+        outputs: body.outputs as
+          | {
+              productId: string;
+              variationId?: string;
+              colorId?: string;
+              plannedQty: number;
+              bomId?: string;
+            }[]
+          | undefined,
         inputLines: body.inputLines as Omit<JobCardLine, "itemLabel">[] | undefined,
       });
     } else if (action === "issue") {
@@ -158,13 +179,48 @@ export default function ProductionPage() {
     } else if (action === "complete") {
       completeJobCard({
         jobId: String(body.jobId || ""),
-        actualQty: Number(body.actualQty) || 0,
+        actualQty:
+          body.actualQty == null ? undefined : Number(body.actualQty) || 0,
+        actuals: body.actuals as { id?: string; actualQty: number }[] | undefined,
         createdBy,
       });
+    } else if (action === "materialOrder") {
+      const ordered = orderJobMaterials(String(body.jobId || ""), createdBy);
+      return {
+        poNumbers: ordered.orders.map((p) => p.number),
+        missingSupplier: ordered.missingSupplier,
+      };
     } else if (action === "cancelIssue") {
       cancelIssuedJobCard(String(body.jobId || ""), createdBy);
     } else {
       throw new Error("Unknown action");
+    }
+    return {};
+  };
+
+  const showOrderResult = (
+    data: {
+      poNumbers?: string[];
+      missingSupplier?: { itemLabel: string; qty: number }[];
+    },
+    okMsg: string,
+    action: string
+  ) => {
+    const missing = (data.missingSupplier ?? []).map((l) => l.itemLabel).join(", ");
+    const pos = (data.poNumbers ?? []).join(", ");
+    if (action === "materialOrder" && !pos && !missing) {
+      setError(locale === "hi" ? "ऑर्डर के लिए कमी नहीं" : "Nothing short to order");
+      return;
+    }
+    if (missing) {
+      setError(
+        locale === "hi"
+          ? `पसंदीदा सप्लायर नहीं: ${missing}`
+          : `No preferred supplier: ${missing}`
+      );
+    }
+    if (pos || action !== "materialOrder") {
+      setMsg(pos ? `${okMsg} ${pos}` : okMsg);
     }
   };
 
@@ -193,18 +249,22 @@ export default function ProductionPage() {
               : "Cloud unavailable — cannot issue or complete jobs without books"
           );
         }
-        runLocal(body);
+        const local = runLocal(body);
         refresh();
-        setMsg(okMsg);
+        showOrderResult(local, okMsg, String(body.action || ""));
         return;
       }
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        poNumbers?: string[];
+        missingSupplier?: { itemLabel: string; qty: number }[];
+      };
       if (!res.ok) throw new Error(data.error || "Failed");
       const { repullForSession } = await import("@/lib/supabase/sync");
       const remote = await repullForSession();
       if (remote) replaceDbFromCloud(remote);
       refresh();
-      setMsg(okMsg);
+      showOrderResult(data, okMsg, String(body.action || ""));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed");
     } finally {
@@ -240,47 +300,96 @@ export default function ProductionPage() {
     );
   };
 
+  const explodedPicks = (): CatalogPick[] => {
+    const raw: JobCardLine[] = [];
+    for (const finish of finishes) {
+      if (!finish.bomId || !(finish.plannedQty > 0)) continue;
+      const bom = boms.find((b) => b.id === finish.bomId && b.active);
+      if (!bom) continue;
+      raw.push(...scaleBomLines(bom, finish.plannedQty));
+    }
+    return clubJobLines(raw).map((l) => ({
+      productId: l.productId,
+      variationId: l.variationId,
+      colorId: l.colorId,
+      qty: l.qty,
+    }));
+  };
+
+  const shownInputs = inputsEdited ? adhocInputs : explodedPicks();
+
+  const commitInputs = (next: CatalogPick[]) => {
+    setAdhocInputs(next);
+    setInputsEdited(true);
+  };
+
+  const onFillClub = () => {
+    setAdhocInputs(explodedPicks());
+    setInputsEdited(true);
+    setError("");
+    setMsg(t("fillClub"));
+  };
+
+  const onEditInput = (index: number, patch: Partial<CatalogPick>) => {
+    const base = inputsEdited ? [...adhocInputs] : explodedPicks();
+    const current = base[index] ?? blankPick();
+    base[index] = { ...current, ...patch };
+    commitInputs(base);
+  };
+
+  const onAddInput = () => {
+    const base = inputsEdited ? [...adhocInputs] : explodedPicks();
+    commitInputs([...base, blankPick()]);
+  };
+
+  const updateFinish = (index: number, patch: Partial<FinishDraft>) => {
+    setFinishes((rows) =>
+      rows.map((row, i) => (i === index ? { ...row, ...patch } : row))
+    );
+  };
+
   const onCreateJob = (e: FormEvent) => {
     e.preventDefault();
-    const bom = jobBomId
-      ? boms.find((b) => b.id === jobBomId)
-      : undefined;
-    const out = bom
-      ? {
-          productId: bom.outputProductId,
-          variationId: bom.outputVariationId,
-          colorId: bom.outputColorId,
-        }
-      : parsePick(jobOutputKey);
-    if (!out.productId) {
+    const outputs = finishes
+      .filter((f) => f.productId && f.plannedQty > 0)
+      .map((f) => ({
+        productId: f.productId,
+        variationId: f.variationId,
+        colorId: f.colorId,
+        plannedQty: f.plannedQty,
+        bomId: f.bomId || undefined,
+      }));
+    if (!outputs.length) {
       setError("Pick a finished SKU or BOM");
       return;
     }
-    const inputLines = !jobBomId
-      ? adhocInputs
-          .filter((l) => l.productId && l.qty > 0)
-          .map((l) => ({
-            productId: l.productId,
-            variationId: l.variationId,
-            colorId: l.colorId,
-            qty: l.qty,
-            bundles: 0,
-          }))
-      : undefined;
+    const inputLines = (inputsEdited ? adhocInputs : [])
+      .filter((l) => l.productId && l.qty > 0)
+      .map((l) => ({
+        productId: l.productId,
+        variationId: l.variationId,
+        colorId: l.colorId,
+        qty: l.qty,
+        bundles: 0,
+      }));
     void mutate(
       {
         action: "createJob",
         date: jobDate,
-        bomId: jobBomId || undefined,
-        outputProductId: out.productId,
-        outputVariationId: out.variationId,
-        outputColorId: out.colorId,
-        plannedQty: Number(jobPlanned) || 0,
-        inputLines,
+        outputs,
+        inputLines: inputLines.length ? inputLines : undefined,
       },
       t("newJob")
     );
   };
+
+  const finishOutputs = (job: JobCard) => jobCardOutputs(job);
+
+  const lineOnHand = (line: {
+    productId: string;
+    variationId?: string;
+    colorId?: string;
+  }) => (db ? onHandSecondary(db, line) : 0);
 
   const jobStatus = (status: string) => {
     if (status === "draft") return t("jobDraft");
@@ -436,115 +545,157 @@ export default function ProductionPage() {
       ) : (
         <>
           <form
+            id="new-job"
             onSubmit={onCreateJob}
-            className="tt-panel mt-5 grid max-w-3xl gap-3 p-5 sm:grid-cols-2"
+            className="tt-panel mt-5 grid max-w-3xl gap-3 p-5"
           >
-            <p className="sm:col-span-2 text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-              {t("newJob")}
-            </p>
-            <div>
-              <label className="tt-label">{t("pickBom")}</label>
-              <select
-                className="tt-select"
-                value={jobBomId}
-                onChange={(e) => setJobBomId(e.target.value)}
-              >
-                <option value="">{t("adHocJob")}</option>
-                {boms
-                  .filter((b) => b.active)
-                  .map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {productLabel(b.outputProductId, b.outputVariationId)} ·{" "}
-                      {b.outputQty}
-                    </option>
-                  ))}
-              </select>
-            </div>
-            <div>
-              <label className="tt-label">{t("colDate")}</label>
-              <input
-                type="date"
-                className="tt-input"
-                value={jobDate}
-                onChange={(e) => setJobDate(e.target.value)}
-              />
-            </div>
-            {!jobBomId ? (
-              <div className="sm:col-span-2">
-                <label className="tt-label">{t("outputProduct")}</label>
-                <SearchSelect
-                  options={catalogOptions}
-                  value={jobOutputKey}
-                  onChange={setJobOutputKey}
-                  placeholder={t("outputProduct")}
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
+                {t("newJob")}
+              </p>
+              <div>
+                <label className="tt-label">{t("colDate")}</label>
+                <input
+                  type="date"
+                  className="tt-input"
+                  value={jobDate}
+                  onChange={(e) => setJobDate(e.target.value)}
                 />
               </div>
-            ) : null}
-            <div>
-              <label className="tt-label">{t("plannedQty")}</label>
-              <NumberField
-                className="tt-input"
-                min={0}
-                value={jobPlanned}
-                onValueChange={(v) => setJobPlanned(v === "" ? "" : String(v))}
-              />
             </div>
-            {!jobBomId ? (
-              <>
-                <p className="sm:col-span-2 text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
-                  {t("inputLines")}
-                </p>
-                {adhocInputs.map((line, i) => (
-                  <div
-                    key={i}
-                    className="sm:col-span-2 grid gap-2 sm:grid-cols-[1fr_120px]"
-                  >
-                    <SearchSelect
-                      options={catalogOptions}
-                      value={
-                        line.productId
-                          ? catalogRowValue({
-                              productId: line.productId,
-                              variationId: line.variationId,
-                              colorId: line.colorId,
-                            })
-                          : ""
-                      }
-                      onChange={(val) => {
-                        const next = [...adhocInputs];
-                        next[i] = {
-                          ...next[i]!,
-                          ...parsePick(val),
-                          qty: line.qty,
-                        };
-                        setAdhocInputs(next);
-                      }}
-                      placeholder={t("inputLines")}
-                    />
-                    <NumberField
-                      className="tt-input"
-                      min={0}
-                      value={line.qty}
-                      onValueChange={(v) => {
-                        const next = [...adhocInputs];
-                        next[i] = { ...next[i]!, qty: Number(v) || 0 };
-                        setAdhocInputs(next);
-                      }}
-                    />
-                  </div>
-                ))}
-                <button
-                  type="button"
-                  className="tt-btn tt-btn-outline sm:col-span-2"
-                  onClick={() => setAdhocInputs([...adhocInputs, blankPick()])}
+            <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
+              {t("finishedItems")}
+            </p>
+            {finishes.map((finish, i) => (
+              <div
+                key={i}
+                className="grid gap-2 sm:grid-cols-[1fr_120px_1fr_auto]"
+              >
+                <SearchSelect
+                  options={catalogOptions}
+                  value={
+                    finish.productId
+                      ? catalogRowValue({
+                          productId: finish.productId,
+                          variationId: finish.variationId,
+                          colorId: finish.colorId,
+                        })
+                      : ""
+                  }
+                  onChange={(val) => updateFinish(i, parsePick(val))}
+                  placeholder={t("outputProduct")}
+                />
+                <NumberField
+                  className="tt-input"
+                  min={0}
+                  value={finish.plannedQty}
+                  onValueChange={(v) =>
+                    updateFinish(i, { plannedQty: Number(v) || 0 })
+                  }
+                />
+                <select
+                  className="tt-select"
+                  value={finish.bomId}
+                  onChange={(e) => {
+                    const bomId = e.target.value;
+                    const bom = boms.find((b) => b.id === bomId);
+                    updateFinish(i, {
+                      bomId,
+                      ...(bom && !finish.productId
+                        ? {
+                            productId: bom.outputProductId,
+                            variationId: bom.outputVariationId,
+                            colorId: bom.outputColorId,
+                          }
+                        : {}),
+                    });
+                  }}
                 >
-                  + {t("inputLines")}
-                </button>
-              </>
-            ) : null}
+                  <option value="">{t("adHocJob")}</option>
+                  {boms
+                    .filter((b) => b.active)
+                    .map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {productLabel(b.outputProductId, b.outputVariationId)} ·{" "}
+                        {b.outputQty}
+                      </option>
+                    ))}
+                </select>
+                {finishes.length > 1 ? (
+                  <button
+                    type="button"
+                    className="tt-btn tt-btn-outline"
+                    onClick={() =>
+                      setFinishes((rows) => rows.filter((_, idx) => idx !== i))
+                    }
+                  >
+                    ×
+                  </button>
+                ) : (
+                  <span />
+                )}
+              </div>
+            ))}
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              onClick={() =>
+                setFinishes((rows) => [
+                  ...rows,
+                  { productId: "", plannedQty: 1, bomId: "" },
+                ])
+              }
+            >
+              + {t("addFinished")}
+            </button>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-bold uppercase tracking-wide text-[var(--ink-muted)]">
+                {t("inputLines")}
+              </p>
+              <button
+                type="button"
+                className="tt-btn tt-btn-outline"
+                onClick={onFillClub}
+              >
+                {t("fillClub")}
+              </button>
+            </div>
+            {shownInputs.map((line, i) => (
+              <div key={i} className="grid gap-2 sm:grid-cols-[1fr_120px]">
+                <SearchSelect
+                  options={catalogOptions}
+                  value={
+                    line.productId
+                      ? catalogRowValue({
+                          productId: line.productId,
+                          variationId: line.variationId,
+                          colorId: line.colorId,
+                        })
+                      : ""
+                  }
+                  onChange={(val) => onEditInput(i, parsePick(val))}
+                  placeholder={t("inputLines")}
+                />
+                <NumberField
+                  className="tt-input"
+                  min={0}
+                  value={line.qty}
+                  onValueChange={(v) =>
+                    onEditInput(i, { qty: Number(v) || 0 })
+                  }
+                />
+              </div>
+            ))}
+            <button
+              type="button"
+              className="tt-btn tt-btn-outline"
+              onClick={onAddInput}
+            >
+              + {t("inputLines")}
+            </button>
             <button
               type="submit"
-              className="tt-btn tt-btn-dark sm:col-span-2"
+              className="tt-btn tt-btn-dark"
               disabled={busy}
             >
               {t("newJob")}
@@ -565,7 +716,9 @@ export default function ProductionPage() {
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((job) => (
+                {jobs.map((job) => {
+                  const outputs = finishOutputs(job);
+                  return (
                   <tr key={job.id}>
                     <td className="font-mono text-sm">
                       {job.number}
@@ -574,10 +727,48 @@ export default function ProductionPage() {
                       </div>
                     </td>
                     <td>
-                      {productLabel(job.outputProductId, job.outputVariationId)}
+                      <div className="space-y-1">
+                        {outputs.map((out) => (
+                          <div key={out.id}>
+                            {productLabel(out.productId, out.variationId)}
+                          </div>
+                        ))}
+                      </div>
+                      {job.status === "draft" ? (
+                        <ul className="mt-2 space-y-1 text-xs text-[var(--ink-muted)]">
+                          {job.inputLines.map((line, i) => {
+                            const onHand = lineOnHand(line);
+                            const short = Math.max(
+                              0,
+                              Math.round((line.qty - onHand) * 1000) / 1000
+                            );
+                            const product = db?.products.find(
+                              (p) => p.id === line.productId
+                            );
+                            return (
+                              <li key={`${line.productId}-${i}`}>
+                                {line.itemLabel}: {t("requiredQty")} {line.qty}{" "}
+                                · {t("onHand")} {onHand} · {t("shortQty")}{" "}
+                                {short}
+                                {short > 0.009 && !product?.preferredSupplierId
+                                  ? ` · ${t("noSupplier")}`
+                                  : ""}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : null}
                     </td>
-                    <td className="tabular-nums">{job.plannedQty}</td>
-                    <td className="tabular-nums">{job.actualQty ?? "—"}</td>
+                    <td className="tabular-nums">
+                      {outputs.map((out) => (
+                        <div key={out.id}>{out.plannedQty}</div>
+                      ))}
+                    </td>
+                    <td className="tabular-nums">
+                      {outputs.map((out) => (
+                        <div key={out.id}>{out.actualQty ?? "—"}</div>
+                      ))}
+                    </td>
                     <td>{job.date}</td>
                     {canSeeRupees ? (
                       <td className="tabular-nums text-sm">
@@ -590,54 +781,21 @@ export default function ProductionPage() {
                       </td>
                     ) : null}
                     <td>
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-col items-start gap-2">
                         {job.status === "draft" ? (
-                          <button
-                            type="button"
-                            className="tt-btn tt-btn-dark"
-                            disabled={busy}
-                            onClick={() =>
-                              void mutate(
-                                { action: "issue", jobId: job.id },
-                                t("issueJob")
-                              )
-                            }
-                          >
-                            {t("issueJob")}
-                          </button>
-                        ) : null}
-                        {job.status === "issued" ? (
-                          <>
-                            <NumberField
-                              className="tt-input w-24"
-                              min={0}
-                              value={actualQty[job.id] ?? String(job.plannedQty)}
-                              onValueChange={(v) =>
-                                setActualQty((cur) => ({
-                                  ...cur,
-                                  [job.id]: v === "" ? "" : String(v),
-                                }))
-                              }
-                            />
+                          <div className="flex flex-wrap gap-2">
                             <button
                               type="button"
                               className="tt-btn tt-btn-dark"
                               disabled={busy}
                               onClick={() =>
                                 void mutate(
-                                  {
-                                    action: "complete",
-                                    jobId: job.id,
-                                    actualQty:
-                                      Number(
-                                        actualQty[job.id] ?? job.plannedQty
-                                      ) || 0,
-                                  },
-                                  t("completeJob")
+                                  { action: "issue", jobId: job.id },
+                                  t("issueJob")
                                 )
                               }
                             >
-                              {t("completeJob")}
+                              {t("issueJob")}
                             </button>
                             <button
                               type="button"
@@ -645,19 +803,89 @@ export default function ProductionPage() {
                               disabled={busy}
                               onClick={() =>
                                 void mutate(
-                                  { action: "cancelIssue", jobId: job.id },
-                                  t("cancelJob")
+                                  { action: "materialOrder", jobId: job.id },
+                                  t("makeMaterialOrder")
                                 )
                               }
                             >
-                              {t("cancelJob")}
+                              {t("makeMaterialOrder")}
                             </button>
+                          </div>
+                        ) : null}
+                        {job.status === "issued" ? (
+                          <>
+                            {outputs.map((out) => {
+                              const key = `${job.id}:${out.id}`;
+                              return (
+                                <label
+                                  key={out.id}
+                                  className="flex items-center gap-2 text-xs"
+                                >
+                                  <span className="max-w-[8rem] truncate">
+                                    {productLabel(out.productId, out.variationId)}
+                                  </span>
+                                  <NumberField
+                                    className="tt-input w-24"
+                                    min={0}
+                                    value={
+                                      actualQty[key] ?? String(out.plannedQty)
+                                    }
+                                    onValueChange={(v) =>
+                                      setActualQty((cur) => ({
+                                        ...cur,
+                                        [key]: v === "" ? "" : String(v),
+                                      }))
+                                    }
+                                  />
+                                </label>
+                              );
+                            })}
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                className="tt-btn tt-btn-dark"
+                                disabled={busy}
+                                onClick={() =>
+                                  void mutate(
+                                    {
+                                      action: "complete",
+                                      jobId: job.id,
+                                      actuals: outputs.map((out) => ({
+                                        id: out.id,
+                                        actualQty:
+                                          Number(
+                                            actualQty[`${job.id}:${out.id}`] ??
+                                              out.plannedQty
+                                          ) || 0,
+                                      })),
+                                    },
+                                    t("completeJob")
+                                  )
+                                }
+                              >
+                                {t("completeJob")}
+                              </button>
+                              <button
+                                type="button"
+                                className="tt-btn tt-btn-outline"
+                                disabled={busy}
+                                onClick={() =>
+                                  void mutate(
+                                    { action: "cancelIssue", jobId: job.id },
+                                    t("cancelJob")
+                                  )
+                                }
+                              >
+                                {t("cancelJob")}
+                              </button>
+                            </div>
                           </>
                         ) : null}
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
             {!jobs.length ? (

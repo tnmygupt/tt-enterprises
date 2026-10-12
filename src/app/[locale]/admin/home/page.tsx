@@ -8,6 +8,7 @@ import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { AdminShell } from "@/components/AdminShell";
 import { SearchSelect } from "@/components/SearchSelect";
 import { useDb, useSession } from "@/lib/hooks";
+import { isPublicCatalogProduct } from "@/lib/catalog-visibility";
 import { loc } from "@/lib/localized";
 import { moveId } from "@/lib/home-merch";
 import { checkCapability, saveHomeMerchLists } from "@/lib/store/db";
@@ -122,7 +123,7 @@ export default function AdminHomeMerchPage() {
 
   const catalog = useMemo(() => {
     return [...(db?.products ?? [])]
-      .filter((p) => p.active)
+      .filter((p) => isPublicCatalogProduct(p))
       .sort((a, b) =>
         loc(a.name, locale, a.code).localeCompare(loc(b.name, locale, b.code))
       )

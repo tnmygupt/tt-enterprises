@@ -8,6 +8,7 @@ import { categoryLabel } from "@/lib/categories";
 import { useDb, useSession } from "@/lib/hooks";
 import { loc } from "@/lib/localized";
 import { catalogFromRate, formatInr, unitLabel } from "@/lib/pricing";
+import { isPublicCatalogProduct } from "@/lib/catalog-visibility";
 import { productStockSummary } from "@/lib/inventory";
 import { CatalogRetry } from "@/components/CatalogRetry";
 import type { ProductCategory } from "@/lib/types";
@@ -29,7 +30,7 @@ export default function CatalogPage() {
   const products = useMemo(() => {
     if (!db) return [];
     return (db.products ?? [])
-      .filter((p) => p?.active)
+      .filter((p) => isPublicCatalogProduct(p))
       .filter((p) => (category === "all" ? true : p.category === category))
       .filter((p) => {
         const hay =

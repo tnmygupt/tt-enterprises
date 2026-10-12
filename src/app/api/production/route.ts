@@ -14,7 +14,9 @@ import {
   completeJobCardOn,
   createJobCardOn,
   issueJobCardOn,
+  orderJobMaterialsOn,
   upsertBomOn,
+  type JobOutputInput,
 } from "@/lib/production";
 
 function cloneDb(db: AppDatabase): AppDatabase {
@@ -111,7 +113,9 @@ export async function POST(req: NextRequest) {
           date: String(body.date || new Date().toISOString().slice(0, 10)),
           createdBy,
           bomId: body.bomId ? String(body.bomId) : undefined,
-          outputProductId: String(body.outputProductId || ""),
+          outputProductId: body.outputProductId
+            ? String(body.outputProductId)
+            : undefined,
           outputVariationId: body.outputVariationId
             ? String(body.outputVariationId)
             : undefined,
@@ -119,6 +123,9 @@ export async function POST(req: NextRequest) {
             ? String(body.outputColorId)
             : undefined,
           plannedQty: Number(body.plannedQty) || 0,
+          outputs: Array.isArray(body.outputs)
+            ? (body.outputs as JobOutputInput[])
+            : undefined,
           inputLines: Array.isArray(body.inputLines)
             ? (body.inputLines as {
                 productId: string;
@@ -134,9 +141,35 @@ export async function POST(req: NextRequest) {
       } else if (action === "complete") {
         completeJobCardOn(prod, {
           jobId: String(body.jobId || ""),
-          actualQty: Number(body.actualQty) || 0,
+          actualQty:
+            body.actualQty == null ? undefined : Number(body.actualQty) || 0,
+          actuals: Array.isArray(body.actuals)
+            ? (body.actuals as { id?: string; actualQty: number }[])
+            : undefined,
           createdBy,
         });
+      } else if (action === "materialOrder") {
+        const ordered = orderJobMaterialsOn(
+          prod,
+          String(body.jobId || ""),
+          createdBy
+        );
+        db.purchaseOrders = prod.purchaseOrders ?? db.purchaseOrders;
+        const put = await cloudPutAppDb(
+          sanitizeDbForCloud(db),
+          baseUpdatedAt ?? got.updatedAt ?? null
+        );
+        if (put.conflict) {
+          return { conflict: true as const, updatedAt: put.updatedAt };
+        }
+        if (!put.ok) {
+          return { error: put.error || "Save failed", status: 500 as const };
+        }
+        return {
+          ok: true as const,
+          poNumbers: ordered.orders.map((p) => p.number),
+          missingSupplier: ordered.missingSupplier,
+        };
       } else if (action === "cancelIssue") {
         cancelIssuedJobCardOn(prod, String(body.jobId || ""), createdBy);
       } else {
@@ -169,7 +202,7 @@ export async function POST(req: NextRequest) {
     result = await attempt(result.updatedAt ?? null);
   }
   if ("ok" in result && result.ok) {
-    return json({ ok: true });
+    return json(result);
   }
   if ("error" in result) {
     return json({ error: result.error }, result.status ?? 400);

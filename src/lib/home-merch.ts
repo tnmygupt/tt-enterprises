@@ -1,3 +1,4 @@
+import { isPublicCatalogProduct } from "./catalog-visibility";
 import type { Product } from "./types";
 
 const FALLBACK_NEW_LIMIT = 6;
@@ -7,7 +8,9 @@ export function productsByIds(
   ids: string[]
 ): Product[] {
   const active = new Map(
-    products.filter((p) => p.active).map((p) => [p.id, p] as const)
+    products
+      .filter((p) => isPublicCatalogProduct(p))
+      .map((p) => [p.id, p] as const)
   );
   const out: Product[] = [];
   for (const id of ids) {
@@ -22,7 +25,7 @@ export function fallbackNewProducts(
   limit = FALLBACK_NEW_LIMIT
 ): Product[] {
   return [...products]
-    .filter((p) => p.active)
+    .filter((p) => isPublicCatalogProduct(p))
     .sort((a, b) => {
       if (a.featured !== b.featured) return a.featured ? -1 : 1;
       return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));

@@ -22,6 +22,7 @@ import {
   unitLabel,
   variationDisplayLabel,
 } from "@/lib/pricing";
+import { isPublicCatalogProduct } from "@/lib/catalog-visibility";
 import { getSizeColorStock } from "@/lib/inventory";
 import { ORDER_AGAIN_HINT_KEY } from "@/lib/order-again";
 import {
@@ -383,7 +384,7 @@ export default function QuickOrderPage() {
 
   const products = useMemo(() => {
     if (!db) return [];
-    return db.products.filter((p) => p.active);
+    return db.products.filter((p) => isPublicCatalogProduct(p));
   }, [db]);
 
   /** Search text + total stock computed once per catalog change. */

@@ -137,6 +137,7 @@ import {
   completeJobCardOn,
   createJobCardOn,
   issueJobCardOn,
+  orderJobMaterialsOn,
   upsertBomOn,
 } from "@/lib/production";
 import { stockAlertsFromDb } from "@/lib/accounting/analysis";
@@ -6425,13 +6426,21 @@ export function issueJobCard(jobId: string, createdBy: string) {
 
 export function completeJobCard(input: {
   jobId: string;
-  actualQty: number;
+  actualQty?: number;
+  actuals?: { id?: string; actualQty: number }[];
   createdBy: string;
 }) {
   const db = loadDb();
   const job = completeJobCardOn(asProductionDb(db), input);
   saveDb(db);
   return job;
+}
+
+export function orderJobMaterials(jobId: string, createdBy: string) {
+  const db = loadDb();
+  const result = orderJobMaterialsOn(asProductionDb(db), jobId, createdBy);
+  saveDb(db);
+  return result;
 }
 
 export function cancelIssuedJobCard(jobId: string, createdBy: string) {
