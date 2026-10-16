@@ -63,6 +63,7 @@ const GROUPS: NavGroup[] = [
         href: "/admin/whatsapp",
         labelKey: "admin.whatsappDesk",
         anyCap: [
+          "manage_orders",
           "manage_users",
           "manage_accounts",
           "verify_payment",
@@ -74,42 +75,12 @@ const GROUPS: NavGroup[] = [
         href: "/admin/tracking",
         labelKey: "admin.trackingMatrix",
         anyCap: [
+          "manage_orders",
           "manage_shipping",
           "manage_accounts",
           "manage_users",
           "view_financials",
         ],
-      },
-      {
-        href: "/admin/owner",
-        labelKey: "admin.ownerTracking",
-        cap: "view_financials",
-      },
-      {
-        href: "/admin/owner/monthly-audit",
-        labelKey: "admin.monthlyAudit",
-        cap: "view_financials",
-      },
-      {
-        href: "/admin/owner/approvals",
-        labelKey: "admin.approvals",
-        cap: "view_financials",
-        badge: "need_owner_approval",
-      },
-      {
-        href: "/admin/audit",
-        labelKey: "admin.auditHub",
-        anyCap: [
-          "manage_accounts",
-          "manage_reorder",
-          "view_financials",
-        ],
-      },
-      {
-        href: "/admin/accounts/payments",
-        labelKey: "admin.paymentsDesk",
-        cap: "manage_accounts",
-        badge: "need_verify_payment",
       },
       { href: "/admin/help", labelKey: "admin.helpGuide" },
     ],
@@ -139,26 +110,9 @@ const GROUPS: NavGroup[] = [
         cap: "manage_products",
       },
       {
-        href: "/admin/accounts/inventory",
-        labelKey: "admin.stock",
-        anyCap: ["manage_accounts", "manage_reorder"],
-      },
-      {
-        href: "/admin/accounts/reports/stock-alerts",
-        labelKey: "admin.stockAlerts",
-        anyCap: ["manage_accounts", "manage_reorder"],
-        badge: "need_reorder",
-      },
-      {
-        href: "/admin/audit/stock-count",
-        labelKey: "admin.stockCount",
-        roles: ["dispatch", "plant_manager", "accounts", "super_admin"],
-        anyCap: ["manage_accounts", "manage_reorder", "view_financials"],
-      },
-      {
-        href: "/admin/accounts/purchases?tab=orders",
-        labelKey: "admin.openPurchaseOrders",
-        cap: "manage_reorder",
+        href: "/admin/tally",
+        labelKey: "admin.tally",
+        cap: "manage_products",
       },
       {
         href: "/admin/schemes",
@@ -170,30 +124,7 @@ const GROUPS: NavGroup[] = [
   {
     titleKey: "admin.modulePeople",
     items: [
-      {
-        href: "/admin/hr",
-        labelKey: "admin.hrDesk",
-      },
-      {
-        href: "/admin/hr/punch",
-        labelKey: "admin.hrPunch",
-      },
       { href: "/admin/users", labelKey: "admin.users", anyCap: ["manage_users", "approve_dealers"] },
-      {
-        href: "/admin/wallets",
-        labelKey: "admin.wallets",
-        cap: "manage_wallet",
-      },
-    ],
-  },
-  {
-    titleKey: "admin.moduleBooks",
-    items: [
-      {
-        href: "/admin/accounts",
-        labelKey: "admin.accountsBook",
-        cap: "manage_accounts",
-      },
     ],
   },
   {
@@ -230,10 +161,6 @@ export function AdminShell({
   const { db, refresh } = useDb();
   const queues = getAdminQueues(db);
   const auditObligation = db ? monthCloseObligation(db) : null;
-  const showAuditBanner =
-    !!auditObligation &&
-    auditObligation.state !== "ok" &&
-    checkCapability(session, db, "view_financials");
   const salesDesk = isSalesDeskStaff(session, db);
   const [navOpen, setNavOpen] = useState(false);
   const [pendingOpen, setPendingOpen] = useState(false);
@@ -450,41 +377,7 @@ export function AdminShell({
       label: t("admin.queueFullTruck"),
       count: queues.counts.full_truck,
     },
-    {
-      key: "need_voucher",
-      href: "/admin/orders?filter=need_voucher",
-      label: t("admin.queueNeedVoucher"),
-      count: queues.counts.need_voucher,
-    },
-    {
-      key: "need_reorder",
-      href: "/admin/accounts/reports/stock-alerts",
-      label: t("admin.queueReorder"),
-      count: queues.counts.need_reorder,
-    },
-    {
-      key: "need_owner_approval",
-      href: "/admin/owner/approvals",
-      label: locale === "hi" ? "रेट / स्कीम अप्रूवल" : "Rate / scheme approval",
-      count: queues.counts.need_owner_approval,
-    },
-  ].filter((q) => {
-    if (q.count <= 0) return false;
-    if (salesDesk && q.href.startsWith("/admin/accounts")) return false;
-    if (q.key === "need_voucher") {
-      return checkCapability(session, db, "manage_accounts");
-    }
-    if (q.key === "need_reorder") {
-      return (
-        checkCapability(session, db, "manage_accounts") ||
-        checkCapability(session, db, "manage_reorder")
-      );
-    }
-    if (q.key === "need_owner_approval") {
-      return checkCapability(session, db, "view_financials");
-    }
-    return true;
-  });
+  ].filter((q) => q.count > 0);
 
   const nav = (
     <>
@@ -658,34 +551,6 @@ export function AdminShell({
 
   return (
     <div className="min-h-[70vh] border-t border-[var(--line)] bg-[var(--surface)]">
-      {showAuditBanner && auditObligation ? (
-        <Link
-          href={`/admin/owner/monthly-audit?month=${auditObligation.month}`}
-          className={`block px-4 py-2 text-sm font-semibold print:hidden ${
-            auditObligation.state === "blocking"
-              ? "bg-red-700 text-white"
-              : "bg-amber-100 text-amber-950"
-          }`}
-        >
-          {locale === "hi"
-            ? `मासिक ऑडिट ${auditObligation.month}: ${auditObligation.state === "blocking" ? "नए महीने की एंट्री बंद" : auditObligation.state === "overdue" ? "ओवरड्यू" : "इस सप्ताह करें"}`
-            : `Monthly audit ${auditObligation.month}: ${
-                auditObligation.state === "blocking"
-                  ? "new-month posting blocked"
-                  : auditObligation.state === "overdue"
-                    ? "overdue"
-                    : "due this week"
-              }`}
-          {auditObligation.override
-            ? locale === "hi"
-              ? " · ओवरराइड सक्रिय"
-              : " · override on"
-            : ""}
-          <span className="ml-2 underline">
-            {locale === "hi" ? "खोलें →" : "Open →"}
-          </span>
-        </Link>
-      ) : null}
       {toast ? (
         <Link
           href={toast.href}

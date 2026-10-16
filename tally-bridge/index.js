@@ -88,41 +88,252 @@ async function fetchStockFromTally(itemName) {
   return stock;
 }
 
-async function syncOnce() {
-  const maps = buildMappings();
-  if (!maps.length) {
-    console.log(
-      "No MAP_* entries found. Add mappings in .env, e.g.\nMAP_SN-50-3M=prod_shade_net_50:var_sn_3m"
-    );
-    // Still post an empty validated heartbeat
-  }
+function apiUrl(path) {
+  const url = new URL(SYNC_URL);
+  url.pathname = path;
+  url.search = "";
+  return url.toString();
+}
 
+function tallyHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "x-tally-sync-key": SYNC_KEY,
+  };
+}
+
+function stockCollectionXml() {
+  return `<ENVELOPE>
+ <HEADER>
+  <VERSION>1</VERSION>
+  <TALLYREQUEST>Export</TALLYREQUEST>
+  <TYPE>Collection</TYPE>
+  <ID>TTStockItems</ID>
+ </HEADER>
+ <BODY>
+  <DESC>
+   <STATICVARIABLES>
+    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+    <SVCURRENTCOMPANY>${escapeXml(TALLY_COMPANY)}</SVCURRENTCOMPANY>
+   </STATICVARIABLES>
+   <TDL>
+    <TDLMESSAGE>
+     <COLLECTION NAME="TTStockItems" ISMODIFY="No">
+      <TYPE>Stock Item</TYPE>
+      <FETCH>Name, ClosingBalance</FETCH>
+     </COLLECTION>
+    </TDLMESSAGE>
+   </TDL>
+  </DESC>
+ </BODY>
+</ENVELOPE>`;
+}
+
+function parseStockCollection(xml) {
   const items = [];
-  for (const m of maps) {
-    try {
-      const stock = await fetchStockFromTally(m.tallyItemId);
-      items.push({
-        productId: m.productId,
-        variationId: m.variationId,
-        tallyItemId: m.tallyItemId,
-        stock,
-      });
-      console.log(`OK ${m.tallyItemId} → ${stock}`);
-    } catch (err) {
-      console.error(`FAIL ${m.tallyItemId}:`, err.message);
-    }
+  const re = /<STOCKITEM\b([^>]*)>([\s\S]*?)<\/STOCKITEM>/gi;
+  let match;
+  while ((match = re.exec(xml))) {
+    const name =
+      match[1].match(/NAME="([^"]+)"/i)?.[1] ||
+      match[2].match(/<NAME>([^<]*)<\/NAME>/i)?.[1];
+    if (!name) continue;
+    const stock = parseClosingStock(match[2]);
+    items.push({
+      name: name.replaceAll("&amp;", "&").replaceAll("&quot;", '"'),
+      stock: stock == null || Number.isNaN(stock) ? 0 : stock,
+    });
   }
+  return items;
+}
 
+async function fetchAllStock() {
+  const res = await fetch(TALLY_HOST, {
+    method: "POST",
+    headers: { "Content-Type": "application/xml" },
+    body: stockCollectionXml(),
+  });
+  if (!res.ok) throw new Error(`Tally HTTP ${res.status} for stock list`);
+  const xml = await res.text();
+  return parseStockCollection(xml);
+}
+
+function saleVoucherXml(post) {
+  const date = String(post.date || "").replaceAll("-", "");
+  const lines = Array.isArray(post.lines) ? post.lines : [];
+  const inventory = lines
+    .map((line) => {
+      const item = line.tallyItemId || line.name || line.sku || "Item";
+      const qty = Number(line.qty) || 0;
+      const amount = Number(line.amount) || 0;
+      const rate = Number(line.rate) || 0;
+      return `<ALLINVENTORYENTRIES.LIST>
+        <STOCKITEMNAME>${escapeXml(item)}</STOCKITEMNAME>
+        <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>
+        <RATE>${rate}</RATE>
+        <AMOUNT>${amount}</AMOUNT>
+        <ACTUALQTY>${qty}</ACTUALQTY>
+        <BILLEDQTY>${qty}</BILLEDQTY>
+       </ALLINVENTORYENTRIES.LIST>`;
+    })
+    .join("");
+  const amount = Number(post.amount) || 0;
+  return `<ENVELOPE>
+ <HEADER>
+  <TALLYREQUEST>Import Data</TALLYREQUEST>
+ </HEADER>
+ <BODY>
+  <IMPORTDATA>
+   <REQUESTDESC>
+    <REPORTNAME>Vouchers</REPORTNAME>
+    <STATICVARIABLES>
+     <SVCURRENTCOMPANY>${escapeXml(TALLY_COMPANY)}</SVCURRENTCOMPANY>
+    </STATICVARIABLES>
+   </REQUESTDESC>
+   <REQUESTDATA>
+    <TALLYMESSAGE xmlns:UDF="TallyUDF">
+     <VOUCHER REMOTEID="${escapeXml(post.remoteId)}" VCHTYPE="Sales" ACTION="Create" OBJVIEW="Invoice Voucher View">
+      <DATE>${escapeXml(date)}</DATE>
+      <VOUCHERTYPENAME>Sales</VOUCHERTYPENAME>
+      <PARTYLEDGERNAME>${escapeXml(post.partyName)}</PARTYLEDGERNAME>
+      <VOUCHERNUMBER>${escapeXml(post.orderNumber)}</VOUCHERNUMBER>
+      <REFERENCE>${escapeXml(post.orderNumber)}</REFERENCE>
+      <NARRATION>${escapeXml(post.narration || "")}</NARRATION>
+      ${inventory}
+      <LEDGERENTRIES.LIST>
+       <LEDGERNAME>${escapeXml(post.partyName)}</LEDGERNAME>
+       <ISDEEMEDPOSITIVE>Yes</ISDEEMEDPOSITIVE>
+       <ISPARTYLEDGER>Yes</ISPARTYLEDGER>
+       <AMOUNT>${-Math.abs(amount)}</AMOUNT>
+      </LEDGERENTRIES.LIST>
+     </VOUCHER>
+    </TALLYMESSAGE>
+   </REQUESTDATA>
+  </IMPORTDATA>
+ </BODY>
+</ENVELOPE>`;
+}
+
+function assertTallyImport(xml) {
+  const line = xml.match(/<LINEERROR>([^<]*)/i);
+  if (line) throw new Error(line[1] || "Tally line error");
+  const errors = xml.match(/<ERRORS>(\d+)/i);
+  if (errors && Number(errors[1]) > 0) {
+    throw new Error("Tally import reported errors");
+  }
+  if (/already exists|duplicate/i.test(xml)) return;
+  const created = xml.match(/<CREATED>(\d+)/i);
+  const altered = xml.match(/<ALTERED>(\d+)/i);
+  const createdN = created ? Number(created[1]) : 0;
+  const alteredN = altered ? Number(altered[1]) : 0;
+  if (createdN + alteredN < 1) {
+    throw new Error("Tally did not create the sales voucher");
+  }
+}
+
+async function pushStock(items) {
   const res = await fetch(SYNC_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-tally-sync-key": SYNC_KEY,
-    },
+    headers: tallyHeaders(),
     body: JSON.stringify({ items }),
   });
   const json = await res.json();
-  console.log("Website response:", json);
+  console.log("Stock response:", json);
+  return json;
+}
+
+async function pullAndPostSales() {
+  const res = await fetch(apiUrl("/api/tally/pending"), {
+    headers: { "x-tally-sync-key": SYNC_KEY },
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || `Pending HTTP ${res.status}`);
+  const posts = Array.isArray(json.posts) ? json.posts : [];
+  console.log(`Sales waiting: ${posts.length}`);
+  for (const post of posts) {
+    try {
+      const tallyRes = await fetch(TALLY_HOST, {
+        method: "POST",
+        headers: { "Content-Type": "application/xml" },
+        body: saleVoucherXml(post),
+      });
+      const xml = await tallyRes.text();
+      if (!tallyRes.ok) throw new Error(`Tally HTTP ${tallyRes.status}`);
+      assertTallyImport(xml);
+      await fetch(apiUrl("/api/tally/ack"), {
+        method: "POST",
+        headers: tallyHeaders(),
+        body: JSON.stringify({ remoteId: post.remoteId, status: "posted" }),
+      });
+      console.log(`Posted ${post.remoteId}`);
+    } catch (err) {
+      console.error(`Sale ${post.remoteId}:`, err.message);
+      await fetch(apiUrl("/api/tally/ack"), {
+        method: "POST",
+        headers: tallyHeaders(),
+        body: JSON.stringify({
+          remoteId: post.remoteId,
+          status: "failed",
+          error: err.message,
+        }),
+      }).catch(() => {});
+    }
+  }
+}
+
+async function syncOnce() {
+  const maps = buildMappings();
+  let items = [];
+  try {
+    const all = await fetchAllStock();
+    if (all.length) {
+      const byName = new Map(maps.map((m) => [m.tallyItemId.toLowerCase(), m]));
+      items = all.map((row) => {
+        const mapped = byName.get(row.name.toLowerCase());
+        return {
+          tallyItemId: row.name,
+          name: row.name,
+          sku: row.name,
+          stock: row.stock,
+          productId: mapped?.productId,
+          variationId: mapped?.variationId,
+        };
+      });
+      console.log(`Tally stock items: ${items.length}`);
+    }
+  } catch (err) {
+    console.warn("Stock list failed, using MAP_* only:", err.message);
+  }
+
+  if (!items.length) {
+    if (!maps.length) {
+      console.log(
+        "No stock list and no MAP_* entries. Example:\nMAP_SN-50-3M=prod_shade_net_50:var_sn_3m"
+      );
+    }
+    for (const m of maps) {
+      try {
+        const stock = await fetchStockFromTally(m.tallyItemId);
+        items.push({
+          productId: m.productId,
+          variationId: m.variationId,
+          tallyItemId: m.tallyItemId,
+          name: m.tallyItemId,
+          stock,
+        });
+        console.log(`OK ${m.tallyItemId} → ${stock}`);
+      } catch (err) {
+        console.error(`FAIL ${m.tallyItemId}:`, err.message);
+      }
+    }
+  }
+
+  const json = await pushStock(items);
+  try {
+    await pullAndPostSales();
+  } catch (err) {
+    console.error("Sales pull failed:", err.message);
+  }
   return json;
 }
 

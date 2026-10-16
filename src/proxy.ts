@@ -14,6 +14,10 @@ const handleI18nRouting = createMiddleware(routing);
 
 const ADMIN_PATH = /^\/(en|hi)\/admin(?:\/|$)/;
 
+/** Books, HR, production, and audit stay in the repo but are off the working site. */
+const RETIRED_ADMIN =
+  /^\/(en|hi)\/admin\/(accounts|hr|wallets|owner|audit)(?:\/|$|\?)/;
+
 /**
  * Optimistic auth gate for the prerendered /admin pages, which would otherwise
  * be served to anyone. This only reads the signed session cookie — the real
@@ -23,6 +27,14 @@ const ADMIN_PATH = /^\/(en|hi)\/admin(?:\/|$)/;
 export default function proxy(req: NextRequest) {
   const apex = wwwApexRedirect(req);
   if (apex) return apex;
+
+  const retired = req.nextUrl.pathname.match(RETIRED_ADMIN);
+  if (retired) {
+    const url = req.nextUrl.clone();
+    url.pathname = `/${retired[1]}/admin`;
+    url.search = "";
+    return NextResponse.redirect(url);
+  }
 
   const adminMatch = req.nextUrl.pathname.match(ADMIN_PATH);
   if (adminMatch) {

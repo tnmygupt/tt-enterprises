@@ -178,6 +178,13 @@ import { normalizePhone, phonesMatch } from "../phone";
 import { applyDealerFileActions } from "../dealer-file";
 import { canTransitionOrderStatus } from "../order-stages";
 import {
+  applyTallyAvailability,
+  applyTallyStock,
+  cancelTallySale,
+  enqueueTallySale,
+  type TallyStockInput,
+} from "@/lib/tally-sync";
+import {
   applyGrnStock,
   applyOrderEstimateStock,
   applyVoucherStock,
@@ -2783,6 +2790,10 @@ export function updateOrderStatus(
   order.status = status;
   order.updatedAt = new Date().toISOString();
   order.timeline.push({ status, at: order.updatedAt, note });
+  if (status === "confirmed") {
+    enqueueTallySale(db, order);
+    applyTallyAvailability(db);
+  }
   saveDb(db);
   return order;
 }
@@ -2867,6 +2878,8 @@ export function cancelOrder(
         ? ` · scheme weight removed (${actualKg} kg)`
         : " · no scheme weight (bill/actual not set)"),
   });
+  cancelTallySale(db, order.id, now);
+  applyTallyAvailability(db, now);
   saveDb(db);
 
   const linked = loadDb().vouchers.filter(
@@ -3609,19 +3622,19 @@ export function uploadBill(
     }
   }
 
-  // Auto sales voucher + inventory out (idempotent if already linked)
+  // Queue a Tally sale. Local sale vouchers are not the books anymore.
   try {
-    createSaleVoucherFromOrder(orderId, byUserId || "system");
+    enqueueTallySaleFromOrder(orderId);
   } catch (err) {
-    const note = err instanceof Error ? err.message : "Sale voucher failed";
-    console.warn("[uploadBill] sale voucher failed:", note);
+    const note = err instanceof Error ? err.message : "Tally sale queue failed";
+    console.warn("[uploadBill] tally sale failed:", note);
     const fresh = loadDb();
     const o = fresh.orders.find((x) => x.id === orderId);
     if (o) {
       o.timeline.push({
         status: o.status,
         at: new Date().toISOString(),
-        note: `Books: sale voucher not posted — ${note}. Use Health → Repair.`,
+        note: `Tally: sale not queued — ${note}`,
       });
       saveDb(fresh);
     }
@@ -3737,12 +3750,12 @@ export function addPaymentProofFiles(
   });
   saveDb(db);
 
-  // When payment already verified, post one receipt per new proof item
+  // When payment already verified, make sure the Tally sale is queued
   if (order.paymentProof?.verified) {
     try {
-      createSaleVoucherFromOrder(orderId, byUserId || "system");
+      enqueueTallySaleFromOrder(orderId);
     } catch {
-      /* sale may already exist / not ready */
+      /* sale may already be queued */
     }
     try {
       syncOrderPaymentReceipts(orderId, byUserId || "system");
@@ -3846,12 +3859,12 @@ export function verifyPayment(
   });
   saveDb(db);
 
-  // Ensure sale voucher exists, then one receipt per payment proof item
+  // Queue the Tally sale. Receipts stay local and no-op if there is no voucher.
   try {
-    createSaleVoucherFromOrder(orderId, adminId);
+    enqueueTallySaleFromOrder(orderId);
   } catch (err) {
     console.warn(
-      "[verifyPayment] sale voucher failed:",
+      "[verifyPayment] tally sale failed:",
       err instanceof Error ? err.message : err
     );
   }
@@ -4001,38 +4014,23 @@ export function markTallyError(message: string): void {
   saveDb(db);
 }
 
-export function applyTallyStockSync(
-  items: {
-    productId: string;
-    variationId?: string;
-    tallyItemId: string;
-    stock: number;
-  }[]
-): void {
+export function applyTallyStockSync(items: TallyStockInput[]): {
+  applied: number;
+  unknown: { reason: string }[];
+} {
   const db = loadDb();
-  const now = new Date().toISOString();
-  let applied = 0;
-  for (const item of items) {
-    const product = db.products.find((p) => p.id === item.productId);
-    if (!product) continue;
-    const stock = Number(item.stock);
-    if (!Number.isFinite(stock)) continue;
-    if (item.variationId) {
-      const variation = product.variations.find((v) => v.id === item.variationId);
-      if (!variation) continue;
-      variation.stock = stock;
-      variation.tallyItemId = item.tallyItemId;
-    } else {
-      product.stock = stock;
-      product.tallyItemId = item.tallyItemId;
-    }
-    normalizeProductStock(product);
-    product.updatedAt = now;
-    applied += 1;
-  }
-  db.settings.tallyLastSyncAt = now;
-  db.settings.tallySyncStatus = "ok";
-  db.settings.tallySyncMessage = `Synced ${applied} item(s) from Tally`;
+  const result = applyTallyStock(db, items);
+  saveDb(db);
+  return result;
+}
+
+/** One pending Tally sale for this order. Safe to call again. */
+export function enqueueTallySaleFromOrder(orderId: string): void {
+  const db = loadDb();
+  const order = db.orders.find((o) => o.id === orderId);
+  if (!order) return;
+  enqueueTallySale(db, order);
+  applyTallyAvailability(db);
   saveDb(db);
 }
 
@@ -6933,12 +6931,12 @@ export function repairBooksIntegrity(createdBy = "system"): {
       o.actualBillAmount > 0
   );
   for (const order of billed) {
-    const hasSale = loadDb().vouchers.some(
-      (v) => v.linkedOrderId === order.id && v.type === "sale" && !v.voided
+    const hasPost = (loadDb().tallyPosts ?? []).some(
+      (p) => p.orderId === order.id && p.kind === "sale" && p.status !== "failed"
     );
-    if (hasSale) continue;
+    if (hasPost) continue;
     try {
-      createSaleVoucherFromOrder(order.id, createdBy);
+      enqueueTallySaleFromOrder(order.id);
       salesCreated += 1;
     } catch (err) {
       salesFailed.push(

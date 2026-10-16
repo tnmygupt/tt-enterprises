@@ -311,8 +311,8 @@ export function isSalesDeskOnly(
 export const SALES_DESK_HREFS = new Set([
   "/admin",
   "/admin/orders",
-  "/admin/hr",
-  "/admin/hr/punch",
+  "/admin/whatsapp",
+  "/admin/tracking",
 ]);
 
 /** Active staff matching any of the given capabilities (no push-sub filter). */

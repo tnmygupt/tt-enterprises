@@ -93,7 +93,6 @@ export function sanitizeDbForClient(db: AppDatabase): AppDatabase {
       delete (u as { passwordVisible?: string }).passwordVisible;
     }
   }
-  clone.tallyPosts = [];
   return clone;
 }
 
