@@ -153,6 +153,8 @@ export function purgeOpsDataKeepCatalog(
     stockCounts: [],
     cashCounts: [],
     monthlyAudits: [],
+    jobCards: [],
+    ownerApprovals: [],
     waInbox: { messages: [], reads: [] },
     schemes: clearCatalog ? [] : db.schemes ?? [],
     parties: [],
