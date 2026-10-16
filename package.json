@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build --webpack",
+    "launch-wipe": "LAUNCH_WIPE=YES node scripts/launch-wipe.mjs && npm run build",
     "postbuild": "node scripts/prepare-standalone.js",
     "start": "next start",
     "start:standalone": "node .next/standalone/server.js",

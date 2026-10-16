@@ -85,6 +85,10 @@ describe("purgeOpsDataKeepCatalog", () => {
         orders: [{ id: "o1" } as unknown as AppDatabase["orders"][number]],
         parties: [{ id: "pt1" } as unknown as AppDatabase["parties"][number]],
         vouchers: [{ id: "v1" } as unknown as AppDatabase["vouchers"][number]],
+        jobCards: [{ id: "j1" } as unknown as NonNullable<AppDatabase["jobCards"]>[number]],
+        ownerApprovals: [
+          { id: "a1" } as unknown as NonNullable<AppDatabase["ownerApprovals"]>[number],
+        ],
       }),
       "6386685663"
     );
@@ -102,6 +106,8 @@ describe("purgeOpsDataKeepCatalog", () => {
     expect(next.orders).toEqual([]);
     expect(next.parties).toEqual([]);
     expect(next.vouchers).toEqual([]);
+    expect(next.jobCards).toEqual([]);
+    expect(next.ownerApprovals).toEqual([]);
     expect(next.settings.opsPurgeAt).toBeTruthy();
   });
 
