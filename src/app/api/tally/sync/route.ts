@@ -58,6 +58,7 @@ export async function POST(req: NextRequest) {
     ok: true,
     received: items.length,
     applied: saved.value.applied,
+    created: saved.value.created,
     unknown: saved.value.unknown,
     syncedAt: new Date().toISOString(),
     source: "tally-bridge",

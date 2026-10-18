@@ -4016,6 +4016,7 @@ export function markTallyError(message: string): void {
 
 export function applyTallyStockSync(items: TallyStockInput[]): {
   applied: number;
+  created: number;
   unknown: { reason: string }[];
 } {
   const db = loadDb();
