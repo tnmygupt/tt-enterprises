@@ -22,6 +22,7 @@ import {
 } from "./live";
 import { sanitizeDbForCloud } from "./sanitize";
 import { isDatabaseInfraMessage } from "@/lib/sync-errors";
+import { mergeTallyPosts } from "@/lib/tally-sync";
 
 let apiAvailable: boolean | null = null;
 let lastPushJson = "";
@@ -455,6 +456,7 @@ function mergePendingCollections(
       remote.bankRecons,
       local.bankRecons
     ),
+    tallyPosts: mergeTallyPosts(remote.tallyPosts, local.tallyPosts),
   });
 }
 
@@ -519,6 +521,9 @@ export function localPendingDiffers(
     return true;
   const remoteVoucherIds = new Set((remote.vouchers ?? []).map((v) => v.id));
   if ((local.vouchers ?? []).some((v) => !remoteVoucherIds.has(v.id)))
+    return true;
+  const remoteTallyIds = new Set((remote.tallyPosts ?? []).map((p) => p.id));
+  if ((local.tallyPosts ?? []).some((p) => !remoteTallyIds.has(p.id)))
     return true;
   const remoteMovementIds = new Set(
     (remote.stockMovements ?? []).map((m) => m.id)

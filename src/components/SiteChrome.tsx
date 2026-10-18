@@ -80,10 +80,8 @@ export function SiteHeader() {
     </div>
   );
 
-  const canStock =
-    !!session && checkCapability(session, db, "manage_accounts");
-  const canAccounts =
-    !!session && checkCapability(session, db, "manage_accounts");
+  const canTally =
+    !!session && checkCapability(session, db, "manage_products");
   const staff = !!session && isStaff(session.role);
 
   const storeLinks = session ? (
@@ -160,22 +158,13 @@ export function SiteHeader() {
           {t("nav.admin")}
         </Link>
       ) : null}
-      {canAccounts ? (
+      {canTally ? (
         <Link
-          href="/admin/accounts"
-          className={linkClass("/admin/accounts")}
+          href="/admin/tally"
+          className={linkClass("/admin/tally")}
           onClick={() => setMenuOpen(false)}
         >
-          {t("admin.accountsBook")}
-        </Link>
-      ) : null}
-      {canStock ? (
-        <Link
-          href="/admin/accounts/inventory"
-          className={linkClass("/admin/accounts/inventory")}
-          onClick={() => setMenuOpen(false)}
-        >
-          {t("admin.stock")}
+          {t("admin.tally")}
         </Link>
       ) : null}
       <button

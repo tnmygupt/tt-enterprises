@@ -52,8 +52,12 @@ export default function AdminTallyPage() {
         stock: number;
         tallyItemId: string;
       }[];
-      applyTallyStockSync(parsed);
-      setMsg(`Synced ${parsed.length} item(s)`);
+      const result = applyTallyStockSync(parsed);
+      setMsg(
+        `Synced ${result.applied} item(s)${
+          result.unknown.length ? `, ${result.unknown.length} unmapped` : ""
+        }`
+      );
       refresh();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Invalid JSON";
@@ -144,6 +148,27 @@ export default function AdminTallyPage() {
         </table>
       </div>
 
+      <div className="mt-8 rounded-2xl border border-[var(--line)] bg-white p-4">
+        <h2 className="font-semibold">Sales waiting for Tally</h2>
+        <p className="mt-1 text-sm text-[var(--ink-muted)]">
+          Confirmed and billed orders queue here. The office bridge pulls them into Tally.
+        </p>
+        <ul className="mt-3 space-y-1 text-sm">
+          {(db.tallyPosts ?? [])
+            .filter((p) => p.kind === "sale" && p.status !== "posted")
+            .map((p) => (
+              <li key={p.id}>
+                {p.orderNumber} · {p.partyName} · ₹{p.amount} · {p.status}
+              </li>
+            ))}
+          {(db.tallyPosts ?? []).every(
+            (p) => p.kind !== "sale" || p.status === "posted"
+          ) ? (
+            <li className="text-[var(--ink-muted)]">None waiting.</li>
+          ) : null}
+        </ul>
+      </div>
+
       <form onSubmit={onSync} className="mt-8 space-y-3">
         <h2 className="font-semibold">Apply sync payload</h2>
         <textarea
@@ -160,16 +185,19 @@ export default function AdminTallyPage() {
       </form>
 
       <ol className="mt-8 list-decimal space-y-2 pl-5 text-sm text-[var(--ink-muted)]">
-        <li>Enable TallyPrime HTTP/ODBC on the office PC (port 9000 by default).</li>
+        <li>Enable TallyPrime HTTP on the office PC (port 9000 by default).</li>
         <li>
-          Open <code>tally-bridge</code>, copy <code>.env.example</code> to{" "}
-          <code>.env</code>, set company name and API URL.
+          On that PC, copy <code>tally-bridge/.env.example</code> to <code>.env</code>.
+          Set the company name, this site&apos;s <code>/api/tally/sync</code> URL, and the same{" "}
+          <code>TALLY_SYNC_KEY</code> as the website.
         </li>
         <li>
-          Run <code>npm install</code> then <code>npm start</code> in{" "}
-          <code>tally-bridge</code>.
+          Run <code>npm install</code> then <code>npm start</code> in <code>tally-bridge</code>.
         </li>
-        <li>Bridge posts stock into <code>/api/tally/sync</code> (or paste JSON here).</li>
+        <li>
+          Each cycle the bridge sends stock (matched by Tally item, SKU, or exact name) and
+          posts queued sales, then acknowledges them.
+        </li>
       </ol>
     </AdminShell>
   );

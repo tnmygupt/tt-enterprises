@@ -30,6 +30,13 @@ import {
   userHasCapability,
 } from "@/lib/capabilities";
 import { isPublicCatalogProduct } from "@/lib/catalog-visibility";
+import {
+  applyTallyAvailability,
+  mergeTallyPosts,
+  preferTallySyncSettings,
+  restoreTallyOnHand,
+  tallySyncIsConnected,
+} from "@/lib/tally-sync";
 import { isSchemeActiveNow } from "@/lib/schemes";
 import { omitWaInbox } from "@/lib/whatsapp-inbox";
 import {
@@ -542,7 +549,6 @@ export function staffScopedProjection(
       wastageCost: undefined,
     }));
   }
-  out.tallyPosts = [];
   if (!cap("manage_wallet") && !cap("view_financials")) {
     out.walletTransactions = [];
     out.walletDeposits = [];
@@ -1501,6 +1507,8 @@ function mergeStaffLimitedPush(
     restoreOwnerSensitiveFinancials(out, cloud);
   }
 
+  out.tallyPosts = mergeTallyPosts(cloud.tallyPosts, incoming.tallyPosts);
+
   // Always restore password hashes from cloud for any blank client hashes
   return mergePasswordResetRequests(mergePasswordHashes(out, cloud), cloud);
 }
@@ -1688,8 +1696,24 @@ function mergeOwnerPushKeepCloudUsers(
       incoming.walletDeposits,
       cloud.walletDeposits
     ),
-    tallyPosts: cloud.tallyPosts ?? [],
+    tallyPosts: mergeTallyPosts(cloud.tallyPosts, incoming.tallyPosts),
   };
+}
+
+/** Tally on-hand wins over a browser stock number. Reservations apply after. */
+function settleTallyStock(out: AppDatabase, cloud: AppDatabase): void {
+  restoreTallyOnHand(out.products ?? [], cloud.products ?? []);
+  preferTallySyncSettings(out, cloud);
+  if (tallySyncIsConnected(out) || tallySyncIsConnected(cloud)) {
+    applyTallyAvailability(out);
+  }
+}
+
+function reconcileUnlessTally(out: AppDatabase, cloud: AppDatabase): void {
+  if (!tallySyncIsConnected(cloud) && !tallySyncIsConnected(out)) {
+    reconcileEstimateStockReserves(out);
+  }
+  settleTallyStock(out, cloud);
 }
 
 /** Ensure every order has a distinct orderNumber (cross-device collisions). */
@@ -1783,7 +1807,7 @@ export function mergeAuthorizedPush(
     merged.rolePresets = sanitizeRolePresets(merged.rolePresets);
     merged.staffJobs = sanitizeStaffJobs(merged.staffJobs);
     const out = stripPrePurgeOps(ensureUniqueOrderNumbers(merged));
-    reconcileEstimateStockReserves(out);
+    reconcileUnlessTally(out, existing);
     out.waInbox = existing.waInbox;
     applyNewlyApprovedOwnerApprovals(
       out,
@@ -1800,7 +1824,7 @@ export function mergeAuthorizedPush(
     }
     merged = preferNewestOpsPurge(merged, incoming, existing);
     const out = stripPrePurgeOps(ensureUniqueOrderNumbers(merged));
-    reconcileEstimateStockReserves(out);
+    reconcileUnlessTally(out, existing);
     out.waInbox = existing.waInbox;
     return { db: out };
   }
@@ -1978,7 +2002,7 @@ export function mergeAuthorizedPush(
   ];
 
   const out = stripPrePurgeOps(ensureUniqueOrderNumbers(cloud));
-  reconcileEstimateStockReserves(out);
+  reconcileUnlessTally(out, existing);
   out.waInbox = existing.waInbox;
   return {
     db: out,

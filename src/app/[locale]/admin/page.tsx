@@ -3,7 +3,6 @@
 import { useMemo } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Link } from "@/i18n/routing";
-import { AccountsHotkeys } from "@/components/AccountsHotkeys";
 import { AccountsPageHeader } from "@/components/AccountsPageHeader";
 import { AdminShell } from "@/components/AdminShell";
 import { DateRangeBar, useAdminDateRange } from "@/components/DateRangeBar";
@@ -127,9 +126,10 @@ export default function AdminDashboardPage() {
   const can = (cap: Capability) =>
     !!session && checkCapability(session, db, cap);
   const queues = getAdminQueues(db);
-  const books = can("manage_accounts");
-  const owner = can("view_financials");
-  const stockCap = can("manage_accounts") || can("manage_reorder");
+  // Tally is the books. These flags keep the old desk cards off the home page.
+  const books = false;
+  const owner = false;
+  const stockCap = false;
   const salesDesk = isSalesDeskStaff(session, db);
 
   const desk = useMemo(
@@ -182,67 +182,42 @@ export default function AdminDashboardPage() {
     },
   ];
 
-  const hrGateway = [
-    {
-      href: "/admin/hr",
-      label:
-        session?.role === "super_admin" ? t("admin.hrDesk") : t("admin.hrMyDesk"),
-      term: "HR",
-    },
-    { href: "/admin/hr/punch", label: t("admin.hrPunch"), term: "GPS" },
-  ];
-
   const gateway = (
-    salesDesk
-      ? [
-          { href: "/admin/orders/new", label: t("admin.deskSale"), term: "F8" },
-          ...hrGateway,
-        ]
-      : [
-          can("manage_orders")
-            ? { href: "/admin/orders/new", label: t("admin.deskSale"), term: "F8" }
-            : null,
-          books
-            ? { href: "/admin/accounts/vouchers?new=receipt", label: t("admin.deskReceipt"), term: "F6" }
-            : null,
-          books && owner
-            ? { href: "/admin/accounts/vouchers?new=payment", label: t("admin.deskPayment"), term: "F5" }
-            : null,
-          books
-            ? { href: "/admin/accounts/goods-received", label: t("admin.deskGoodsIn"), term: "F9" }
-            : null,
-          books
-            ? { href: "/admin/accounts/brs", label: t("admin.deskBrs"), term: "Alt+B" }
-            : null,
-          books
-            ? { href: "/admin/accounts/payments", label: t("admin.deskUpi"), term: "UPI" }
-            : null,
-          ...hrGateway,
-        ]
+    [
+      can("manage_orders")
+        ? { href: "/admin/orders/new", label: t("admin.deskSale"), term: "F8" }
+        : null,
+      can("manage_orders")
+        ? { href: "/admin/orders", label: t("admin.orders"), term: "ORD" }
+        : null,
+      can("manage_orders")
+        ? { href: "/admin/whatsapp", label: t("admin.whatsappDesk"), term: "WA" }
+        : null,
+      can("manage_orders")
+        ? { href: "/admin/tracking", label: t("admin.trackingMatrix"), term: "LR" }
+        : null,
+      can("manage_products")
+        ? { href: "/admin/tally", label: t("admin.tally"), term: "STK" }
+        : null,
+    ]
   ).filter(Boolean) as { href: string; label: string; term: string }[];
 
   return (
     <AdminShell wide>
-      {books ? <AccountsHotkeys /> : null}
       <AccountsPageHeader
         home
         title={t("admin.dashboard")}
         hint={salesDesk ? t("admin.salesDeskHint") : t("admin.deskHint")}
         actions={
           <>
-            {stockCap ? (
-              <Link href="/admin/accounts/inventory" className="tt-btn tt-btn-dark">
-                {t("admin.stock")}
+            {can("manage_products") ? (
+              <Link href="/admin/tally" className="tt-btn tt-btn-dark">
+                {t("admin.tally")}
               </Link>
             ) : null}
             {can("manage_orders") ? (
               <Link href="/admin/orders" className="tt-btn tt-btn-outline">
                 {t("admin.orders")}
-              </Link>
-            ) : null}
-            {books ? (
-              <Link href="/admin/accounts" className="tt-btn tt-btn-outline">
-                {t("admin.accountsBook")}
               </Link>
             ) : null}
           </>
@@ -508,10 +483,7 @@ export default function AdminDashboardPage() {
         </section>
       ) : null}
 
-      {salesDesk ? null : (
-        <p className="mt-5 text-xs text-[var(--ink-muted)]">{t("admin.deskBooksHint")}</p>
-      )}
-      <DateRangeBar value={range} onChange={setRange} className="mt-2" />
+      <DateRangeBar value={range} onChange={setRange} className="mt-5" />
 
       {can("manage_orders") ? (
         <>

@@ -134,6 +134,8 @@ export interface ProductVariation {
   /** Reorder when this size's bundles fall at or below */
   minStockLevel?: number;
   tallyItemId?: string;
+  /** Last on-hand quantity reported by Tally, before website reservations. */
+  tallyOnHand?: number;
 }
 
 export interface ProductColor {
@@ -225,6 +227,8 @@ export interface Product {
   /** Stock in product unit (kg or pcs) */
   stockSecondary?: number;
   tallyItemId?: string;
+  /** Last on-hand quantity reported by Tally, before website reservations. */
+  tallyOnHand?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -1268,9 +1272,20 @@ export interface BankRecon {
   updatedBy: string;
 }
 
-/** Legacy TallyPrime queue rows still present on some cloud blobs. Unused. */
+/** Sale (or receipt) waiting for the local TallyPrime bridge to post. */
 export type TallyPostKind = "sale" | "receipt";
 export type TallyPostStatus = "pending" | "posted" | "failed";
+
+export interface TallyPostLine {
+  productId?: string;
+  variationId?: string;
+  tallyItemId?: string;
+  sku?: string;
+  name: string;
+  qty: number;
+  rate: number;
+  amount: number;
+}
 
 export interface TallyPost {
   id: string;
@@ -1286,6 +1301,7 @@ export interface TallyPost {
   /** YYYY-MM-DD */
   date: string;
   narration: string;
+  lines?: TallyPostLine[];
   status: TallyPostStatus;
   attempts: number;
   lastError?: string;
