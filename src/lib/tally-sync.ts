@@ -1,13 +1,11 @@
 import { normalizeProductStock } from "@/lib/inventory";
 import type {
   AppSettings,
-  CategoryDef,
   Order,
   OrderStatus,
   Product,
   TallyPost,
   TallyPostLine,
-  UnitOfSale,
   UserProfile,
 } from "@/lib/types";
 
@@ -29,9 +27,6 @@ export type TallyStockInput = {
   sku?: string;
   name?: string;
   stock: number;
-  /** Used only when the website item has no selling rate yet. */
-  rate?: number;
-  unit?: UnitOfSale;
 };
 
 export type TallyUnknownItem = {
@@ -44,7 +39,6 @@ export type TallyUnknownItem = {
 
 export type TallyApplyResult = {
   applied: number;
-  created: number;
   unknown: TallyUnknownItem[];
 };
 
@@ -55,7 +49,6 @@ export type TallyDb = {
   tallyPosts: TallyPost[];
   users: UserProfile[];
   settings: AppSettings;
-  categories?: CategoryDef[];
 };
 
 type StockTarget = { product: Product; variationId?: string };
@@ -160,99 +153,14 @@ function matchTallyItem(
     if (bySku) return bySku;
   }
 
-  const name = norm(item.name || item.tallyItemId);
+  const name = norm(item.name);
   if (name) {
-    const named = unique(
+    return unique(
       all.filter((t) => namesOf(t.product, t.variationId).includes(name))
     );
-    if (named) return named;
-    const parents = products.filter((p) =>
-      [p.name?.en, p.name?.hi, p.itemName?.en, p.itemName?.hi, p.code]
-        .map((s) => norm(s))
-        .includes(name)
-    );
-    if (parents.length > 1) return "ambiguous";
-    if (parents.length === 1) {
-      const product = parents[0];
-      if (!product.variations.length) return { product };
-      if (product.variations.length === 1) {
-        return { product, variationId: product.variations[0].id };
-      }
-      return "ambiguous";
-    }
   }
 
   return null;
-}
-
-const TALLY_CATEGORY = "tally";
-
-function itemLabel(item: TallyStockInput): string {
-  return (item.name || item.tallyItemId || item.sku || "").trim();
-}
-
-function slug(name: string): string {
-  const s = name
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
-  return s || "item";
-}
-
-function ensureTallyCategory(db: TallyDb): void {
-  if (!db.categories) return;
-  if (db.categories.some((c) => c.id === TALLY_CATEGORY)) return;
-  db.categories.push({
-    id: TALLY_CATEGORY,
-    name: { en: "Tally", hi: "Tally" },
-    active: true,
-  });
-}
-
-function createTallyProduct(
-  db: TallyDb,
-  label: string,
-  stock: number,
-  now: string,
-  item: TallyStockInput
-): Product {
-  ensureTallyCategory(db);
-  let id = `tally_${slug(label)}`.slice(0, 64);
-  let n = 2;
-  while (db.products.some((p) => p.id === id)) {
-    id = `tally_${slug(label)}_${n}`.slice(0, 64);
-    n += 1;
-  }
-  let code = slug(label).replace(/-/g, "").toUpperCase().slice(0, 24) || "ITEM";
-  n = 2;
-  while (db.products.some((p) => p.code.toLowerCase() === code.toLowerCase())) {
-    code = `${code.slice(0, 20)}${n}`.slice(0, 24);
-    n += 1;
-  }
-  const rate = item.rate != null && item.rate > 0 ? item.rate : 0;
-  return {
-    id,
-    code,
-    category: TALLY_CATEGORY,
-    itemName: { en: label, hi: label },
-    name: { en: label, hi: label },
-    description: { en: "", hi: "" },
-    unit: item.unit || "pcs",
-    baseRate: rate,
-    pricingMode: "bundle",
-    variations: [],
-    colors: [],
-    media: [],
-    active: true,
-    featured: false,
-    stock,
-    tallyOnHand: stock,
-    tallyItemId: (item.tallyItemId || label).trim(),
-    createdAt: now,
-    updatedAt: now,
-  };
 }
 
 function touchTarget(target: StockTarget, item: TallyStockInput, stock: number, now: string) {
@@ -279,33 +187,22 @@ export function applyTallyStock(
 ): TallyApplyResult {
   const unknown: TallyUnknownItem[] = [];
   let applied = 0;
-  let created = 0;
   for (const item of items) {
     const stock = finiteStock(item?.stock);
     if (stock == null) continue;
     const match = matchTallyItem(db.products, item);
-    if (match && match !== "ambiguous") {
-      touchTarget(match, item, stock, now);
-      if (item.rate != null && item.rate > 0 && !(match.product.baseRate > 0)) {
-        match.product.baseRate = item.rate;
-      }
-      applied += 1;
+    if (!match || match === "ambiguous") {
+      unknown.push({
+        tallyItemId: item.tallyItemId,
+        sku: item.sku,
+        name: item.name,
+        stock,
+        reason: match === "ambiguous" ? "ambiguous" : "unmatched",
+      });
       continue;
     }
-    const label = itemLabel(item);
-    if (match !== "ambiguous" && label.length >= 2) {
-      db.products.push(createTallyProduct(db, label, stock, now, item));
-      created += 1;
-      applied += 1;
-      continue;
-    }
-    unknown.push({
-      tallyItemId: item.tallyItemId,
-      sku: item.sku,
-      name: item.name,
-      stock,
-      reason: match === "ambiguous" ? "ambiguous" : "unmatched",
-    });
+    touchTarget(match, item, stock, now);
+    applied += 1;
   }
   for (let i = 0; i < db.products.length; i += 1) {
     db.products[i] = normalizeProductStock(db.products[i]);
@@ -313,10 +210,11 @@ export function applyTallyStock(
   applyTallyAvailability(db, now);
   db.settings.tallyLastSyncAt = now;
   db.settings.tallySyncStatus = "ok";
-  const createdNote = created > 0 ? ` · ${created} new` : "";
-  const unknownNote = unknown.length > 0 ? ` · ${unknown.length} skipped` : "";
-  db.settings.tallySyncMessage = `Synced ${applied} item(s) from Tally${createdNote}${unknownNote}`;
-  return { applied, created, unknown };
+  db.settings.tallySyncMessage =
+    unknown.length > 0
+      ? `Synced ${applied} item(s) from Tally · ${unknown.length} unmapped`
+      : `Synced ${applied} item(s) from Tally`;
+  return { applied, unknown };
 }
 
 function postedSaleOrderIds(posts: TallyPost[] | undefined): Set<string> {
@@ -620,198 +518,4 @@ export function tallyKeyOk(
 ): boolean {
   const want = expected || "tt-enterprises-tally-dev-key";
   return !!provided && provided === want;
-}
-
-const NAME_HEADERS = [
-  "item name",
-  "name of item",
-  "stock item name",
-  "stock item",
-  "particulars",
-  "product name",
-  "product",
-  "item",
-  "name",
-];
-const QTY_HEADERS = [
-  "closing balance",
-  "closing qty",
-  "closing quantity",
-  "closing stock",
-  "quantity",
-  "qty",
-  "stock",
-  "balance",
-  "actual qty",
-];
-const RATE_HEADERS = ["selling rate", "rate", "price"];
-const SKIP_NAMES = /^(total|grand total|sub total|subtotal|opening|opening stock|closing balance)$/i;
-
-function headerKey(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[.]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function detectUnit(text: string): UnitOfSale | undefined {
-  const s = text.toLowerCase();
-  if (/\bkg\b|kilogram/.test(s)) return "kg";
-  if (/\bpkt\b|\bpacket\b/.test(s)) return "pkt";
-  if (/\bjhal\b/.test(s)) return "jhal";
-  if (/\bsq\.?\s*ft\b|\bsqft\b/.test(s)) return "sqft";
-  if (/\bpcs\b|\bnos\b|\bpc\b|\bpiece/.test(s)) return "pcs";
-  return undefined;
-}
-
-export function parseQtyCell(raw: string): { stock: number; unit?: UnitOfSale } | null {
-  const text = raw.trim();
-  if (!text || /^[-—–]+$/.test(text)) return null;
-  const negative = /^\(.*\)$/.test(text);
-  const unit = detectUnit(text);
-  const match = text.replace(/[()]/g, "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
-  if (!match) return null;
-  let stock = Number(match[0]);
-  if (!Number.isFinite(stock)) return null;
-  if (negative) stock = -Math.abs(stock);
-  return { stock, unit };
-}
-
-function parseRateCell(raw: string): number | undefined {
-  const parsed = parseQtyCell(raw);
-  if (!parsed || !(parsed.stock > 0)) return undefined;
-  return parsed.stock;
-}
-
-function splitDelimited(line: string, delim: string): string[] {
-  if (delim !== ",") return line.split(delim).map((s) => s.trim());
-  const out: string[] = [];
-  let cur = "";
-  let quoted = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const c = line[i];
-    if (quoted) {
-      if (c === '"') {
-        if (line[i + 1] === '"') {
-          cur += '"';
-          i += 1;
-        } else {
-          quoted = false;
-        }
-      } else {
-        cur += c;
-      }
-    } else if (c === '"') {
-      quoted = true;
-    } else if (c === delim) {
-      out.push(cur.trim());
-      cur = "";
-    } else {
-      cur += c;
-    }
-  }
-  out.push(cur.trim());
-  return out;
-}
-
-function detectDelim(lines: string[]): string {
-  const sample = lines.slice(0, 8).join("\n");
-  const tabs = (sample.match(/\t/g) || []).length;
-  const semis = (sample.match(/;/g) || []).length;
-  const commas = (sample.match(/,/g) || []).length;
-  if (tabs >= semis && tabs >= commas && tabs > 0) return "\t";
-  if (semis > commas) return ";";
-  return ",";
-}
-
-function columnIndex(headers: string[], aliases: string[]): number {
-  const keys = headers.map(headerKey);
-  for (const alias of aliases) {
-    const exact = keys.indexOf(alias);
-    if (exact >= 0) return exact;
-  }
-  return -1;
-}
-
-function rowsToItems(rows: string[][]): TallyStockInput[] {
-  const cleaned = rows
-    .map((row) => row.map((cell) => String(cell ?? "").trim()))
-    .filter((row) => row.some(Boolean));
-  if (!cleaned.length) return [];
-
-  let headerAt = -1;
-  let nameCol = 0;
-  let qtyCol = 1;
-  let rateCol = -1;
-  for (let i = 0; i < Math.min(cleaned.length, 30); i += 1) {
-    const name = columnIndex(cleaned[i], NAME_HEADERS);
-    const qty = columnIndex(cleaned[i], QTY_HEADERS);
-    if (name >= 0 && qty >= 0 && name !== qty) {
-      headerAt = i;
-      nameCol = name;
-      qtyCol = qty;
-      rateCol = columnIndex(cleaned[i], RATE_HEADERS);
-      break;
-    }
-  }
-
-  const items: TallyStockInput[] = [];
-  const start = headerAt >= 0 ? headerAt + 1 : 0;
-  for (let i = start; i < cleaned.length; i += 1) {
-    const row = cleaned[i];
-    let name = "";
-    let qtyRaw = "";
-    let rateRaw = "";
-    if (headerAt >= 0) {
-      name = row[nameCol] || "";
-      qtyRaw = row[qtyCol] || "";
-      if (rateCol >= 0) rateRaw = row[rateCol] || "";
-    } else {
-      const texts = row.filter((cell) => cell && !parseQtyCell(cell));
-      const qtyCell = row.find((cell) => parseQtyCell(cell));
-      name = texts[0] || "";
-      qtyRaw = qtyCell || "";
-    }
-    if (!name || SKIP_NAMES.test(name)) continue;
-    const qty = parseQtyCell(qtyRaw);
-    if (!qty) continue;
-    const rate = rateRaw ? parseRateCell(rateRaw) : undefined;
-    items.push({
-      name,
-      tallyItemId: name,
-      sku: name,
-      stock: qty.stock,
-      unit: qty.unit,
-      rate,
-    });
-  }
-  return items;
-}
-
-/** Tally stock export: CSV, TSV, or a pasted sheet with item name and stock. */
-export function parseTallyStockExport(text: string): TallyStockInput[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-    const body = JSON.parse(trimmed) as unknown;
-    const raw = Array.isArray(body)
-      ? body
-      : body && typeof body === "object" && "items" in body
-        ? (body as { items?: unknown }).items
-        : null;
-    if (!Array.isArray(raw)) throw new Error("Expected a list of items");
-    return raw as TallyStockInput[];
-  }
-  const lines = trimmed.split(/\r?\n/).filter((line) => line.trim());
-  const delim = detectDelim(lines);
-  return rowsToItems(lines.map((line) => splitDelimited(line, delim)));
-}
-
-/** Turn an Excel sheet's rows into the same import list. */
-export function parseTallyStockRows(rows: unknown[][]): TallyStockInput[] {
-  return rowsToItems(
-    rows.map((row) => row.map((cell) => (cell == null ? "" : String(cell))))
-  );
 }

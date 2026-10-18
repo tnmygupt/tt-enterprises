@@ -6,7 +6,6 @@ import { AdminAccessDenied } from "@/components/AdminAccessDenied";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { AdminShell } from "@/components/AdminShell";
 import { useDb, useSession } from "@/lib/hooks";
-import { parseTallyStockExport, parseTallyStockRows } from "@/lib/tally-sync";
 import {
   applyTallyStockSync,
   hasCapability,
@@ -22,79 +21,49 @@ export default function AdminTallyPage() {
   const t = useTranslations();
   const { session } = useSession();
   const { db, refresh } = useDb();
-  const [payload, setPayload] = useState("");
+  const [payload, setPayload] = useState(
+    JSON.stringify(
+      [
+        {
+          productId: "prod_tarpaulin_hdpe",
+          variationId: "var_trp_12x18",
+          tallyItemId: "TRP-HDPE-120-12x18",
+          stock: 180,
+        },
+        {
+          productId: "prod_shade_net_50",
+          variationId: "var_sn_3m",
+          tallyItemId: "SN-50-3M",
+          stock: 420,
+        },
+      ],
+      null,
+      2
+    )
+  );
   const [msg, setMsg] = useState("");
-
-  const importItems = (items: { name?: string; stock: number }[]) => {
-    if (!items.length) {
-      setMsg(t("admin.tallyImportEmpty"));
-      return;
-    }
-    try {
-      const result = applyTallyStockSync(items);
-      setMsg(
-        t("admin.tallyImportDone", {
-          applied: result.applied,
-          created: result.created,
-        })
-      );
-      refresh();
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Import failed";
-      markTallyError(message);
-      setMsg(message);
-      refresh();
-    }
-  };
 
   const onSync = (e: FormEvent) => {
     e.preventDefault();
     try {
-      importItems(parseTallyStockExport(payload));
+      const parsed = JSON.parse(payload) as {
+        productId: string;
+        variationId?: string;
+        stock: number;
+        tallyItemId: string;
+      }[];
+      const result = applyTallyStockSync(parsed);
+      setMsg(
+        `Synced ${result.applied} item(s)${
+          result.unknown.length ? `, ${result.unknown.length} unmapped` : ""
+        }`
+      );
+      refresh();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Import failed";
+      const message = err instanceof Error ? err.message : "Invalid JSON";
       markTallyError(message);
       setMsg(message);
-    }
-  };
-
-  const onFile = async (file: File | undefined) => {
-    if (!file) return;
-    try {
-      const name = file.name.toLowerCase();
-      if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-        const ExcelJS = (await import("exceljs")).default;
-        const workbook = new ExcelJS.Workbook();
-        const buffer = await file.arrayBuffer();
-        await workbook.xlsx.load(buffer);
-        const sheet = workbook.worksheets[0];
-        if (!sheet) {
-          setMsg(t("admin.tallyImportEmpty"));
-          return;
-        }
-        const rows: string[][] = [];
-        sheet.eachRow((row) => {
-          const cells: string[] = [];
-          row.eachCell({ includeEmpty: true }, (cell, col) => {
-            const value = cell.value;
-            if (value && typeof value === "object" && "text" in value) {
-              cells[col - 1] = String((value as { text?: string }).text || "");
-            } else if (value && typeof value === "object" && "result" in value) {
-              cells[col - 1] = String((value as { result?: unknown }).result ?? "");
-            } else {
-              cells[col - 1] = value == null ? "" : String(value);
-            }
-          });
-          rows.push(cells);
-        });
-        importItems(parseTallyStockRows(rows));
-        return;
-      }
-      importItems(parseTallyStockExport(await file.text()));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Import failed";
-      markTallyError(message);
-      setMsg(message);
+      refresh();
     }
   };
 
@@ -201,26 +170,15 @@ export default function AdminTallyPage() {
       </div>
 
       <form onSubmit={onSync} className="mt-8 space-y-3">
-        <h2 className="font-semibold">{t("admin.tallyImport")}</h2>
-        <p className="text-sm text-[var(--ink-muted)]">{t("admin.tallyImportHint")}</p>
-        <input
-          type="file"
-          accept=".csv,.txt,.tsv,.xlsx,.xls"
-          className="block w-full text-sm"
-          onChange={(e) => {
-            void onFile(e.target.files?.[0]);
-            e.target.value = "";
-          }}
-        />
+        <h2 className="font-semibold">Apply sync payload</h2>
         <textarea
-          className="tt-textarea min-h-[160px] font-mono text-xs"
+          className="tt-textarea min-h-[220px] font-mono text-xs"
           value={payload}
-          placeholder={t("admin.tallyImportPaste")}
           onChange={(e) => setPayload(e.target.value)}
         />
         <div className="tt-sticky-bar">
           <button type="submit" className="tt-btn tt-btn-dark">
-            {t("admin.tallyImport")}
+            {t("admin.syncNow")}
           </button>
         </div>
         {msg ? <p className="text-sm text-[var(--brand)]">{msg}</p> : null}

@@ -7,7 +7,6 @@ import {
   cancelTallySale,
   enqueueTallySale,
   mergeTallyPosts,
-  parseTallyStockExport,
   reservedTallyQty,
   type TallyDb,
 } from "@/lib/tally-sync";
@@ -117,12 +116,10 @@ describe("applyTallyStock", () => {
       { name: "Missing", sku: "NOPE", tallyItemId: "X", stock: 1 },
     ]);
 
-    expect(result.applied).toBe(4);
-    expect(result.created).toBe(1);
-    expect(result.unknown).toEqual([]);
-    expect(data.products.some((p) => p.name.en === "Missing" && p.stock === 1)).toBe(
-      true
-    );
+    expect(result.applied).toBe(3);
+    expect(result.unknown).toEqual([
+      expect.objectContaining({ name: "Missing", reason: "unmatched" }),
+    ]);
     expect(data.products[0].variations[0].stock).toBe(40);
     expect(data.products[0].variations[0].tallyOnHand).toBe(40);
     expect(data.products[1].stock).toBe(15);
@@ -264,46 +261,6 @@ describe("tally reservations", () => {
     expect(data.tallyPosts[0].status).toBe("failed");
     expect(data.tallyPosts[0].lastError).toBe("Order cancelled");
     expect(data.products[0].stock).toBe(10);
-  });
-});
-
-describe("parseTallyStockExport", () => {
-  it("reads a Tally sheet of item name and stock and creates missing items", () => {
-    const items = parseTallyStockExport(
-      [
-        "Name of Item,Closing Balance,Rate",
-        "HDPE Tirpal 12x18,180 Nos,42.50",
-        "Shade Net 50,\"1,200 kg\",",
-        "Grand Total,1380,",
-      ].join("\n")
-    );
-    expect(items).toEqual([
-      expect.objectContaining({ name: "HDPE Tirpal 12x18", stock: 180, unit: "pcs", rate: 42.5 }),
-      expect.objectContaining({ name: "Shade Net 50", stock: 1200, unit: "kg" }),
-    ]);
-
-    const data = db([]);
-    const first = applyTallyStock(data, items);
-    expect(first.created).toBe(2);
-    expect(data.products).toHaveLength(2);
-    expect(data.products[0].baseRate).toBe(42.5);
-    expect(data.products[0].tallyItemId).toBe("HDPE Tirpal 12x18");
-
-    const again = applyTallyStock(data, [
-      { name: "HDPE Tirpal 12x18", stock: 90 },
-    ]);
-    expect(again.created).toBe(0);
-    expect(data.products).toHaveLength(2);
-    expect(data.products.find((p) => p.name.en === "HDPE Tirpal 12x18")?.stock).toBe(90);
-    expect(data.products.find((p) => p.name.en === "HDPE Tirpal 12x18")?.baseRate).toBe(42.5);
-  });
-
-  it("reads a pasted two-column list", () => {
-    const items = parseTallyStockExport("Rope\t25\nNet\t4 pcs");
-    expect(items.map((i) => [i.name, i.stock])).toEqual([
-      ["Rope", 25],
-      ["Net", 4],
-    ]);
   });
 });
 
