@@ -9,7 +9,7 @@ import "dotenv/config";
  * Prerequisites:
  * 1. TallyPrime → Gateway of Tally → F1 (Help) / Connectivity / Enable ODBC / HTTP
  * 2. Set company name in .env
- * 3. Map stock items using MAP_* env vars
+ * 3. Links between Tally masters and the website are set in Admin → Tally
  */
 
 const TALLY_HOST = process.env.TALLY_HOST || "http://localhost:9000";
@@ -102,13 +102,13 @@ function tallyHeaders() {
   };
 }
 
-function stockCollectionXml() {
+function collectionXml(id, type, fetch) {
   return `<ENVELOPE>
  <HEADER>
   <VERSION>1</VERSION>
   <TALLYREQUEST>Export</TALLYREQUEST>
   <TYPE>Collection</TYPE>
-  <ID>TTStockItems</ID>
+  <ID>${id}</ID>
  </HEADER>
  <BODY>
   <DESC>
@@ -118,15 +118,37 @@ function stockCollectionXml() {
    </STATICVARIABLES>
    <TDL>
     <TDLMESSAGE>
-     <COLLECTION NAME="TTStockItems" ISMODIFY="No">
-      <TYPE>Stock Item</TYPE>
-      <FETCH>Name, ClosingBalance</FETCH>
+     <COLLECTION NAME="${id}" ISMODIFY="No">
+      <TYPE>${type}</TYPE>
+      <FETCH>${fetch}</FETCH>
      </COLLECTION>
     </TDLMESSAGE>
    </TDL>
   </DESC>
  </BODY>
 </ENVELOPE>`;
+}
+
+function stockCollectionXml() {
+  return collectionXml("TTStockItems", "Stock Item", "Name, Guid, BaseUnits, Parent, ClosingBalance");
+}
+
+function ledgerCollectionXml() {
+  return collectionXml("TTLedgers", "Ledger", "Name, Guid, Parent, PartyGSTIN, LedgerMobile");
+}
+
+function decodeXml(value) {
+  return String(value || "")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .trim();
+}
+
+function xmlTag(block, tag) {
+  const match = block.match(new RegExp(`<${tag}[^>]*>([^<]*)`, "i"));
+  return match ? decodeXml(match[1]) : "";
 }
 
 function parseStockCollection(xml) {
@@ -140,11 +162,34 @@ function parseStockCollection(xml) {
     if (!name) continue;
     const stock = parseClosingStock(match[2]);
     items.push({
-      name: name.replaceAll("&amp;", "&").replaceAll("&quot;", '"'),
-      stock: stock == null || Number.isNaN(stock) ? 0 : stock,
+      name: decodeXml(name),
+      guid: xmlTag(match[2], "GUID"),
+      unit: xmlTag(match[2], "BASEUNITS"),
+      parent: xmlTag(match[2], "PARENT"),
+      closing: stock == null || Number.isNaN(stock) ? 0 : stock,
     });
   }
   return items;
+}
+
+function parseLedgerCollection(xml) {
+  const ledgers = [];
+  const re = /<LEDGER\b([^>]*)>([\s\S]*?)<\/LEDGER>/gi;
+  let match;
+  while ((match = re.exec(xml))) {
+    const name =
+      match[1].match(/NAME="([^"]+)"/i)?.[1] ||
+      match[2].match(/<NAME>([^<]*)<\/NAME>/i)?.[1];
+    if (!name) continue;
+    ledgers.push({
+      name: decodeXml(name),
+      guid: xmlTag(match[2], "GUID"),
+      parent: xmlTag(match[2], "PARENT"),
+      gstin: xmlTag(match[2], "PARTYGSTIN"),
+      phone: xmlTag(match[2], "LEDGERMOBILE") || xmlTag(match[2], "LEDGERPHONE"),
+    });
+  }
+  return ledgers;
 }
 
 async function fetchAllStock() {
@@ -158,12 +203,23 @@ async function fetchAllStock() {
   return parseStockCollection(xml);
 }
 
+async function fetchAllLedgers() {
+  const res = await fetch(TALLY_HOST, {
+    method: "POST",
+    headers: { "Content-Type": "application/xml" },
+    body: ledgerCollectionXml(),
+  });
+  if (!res.ok) throw new Error(`Tally HTTP ${res.status} for ledger list`);
+  const xml = await res.text();
+  return parseLedgerCollection(xml);
+}
+
 function saleVoucherXml(post) {
   const date = String(post.date || "").replaceAll("-", "");
   const lines = Array.isArray(post.lines) ? post.lines : [];
   const inventory = lines
     .map((line) => {
-      const item = line.tallyItemId || line.name || line.sku || "Item";
+      const item = line.tallyItemName || line.name || line.sku || "Item";
       const qty = Number(line.qty) || 0;
       const amount = Number(line.amount) || 0;
       const rate = Number(line.rate) || 0;
@@ -227,15 +283,56 @@ function assertTallyImport(xml) {
   const createdN = created ? Number(created[1]) : 0;
   const alteredN = altered ? Number(altered[1]) : 0;
   if (createdN + alteredN < 1) {
-    throw new Error("Tally did not create the sales voucher");
+    throw new Error("Tally did not create the voucher");
   }
 }
 
-async function pushStock(items) {
+function ledgerMasterXml(post) {
+  const ledger = post.ledger || {};
+  const name = ledger.name || post.partyName || "Customer";
+  const parent = ledger.parent || "Sundry Debtors";
+  const gstin = ledger.gstin
+    ? `<PARTYGSTIN>${escapeXml(ledger.gstin)}</PARTYGSTIN>`
+    : "";
+  const phone = ledger.phone
+    ? `<LEDGERMOBILE>${escapeXml(ledger.phone)}</LEDGERMOBILE>`
+    : "";
+  const address = ledger.address
+    ? `<ADDRESS.LIST TYPE="String"><ADDRESS>${escapeXml(ledger.address)}</ADDRESS></ADDRESS.LIST>`
+    : "";
+  return `<ENVELOPE>
+ <HEADER>
+  <TALLYREQUEST>Import Data</TALLYREQUEST>
+ </HEADER>
+ <BODY>
+  <IMPORTDATA>
+   <REQUESTDESC>
+    <REPORTNAME>All Masters</REPORTNAME>
+    <STATICVARIABLES>
+     <SVCURRENTCOMPANY>${escapeXml(TALLY_COMPANY)}</SVCURRENTCOMPANY>
+    </STATICVARIABLES>
+   </REQUESTDESC>
+   <REQUESTDATA>
+    <TALLYMESSAGE xmlns:UDF="TallyUDF">
+     <LEDGER NAME="${escapeXml(name)}" ACTION="Create">
+      <NAME>${escapeXml(name)}</NAME>
+      <PARENT>${escapeXml(parent)}</PARENT>
+      ${gstin}
+      ${phone}
+      ${address}
+     </LEDGER>
+    </TALLYMESSAGE>
+   </REQUESTDATA>
+  </IMPORTDATA>
+ </BODY>
+</ENVELOPE>`;
+}
+
+async function pushRegistry(payload) {
   const res = await fetch(SYNC_URL, {
     method: "POST",
     headers: tallyHeaders(),
-    body: JSON.stringify({ items }),
+    body: JSON.stringify(payload),
   });
   const json = await res.json();
   console.log("Stock response:", json);
@@ -255,7 +352,7 @@ async function pullAndPostSales() {
       const tallyRes = await fetch(TALLY_HOST, {
         method: "POST",
         headers: { "Content-Type": "application/xml" },
-        body: saleVoucherXml(post),
+        body: post.kind === "ledger" ? ledgerMasterXml(post) : saleVoucherXml(post),
       });
       const xml = await tallyRes.text();
       if (!tallyRes.ok) throw new Error(`Tally HTTP ${tallyRes.status}`);
@@ -283,41 +380,44 @@ async function pullAndPostSales() {
 
 async function syncOnce() {
   const maps = buildMappings();
-  let items = [];
+  let items = null;
+  let ledgers = null;
   try {
-    const all = await fetchAllStock();
-    if (all.length) {
-      const byName = new Map(maps.map((m) => [m.tallyItemId.toLowerCase(), m]));
-      items = all.map((row) => {
+    items = await fetchAllStock();
+    console.log(`Tally stock items: ${items.length}`);
+  } catch (err) {
+    console.warn("Stock list failed:", err.message);
+  }
+  try {
+    ledgers = await fetchAllLedgers();
+    console.log(`Tally ledgers: ${ledgers.length}`);
+  } catch (err) {
+    console.warn("Ledger list failed:", err.message);
+  }
+
+  let json = null;
+  if (items || ledgers) {
+    const byName = new Map(maps.map((m) => [m.tallyItemId.toLowerCase(), m]));
+    json = await pushRegistry({
+      items: (items ?? []).map((row) => {
         const mapped = byName.get(row.name.toLowerCase());
         return {
-          tallyItemId: row.name,
-          name: row.name,
-          sku: row.name,
-          stock: row.stock,
+          ...row,
           productId: mapped?.productId,
           variationId: mapped?.variationId,
         };
-      });
-      console.log(`Tally stock items: ${items.length}`);
-    }
-  } catch (err) {
-    console.warn("Stock list failed, using MAP_* only:", err.message);
-  }
-
-  if (!items.length) {
-    if (!maps.length) {
-      console.log(
-        "No stock list and no MAP_* entries. Example:\nMAP_SN-50-3M=prod_shade_net_50:var_sn_3m"
-      );
-    }
+      }),
+      ledgers: ledgers ?? [],
+      full: items != null && ledgers != null,
+    });
+  } else if (maps.length) {
+    const fallback = [];
     for (const m of maps) {
       try {
         const stock = await fetchStockFromTally(m.tallyItemId);
-        items.push({
+        fallback.push({
           productId: m.productId,
           variationId: m.variationId,
-          tallyItemId: m.tallyItemId,
           name: m.tallyItemId,
           stock,
         });
@@ -326,9 +426,10 @@ async function syncOnce() {
         console.error(`FAIL ${m.tallyItemId}:`, err.message);
       }
     }
+    if (fallback.length) json = await pushRegistry({ items: fallback });
+  } else {
+    console.log("No stock list and no ledger list from Tally.");
   }
-
-  const json = await pushStock(items);
   try {
     await pullAndPostSales();
   } catch (err) {

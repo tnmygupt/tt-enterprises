@@ -110,4 +110,24 @@ describe("getAdminQueues", () => {
     expect(queues.counts.need_owner_approval).toBe(1);
     expect(queues.needOwnerApproval).toBe(1);
   });
+
+  it("counts Tally items and ledgers that still need a link", () => {
+    const queues = getAdminQueues({
+      products: [],
+      orders: [],
+      users: [],
+      tallyItems: [
+        {
+          id: "rope",
+          name: "Rope",
+          source: "import",
+          firstSeenAt: "2026-10-01T00:00:00.000Z",
+          lastSeenAt: "2026-10-01T00:00:00.000Z",
+        },
+      ],
+      tallyLedgers: [],
+      tallyPosts: [],
+    });
+    expect(queues.counts.need_tally_link).toBe(1);
+  });
 });

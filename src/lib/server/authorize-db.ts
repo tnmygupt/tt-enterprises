@@ -32,6 +32,7 @@ import {
 import { isPublicCatalogProduct } from "@/lib/catalog-visibility";
 import {
   applyTallyAvailability,
+  mergeTallyMasters,
   mergeTallyPosts,
   preferTallySyncSettings,
   restoreTallyOnHand,
@@ -407,6 +408,8 @@ export function publicCatalogProjection(db: AppDatabase): AppDatabase {
     goodsReceipts: [] as AppDatabase["goodsReceipts"],
     supplierContracts: [] as AppDatabase["supplierContracts"],
     tallyPosts: [] as AppDatabase["tallyPosts"],
+    tallyItems: [] as AppDatabase["tallyItems"],
+    tallyLedgers: [] as AppDatabase["tallyLedgers"],
     statementMatches: [] as AppDatabase["statementMatches"],
     accessPlaces: [] as AppDatabase["accessPlaces"],
     rolePresets: {},
@@ -476,6 +479,8 @@ export function dealerScopedProjection(
     goodsReceipts: [],
     supplierContracts: [],
     tallyPosts: [],
+    tallyItems: [],
+    tallyLedgers: [],
     statementMatches: [],
     accessPlaces: [],
     hrTerms: [],
@@ -1508,6 +1513,10 @@ function mergeStaffLimitedPush(
   }
 
   out.tallyPosts = mergeTallyPosts(cloud.tallyPosts, incoming.tallyPosts);
+  // Raw Tally masters stay as the bridge wrote them. The desk may only
+  // toggle ignore, and a dealer link travels with the user row.
+  out.tallyItems = mergeTallyMasters(cloud.tallyItems, incoming.tallyItems);
+  out.tallyLedgers = mergeTallyMasters(cloud.tallyLedgers, incoming.tallyLedgers);
 
   // Always restore password hashes from cloud for any blank client hashes
   return mergePasswordResetRequests(mergePasswordHashes(out, cloud), cloud);
@@ -1697,6 +1706,8 @@ function mergeOwnerPushKeepCloudUsers(
       cloud.walletDeposits
     ),
     tallyPosts: mergeTallyPosts(cloud.tallyPosts, incoming.tallyPosts),
+    tallyItems: mergeTallyMasters(cloud.tallyItems, incoming.tallyItems),
+    tallyLedgers: mergeTallyMasters(cloud.tallyLedgers, incoming.tallyLedgers),
   };
 }
 

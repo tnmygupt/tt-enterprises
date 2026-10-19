@@ -259,6 +259,8 @@ export interface UserProfile {
   pincode?: string;
   gstOrAadhar?: string;
   transport?: string;
+  /** Linked TallyLedger row id — party ledger used on Tally sales. */
+  tallyLedgerId?: string;
   role: UserRole;
   /**
    * Extra capabilities beyond the role preset.
@@ -1272,14 +1274,56 @@ export interface BankRecon {
   updatedBy: string;
 }
 
-/** Sale (or receipt) waiting for the local TallyPrime bridge to post. */
-export type TallyPostKind = "sale" | "receipt";
+/**
+ * Raw TallyPrime master rows mirrored on the site. The bridge (or a one-time
+ * export upload) owns every field except `ignoredAt` / `updatedAt`, which the
+ * office sets from the admin desk. Rows are never deleted automatically.
+ */
+export type TallyMasterSource = "bridge" | "import";
+
+export interface TallyMasterBase {
+  /** Normalised Tally name — stable key when no GUID is known. */
+  id: string;
+  /** Tally name exactly as entered in Tally. */
+  name: string;
+  /** Tally GUID when the bridge supplied it; survives renames. */
+  guid?: string;
+  /** Parent group / stock group in Tally. */
+  parent?: string;
+  source: TallyMasterSource;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  /** Set when a full sync no longer lists this row. Link is kept. */
+  missingSince?: string;
+  /** Office decided this row never needs a website link. */
+  ignoredAt?: string;
+  /** Last office edit (ignore toggle) — newer wins in merges. */
+  updatedAt?: string;
+}
+
+export interface TallyItem extends TallyMasterBase {
+  unit?: string;
+  /** Closing quantity from the last bridge sync. */
+  closingQty?: number;
+}
+
+export interface TallyLedger extends TallyMasterBase {
+  gstin?: string;
+  phone?: string;
+}
+
+/** Sale, receipt, or ledger master waiting for the local TallyPrime bridge. */
+export type TallyPostKind = "sale" | "receipt" | "ledger";
 export type TallyPostStatus = "pending" | "posted" | "failed";
+/** Why a pending post is held back from the bridge. */
+export type TallyBlockedReason = "ledger" | "item";
 
 export interface TallyPostLine {
   productId?: string;
   variationId?: string;
   tallyItemId?: string;
+  /** Exact Tally stock item name from the linked registry row. */
+  tallyItemName?: string;
   sku?: string;
   name: string;
   qty: number;
@@ -1287,12 +1331,22 @@ export interface TallyPostLine {
   amount: number;
 }
 
+export interface TallyPostLedger {
+  name: string;
+  parent: string;
+  gstin?: string;
+  phone?: string;
+  address?: string;
+  /** Website dealer this ledger is for; linked once Tally acks. */
+  userId?: string;
+}
+
 export interface TallyPost {
   id: string;
   kind: TallyPostKind;
   orderId: string;
   orderNumber: string;
-  /** Idempotent Tally REMOTEID — WEB-SALE-… / WEB-RCPT-… */
+  /** Idempotent Tally REMOTEID — WEB-SALE-… / WEB-RCPT-… / WEB-LEDGER-… */
   remoteId: string;
   partyName: string;
   partyPhone?: string;
@@ -1302,7 +1356,11 @@ export interface TallyPost {
   date: string;
   narration: string;
   lines?: TallyPostLine[];
+  /** Ledger master to create (kind = ledger). */
+  ledger?: TallyPostLedger;
   status: TallyPostStatus;
+  /** Pending but not offered to the bridge until the link exists. */
+  blockedReason?: TallyBlockedReason;
   attempts: number;
   lastError?: string;
   createdAt: string;
