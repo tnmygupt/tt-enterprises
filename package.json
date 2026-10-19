@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "next build --webpack",
+    "build": "TOKIO_WORKER_THREADS=2 RAYON_NUM_THREADS=2 next build --webpack",
     "launch-wipe": "LAUNCH_WIPE=YES node scripts/launch-wipe.mjs && npm run build",
     "postbuild": "node scripts/prepare-standalone.js",
     "start": "next start",
