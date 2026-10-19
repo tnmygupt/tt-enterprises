@@ -30,6 +30,8 @@ export const COLLECTION_TABLES: ReadonlyArray<{
   { key: "goodsReceipts", table: "goods_receipts" },
   { key: "supplierContracts", table: "supplier_contracts" },
   { key: "tallyPosts", table: "tally_posts" },
+  { key: "tallyItems", table: "tally_items" },
+  { key: "tallyLedgers", table: "tally_ledgers" },
   { key: "statementMatches", table: "statement_matches" },
   { key: "bankRecons", table: "bank_recons" },
   { key: "accessPlaces", table: "access_places" },

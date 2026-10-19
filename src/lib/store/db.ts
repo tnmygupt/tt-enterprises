@@ -83,6 +83,8 @@ import type {
   VoucherType,
   WalletTransaction,
   WalletDeposit,
+  TallyItem,
+  TallyLedger,
   TallyPost,
   UnitOfSale,
   AccessPlace,
@@ -180,8 +182,17 @@ import { canTransitionOrderStatus } from "../order-stages";
 import {
   applyTallyAvailability,
   applyTallyStock,
+  autoLinkTallyItems,
+  autoLinkTallyLedgers,
   cancelTallySale,
+  createProductFromTallyItem,
+  createVariationFromTallyItem,
   enqueueTallySale,
+  ignoreTallyItem,
+  ignoreTallyLedger,
+  linkTallyItem,
+  linkTallyLedger,
+  requestTallyLedger,
   type TallyStockInput,
 } from "@/lib/tally-sync";
 import {
@@ -269,6 +280,10 @@ export interface AppDatabase {
   goodsReceipts: GoodsReceipt[];
   supplierContracts: SupplierContract[];
   tallyPosts: TallyPost[];
+  /** Raw Tally stock items mirrored from the office bridge / export. */
+  tallyItems?: TallyItem[];
+  /** Raw Tally party ledgers mirrored from the office bridge / export. */
+  tallyLedgers?: TallyLedger[];
   statementMatches: StatementMatch[];
   /** Bank reconciliation sessions (Tally BRS). */
   bankRecons?: BankRecon[];
@@ -326,6 +341,8 @@ function emptyDb(): AppDatabase {
     goodsReceipts: [],
     supplierContracts: [],
     tallyPosts: [],
+    tallyItems: [],
+    tallyLedgers: [],
     accessPlaces: [],
     rolePresets: {},
     staffJobs: [],
@@ -410,6 +427,8 @@ export function loadDb(): AppDatabase {
     if (!parsed.supplierContracts) parsed.supplierContracts = [];
     if (!parsed.walletDeposits) parsed.walletDeposits = [];
     if (!parsed.tallyPosts) parsed.tallyPosts = [];
+    if (!parsed.tallyItems) parsed.tallyItems = [];
+    if (!parsed.tallyLedgers) parsed.tallyLedgers = [];
     if (!parsed.stockBatches) parsed.stockBatches = [];
     if (!parsed.batchConsumptions) parsed.batchConsumptions = [];
     if (!parsed.statementMatches) parsed.statementMatches = [];
@@ -4022,6 +4041,63 @@ export function applyTallyStockSync(items: TallyStockInput[]): {
   const result = applyTallyStock(db, items);
   saveDb(db);
   return result;
+}
+
+function withTallyDesk<T>(mutate: (db: AppDatabase) => T): T {
+  const db = loadDb();
+  const value = mutate(db);
+  saveDb(db);
+  return value;
+}
+
+/** Link a raw Tally item to a product or size. Pass null to clear the link. */
+export function linkProductToTallyItem(
+  tallyItemId: string,
+  target: { productId: string; variationId?: string } | null
+): boolean {
+  return withTallyDesk((db) => linkTallyItem(db, tallyItemId, target));
+}
+
+export function setTallyItemIgnored(tallyItemId: string, ignored: boolean): boolean {
+  return withTallyDesk((db) => ignoreTallyItem(db, tallyItemId, ignored));
+}
+
+export function autoLinkTallyItemMatches(): number {
+  return withTallyDesk((db) => autoLinkTallyItems(db));
+}
+
+/** Inactive catalog product, already linked. Finish rates in Products. */
+export function addProductFromTallyItem(tallyItemId: string): string | null {
+  return withTallyDesk((db) => createProductFromTallyItem(db, tallyItemId)?.id ?? null);
+}
+
+export function addSizeFromTallyItem(
+  tallyItemId: string,
+  productId: string
+): string | null {
+  return withTallyDesk(
+    (db) => createVariationFromTallyItem(db, tallyItemId, productId)?.id ?? null
+  );
+}
+
+export function linkDealerToTallyLedger(
+  tallyLedgerId: string,
+  userId: string | null
+): boolean {
+  return withTallyDesk((db) => linkTallyLedger(db, tallyLedgerId, userId));
+}
+
+export function setTallyLedgerIgnored(tallyLedgerId: string, ignored: boolean): boolean {
+  return withTallyDesk((db) => ignoreTallyLedger(db, tallyLedgerId, ignored));
+}
+
+export function autoLinkTallyLedgerMatches(): number {
+  return withTallyDesk((db) => autoLinkTallyLedgers(db));
+}
+
+/** Ask the office bridge to create this dealer as a Sundry Debtors ledger. */
+export function queueTallyLedgerForDealer(userId: string): boolean {
+  return withTallyDesk((db) => !!requestTallyLedger(db, userId));
 }
 
 /** One pending Tally sale for this order. Safe to call again. */

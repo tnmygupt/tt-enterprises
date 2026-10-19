@@ -22,7 +22,7 @@ import {
 } from "./live";
 import { sanitizeDbForCloud } from "./sanitize";
 import { isDatabaseInfraMessage } from "@/lib/sync-errors";
-import { mergeTallyPosts } from "@/lib/tally-sync";
+import { mergeTallyMasters, mergeTallyPosts } from "@/lib/tally-sync";
 
 let apiAvailable: boolean | null = null;
 let lastPushJson = "";
@@ -332,9 +332,16 @@ export function mergeLocalUsersIntoRemote(
       byId.set(u.id, { ...u });
       continue;
     }
-    // Keep local wallet if we still have unsynced wallet txs for this user
-    if (pendingWalletUserIds.has(u.id)) {
-      byId.set(u.id, { ...remoteU, walletBalance: u.walletBalance });
+    // Keep a dealer↔ledger link (and an unsynced wallet) until the push lands.
+    const keepLedger = (u.tallyLedgerId || "") !== (remoteU.tallyLedgerId || "");
+    if (pendingWalletUserIds.has(u.id) || keepLedger) {
+      byId.set(u.id, {
+        ...remoteU,
+        ...(pendingWalletUserIds.has(u.id)
+          ? { walletBalance: u.walletBalance }
+          : {}),
+        ...(keepLedger ? { tallyLedgerId: u.tallyLedgerId } : {}),
+      });
     }
   }
   const partyById = new Map(
@@ -457,6 +464,8 @@ function mergePendingCollections(
       local.bankRecons
     ),
     tallyPosts: mergeTallyPosts(remote.tallyPosts, local.tallyPosts),
+    tallyItems: mergeTallyMasters(remote.tallyItems, local.tallyItems),
+    tallyLedgers: mergeTallyMasters(remote.tallyLedgers, local.tallyLedgers),
   });
 }
 
@@ -525,6 +534,32 @@ export function localPendingDiffers(
   const remoteTallyIds = new Set((remote.tallyPosts ?? []).map((p) => p.id));
   if ((local.tallyPosts ?? []).some((p) => !remoteTallyIds.has(p.id)))
     return true;
+  const remoteUsersById = new Map((remote.users ?? []).map((u) => [u.id, u]));
+  if (
+    (local.users ?? []).some(
+      (u) =>
+        (u.tallyLedgerId || "") !==
+        (remoteUsersById.get(u.id)?.tallyLedgerId || "")
+    )
+  ) {
+    return true;
+  }
+  const newerIgnore = (
+    localRows: { id: string; ignoredAt?: string; updatedAt?: string }[] | undefined,
+    remoteRows: { id: string; ignoredAt?: string; updatedAt?: string }[] | undefined
+  ) => {
+    const byId = new Map((remoteRows ?? []).map((r) => [r.id, r]));
+    return (localRows ?? []).some((r) => {
+      const cloud = byId.get(r.id);
+      return (
+        !!cloud &&
+        (r.updatedAt || "") > (cloud.updatedAt || "") &&
+        r.ignoredAt !== cloud.ignoredAt
+      );
+    });
+  };
+  if (newerIgnore(local.tallyItems, remote.tallyItems)) return true;
+  if (newerIgnore(local.tallyLedgers, remote.tallyLedgers)) return true;
   const remoteMovementIds = new Set(
     (remote.stockMovements ?? []).map((m) => m.id)
   );
