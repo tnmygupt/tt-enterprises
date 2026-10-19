@@ -377,6 +377,12 @@ export function AdminShell({
       label: t("admin.queueFullTruck"),
       count: queues.counts.full_truck,
     },
+    {
+      key: "need_tally_link",
+      href: "/admin/tally",
+      label: t("admin.queueTallyLink"),
+      count: queues.counts.need_tally_link,
+    },
   ].filter((q) => q.count > 0);
 
   const nav = (

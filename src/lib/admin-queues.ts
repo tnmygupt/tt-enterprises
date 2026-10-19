@@ -1,6 +1,7 @@
 import { stockAlertsFromDb } from "@/lib/accounting/analysis";
 import { orderHasLr } from "@/lib/store/db";
 import { pendingOwnerApprovals } from "@/lib/owner-approvals";
+import { tallyRegistrySummary } from "@/lib/tally-sync";
 import type {
   AppSettings,
   Order,
@@ -8,6 +9,10 @@ import type {
   Product,
   PurchaseOrder,
   StockMovement,
+  TallyItem,
+  TallyLedger,
+  TallyPost,
+  UserProfile,
   Voucher,
 } from "@/lib/types";
 
@@ -19,7 +24,8 @@ export type AdminQueueKey =
   | "full_truck"
   | "need_voucher"
   | "need_reorder"
-  | "need_owner_approval";
+  | "need_owner_approval"
+  | "need_tally_link";
 
 export function orderNeedsSaleVoucher(
   order: Order,
@@ -44,6 +50,10 @@ export function getAdminQueues(
         purchaseOrders?: PurchaseOrder[];
         settings?: AppSettings;
         ownerApprovals?: OwnerApproval[];
+        users?: UserProfile[];
+        tallyItems?: TallyItem[];
+        tallyLedgers?: TallyLedger[];
+        tallyPosts?: TallyPost[];
       }
     | null
     | undefined
@@ -56,6 +66,7 @@ export function getAdminQueues(
   needVoucher: Order[];
   reorderCount: number;
   needOwnerApproval: number;
+  needTallyLink: number;
   counts: Record<AdminQueueKey, number>;
 } {
   const orders = db?.orders ?? [];
@@ -94,6 +105,17 @@ export function getAdminQueues(
       }).filter((row) => row.kind === "reorder").length
     : 0;
   const needOwnerApproval = pendingOwnerApprovals(db?.ownerApprovals).length;
+  const needTallyLink = db
+    ? tallyRegistrySummary({
+        products: db.products ?? [],
+        orders,
+        users: db.users ?? [],
+        tallyItems: db.tallyItems,
+        tallyLedgers: db.tallyLedgers,
+        tallyPosts: db.tallyPosts ?? [],
+        settings: db.settings,
+      }).needsLink
+    : 0;
 
   return {
     needConfirm,
@@ -104,6 +126,7 @@ export function getAdminQueues(
     needVoucher,
     reorderCount,
     needOwnerApproval,
+    needTallyLink,
     counts: {
       need_confirm: needConfirm.length,
       need_bill: needBill.length,
@@ -113,6 +136,7 @@ export function getAdminQueues(
       need_voucher: needVoucher.length,
       need_reorder: reorderCount,
       need_owner_approval: needOwnerApproval,
+      need_tally_link: needTallyLink,
     },
   };
 }

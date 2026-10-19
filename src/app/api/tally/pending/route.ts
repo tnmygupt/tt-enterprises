@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { tallyKeyOk } from "@/lib/tally-sync";
+import { tallyKeyOk, tallyPostsForBridge } from "@/lib/tally-sync";
 import { cloudGetAppDb, isCloudDbConfigured } from "@/lib/server/app-db";
 
 function authorize(req: NextRequest): boolean {
@@ -23,9 +23,7 @@ export async function GET(req: NextRequest) {
       { status: 500 }
     );
   }
-  const posts = (got.db.tallyPosts ?? []).filter(
-    (p) => p.kind === "sale" && (p.status === "pending" || p.status === "failed") && p.lastError !== "Order cancelled"
-  );
+  const posts = tallyPostsForBridge(got.db.tallyPosts);
   return NextResponse.json({
     ok: true,
     posts: posts.map((p) => ({
@@ -39,7 +37,11 @@ export async function GET(req: NextRequest) {
       amount: p.amount,
       date: p.date,
       narration: p.narration,
-      lines: p.lines ?? [],
+      lines: (p.lines ?? []).map((line) => ({
+        ...line,
+        tallyItemName: line.tallyItemName ?? "",
+      })),
+      ledger: p.ledger ?? null,
       status: p.status,
       attempts: p.attempts,
       lastError: p.lastError ?? "",
