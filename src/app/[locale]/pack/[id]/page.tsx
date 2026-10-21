@@ -1,7 +1,9 @@
 "use client";
 
-import { PackingSlipEditor } from "@/components/PackingSlipEditor";
+import { useParams } from "next/navigation";
+import { PackSlipScreen } from "@/components/PackSlipScreen";
 
 export default function PackSlipPage() {
-  return <PackingSlipEditor standalone />;
+  const params = useParams<{ id: string }>();
+  return <PackSlipScreen slipId={String(params.id || "")} />;
 }

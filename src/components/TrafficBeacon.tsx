@@ -35,6 +35,7 @@ export function TrafficBeacon() {
   const last = useRef("");
 
   useEffect(() => {
+    if (pathname === "/pack" || pathname.startsWith("/pack/")) return;
     const path = `/${locale}${pathname === "/" ? "" : pathname}`;
     if (!path || path === last.current) return;
     last.current = path;

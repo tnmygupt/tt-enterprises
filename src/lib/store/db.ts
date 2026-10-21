@@ -7,6 +7,7 @@ import {
   SEED_USERS,
   hashPassword,
 } from "../seed";
+import { isPackHost } from "../pack-site";
 import {
   ACCT,
   SEED_ACCOUNTS,
@@ -1446,21 +1447,24 @@ export async function loginAsync(
       error?: string;
     }>(res);
     if (res.ok && data.user) {
-      // Cookie from POST must be stored before /api/db, or a public/empty
-      // pull leaves a new dealer with no catalog or rate list.
-      await new Promise((r) => window.setTimeout(r, 0));
-      try {
-        const sb = await import("@/lib/supabase/sync");
-        if (sb.supabaseSyncEnabled() || (await sb.detectSupabaseSync())) {
-          let remote = await sb.pullCloudDatabase(loadDb());
-          if (!remote?.products?.some((p) => p.active !== false)) {
-            await new Promise((r) => window.setTimeout(r, 150));
-            remote = await sb.pullCloudDatabase(loadDb());
+      // The packing host keeps its own slips and must not download the shop books.
+      if (!isPackHost()) {
+        // Cookie from POST must be stored before /api/db, or a public/empty
+        // pull leaves a new dealer with no catalog or rate list.
+        await new Promise((r) => window.setTimeout(r, 0));
+        try {
+          const sb = await import("@/lib/supabase/sync");
+          if (sb.supabaseSyncEnabled() || (await sb.detectSupabaseSync())) {
+            let remote = await sb.pullCloudDatabase(loadDb());
+            if (!remote?.products?.some((p) => p.active !== false)) {
+              await new Promise((r) => window.setTimeout(r, 150));
+              remote = await sb.pullCloudDatabase(loadDb());
+            }
+            if (remote) replaceDbFromCloud(remote);
           }
-          if (remote) replaceDbFromCloud(remote);
+        } catch {
+          /* ignore — still allow login with cookie */
         }
-      } catch {
-        /* ignore — still allow login with cookie */
       }
       setSession(data.user);
       bumpSessionSync();

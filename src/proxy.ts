@@ -23,7 +23,7 @@ function requestHost(req: NextRequest): string {
     .toLowerCase();
 }
 
-/** pack.ttenterprises.shop is only the packing list and slip. */
+/** pack.ttenterprises.shop is a separate packing book, not the shop orders. */
 function packHostRedirect(req: NextRequest): NextResponse | null {
   const host = requestHost(req);
   if (host === "www.pack.ttenterprises.shop") {
