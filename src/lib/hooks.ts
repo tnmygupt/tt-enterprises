@@ -19,6 +19,7 @@ import {
   type LiveSyncState,
 } from "@/lib/supabase/live";
 import type { CartItem, SessionUser } from "@/lib/types";
+import { isPackHost } from "@/lib/pack-site";
 
 /* --------------------------- External stores ---------------------------- */
 /* Subscribe once to storage/custom-events; snapshots come from lazy getters
@@ -150,6 +151,11 @@ const cloudReadyListeners = new Set<() => void>();
 
 function startCloudSyncOnce(): void {
   if (cloudSyncStarted || typeof window === "undefined") return;
+  if (isPackHost()) {
+    cloudSyncStarted = true;
+    cloudReadyGlobal = true;
+    return;
+  }
   cloudSyncStarted = true;
 
   // Drop locally-saved estimates the cloud refused (insufficient stock).
@@ -252,6 +258,10 @@ export function useDb() {
   useEffect(() => {
     if (!ready || !cloudReady || !session) return;
     const key = `${session.id}:${session.role}`;
+    if (isPackHost()) {
+      lastSessionPullKey = key;
+      return;
+    }
     if (lastSessionPullKey === key) return;
     void (async () => {
       const sb = await import("@/lib/supabase/sync");

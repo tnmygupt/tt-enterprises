@@ -12,7 +12,8 @@ function isPublicPath(pathname: string): boolean {
     pathname === "/login" ||
     pathname === "/register" ||
     pathname === "/help" ||
-    pathname === "/reset"
+    pathname === "/reset" ||
+    pathname === "/pack/login"
   ) {
     return true;
   }
@@ -59,6 +60,10 @@ export function AuthRedirect() {
     }
 
     if (isPublicPath(pathname)) return;
+    if (pathname === "/pack" || pathname.startsWith("/pack/")) {
+      router.replace("/pack/login");
+      return;
+    }
     router.replace("/");
   }, [ready, session, pathname, router, db]);
 

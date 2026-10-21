@@ -2061,6 +2061,18 @@ button.tt-chip:focus-visible {
   color: var(--ok);
 }
 
+/* Phone packing controls stay at least 48px even if the root font is under 16px. */
+.pack-tap {
+  min-height: 48px;
+}
+
+/* Phone packing site shows one item column; print still shows every column. */
+@media screen {
+  .pack-col-off {
+    display: none;
+  }
+}
+
 /* Packing slip print — A5, clean flow (no blank pages) */
 @media print {
   @page {
@@ -2092,6 +2104,10 @@ button.tt-chip:focus-visible {
   body.packing-slip-printing .packing-slip-sheet,
   body.packing-slip-printing .packing-slip-sheet * {
     visibility: visible !important;
+  }
+
+  .pack-col-off {
+    display: table-cell !important;
   }
 
   body.packing-slip-printing .packing-slip-sheet {

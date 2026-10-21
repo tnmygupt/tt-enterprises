@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
+import { usePathname } from "@/i18n/routing";
 import { useSession } from "@/lib/hooks";
 import {
   ensurePushSubscription,
@@ -19,6 +20,8 @@ function isIos(): boolean {
 export function PwaRegister() {
   const t = useTranslations("pwa");
   const locale = useLocale();
+  const pathname = usePathname();
+  const onPack = pathname === "/pack" || pathname.startsWith("/pack/");
   const { session, ready } = useSession();
   const [deferred, setDeferred] = useState<BeforeInstallPromptEvent | null>(
     null
@@ -91,7 +94,7 @@ export function PwaRegister() {
     return () => window.clearTimeout(timer);
   }, [ready, session, t]);
 
-  if (!showInstall && !pushMsg && !showIosHint) return null;
+  if (onPack || (!showInstall && !pushMsg && !showIosHint)) return null;
 
   return (
     <div className="tt-bottom-toast pointer-events-none flex justify-center print:hidden">

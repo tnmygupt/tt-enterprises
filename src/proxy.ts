@@ -13,6 +13,53 @@ import { wwwApexRedirect } from "./lib/server/public-origin";
 const handleI18nRouting = createMiddleware(routing);
 
 const ADMIN_PATH = /^\/(en|hi)\/admin(?:\/|$)/;
+const PACK_HOSTS = new Set(["pack.ttenterprises.shop"]);
+
+function requestHost(req: NextRequest): string {
+  return (req.headers.get("x-forwarded-host") || req.headers.get("host") || "")
+    .split(",")[0]
+    .trim()
+    .replace(/:\d+$/, "")
+    .toLowerCase();
+}
+
+/** pack.ttenterprises.shop is a separate packing book, not the shop orders. */
+function packHostRedirect(req: NextRequest): NextResponse | null {
+  const host = requestHost(req);
+  if (host === "www.pack.ttenterprises.shop") {
+    const url = req.nextUrl.clone();
+    url.hostname = "pack.ttenterprises.shop";
+    url.port = "";
+    return NextResponse.redirect(url, 308);
+  }
+  if (!PACK_HOSTS.has(host)) return null;
+  const path = req.nextUrl.pathname;
+  if (path.startsWith("/api") || path.startsWith("/_next")) return null;
+  const locale = path.startsWith("/hi") ? "hi" : "en";
+  const token = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+  const session = verifySessionToken(token);
+  const staff = !!session && isStaffRole(session.role);
+  const onLogin =
+    path === "/pack/login" ||
+    path === "/en/pack/login" ||
+    path === "/hi/pack/login";
+  const onPack =
+    path === "/pack" ||
+    path.startsWith("/pack/") ||
+    /^\/(en|hi)\/pack(\/|$)/.test(path);
+  const url = req.nextUrl.clone();
+  url.search = "";
+  if (!staff) {
+    if (onLogin) return null;
+    url.pathname = `/${locale}/pack/login`;
+    return NextResponse.redirect(url);
+  }
+  if (onLogin || !onPack) {
+    url.pathname = `/${locale}/pack`;
+    return NextResponse.redirect(url);
+  }
+  return null;
+}
 
 /** Books, HR, production, and audit stay in the repo but are off the working site. */
 const RETIRED_ADMIN =
@@ -27,6 +74,9 @@ const RETIRED_ADMIN =
 export default function proxy(req: NextRequest) {
   const apex = wwwApexRedirect(req);
   if (apex) return apex;
+
+  const pack = packHostRedirect(req);
+  if (pack) return pack;
 
   const retired = req.nextUrl.pathname.match(RETIRED_ADMIN);
   if (retired) {
