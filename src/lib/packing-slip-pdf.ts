@@ -205,8 +205,17 @@ function renderSlipPdf(
   locale: "en" | "hi",
   companyIn?: PdfCompany
 ): jsPDF {
-  const company = companyIn?.name ? companyIn : FALLBACK_COMPANY;
-  const companyName = (company.name || "T T Enterprises").toUpperCase();
+  // An explicit blank name (the pack site) prints no company line.
+  // Omitting the company still uses the T T Enterprises letterhead.
+  const blankCompany = companyIn != null && !String(companyIn.name || "").trim();
+  const company = blankCompany
+    ? companyIn
+    : companyIn?.name
+      ? companyIn
+      : FALLBACK_COMPANY;
+  const companyName = blankCompany
+    ? ""
+    : (company?.name || "T T Enterprises").toUpperCase();
   const slip = order.packingSlip!;
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a5" });
   const M = 7;
@@ -243,7 +252,11 @@ function renderSlipPdf(
     doc.setFont("helvetica", "bold");
     doc.setFontSize(8);
     doc.setTextColor(0, 0, 0);
-    doc.text(`${companyName} - PACKING SLIP (continued)`, M, y + 3);
+    doc.text(
+      companyName ? `${companyName} - PACKING SLIP (continued)` : "PACKING SLIP (continued)",
+      M,
+      y + 3
+    );
     doc.setFont("helvetica", "normal");
     doc.setFontSize(6.5);
     doc.text(
@@ -282,17 +295,19 @@ function renderSlipPdf(
   doc.setTextColor(0, 0, 0);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(13);
-  doc.text(companyName, M, y + 4);
+  if (companyName) doc.text(companyName, M, y + 4);
   doc.setFontSize(8);
   doc.text("Om Ganeshaya Namah", pageW - M, y + 4, { align: "right" });
-  y += 8;
+  y += companyName ? 8 : 6;
 
   // Address / phone come from admin settings so the slip stays current
   // when those details change. Company GSTIN is not printed on slips.
-  const letterhead = [
-    [company.address, company.address2].filter(Boolean).join(", "),
-    [company.phone, company.phone2].filter(Boolean).join(", "),
-  ].filter(Boolean);
+  const letterhead = blankCompany
+    ? []
+    : [
+        [company?.address, company?.address2].filter(Boolean).join(", "),
+        [company?.phone, company?.phone2].filter(Boolean).join(", "),
+      ].filter(Boolean);
   if (letterhead.length) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(6.5);

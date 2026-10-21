@@ -54,6 +54,8 @@ export function SiteHeader() {
     router.replace(pathname, { locale: next });
   };
 
+  if (pathname === "/pack" || pathname.startsWith("/pack/")) return null;
+
   const linkClass = (href: string) =>
     `inline-flex min-h-11 w-full items-center rounded-lg px-3 py-2.5 text-base font-medium transition lg:w-auto lg:text-sm ${
       pathname === href || pathname.startsWith(`${href}/`)
@@ -257,6 +259,7 @@ export function SiteHeader() {
 export function SiteFooter() {
   const t = useTranslations();
   const locale = useLocale();
+  const pathname = usePathname();
   const { db } = useDb();
   const { session, ready } = useSession();
   const settings = db?.settings;
@@ -264,6 +267,7 @@ export function SiteFooter() {
   const phone2 = settings?.phone2?.trim() || "";
   const address = settings?.address?.trim() || "";
   const loggedIn = ready && !!session;
+  if (pathname === "/pack" || pathname.startsWith("/pack/")) return null;
 
   return (
     <footer className="mt-auto border-t border-[var(--line)] bg-white pb-[env(safe-area-inset-bottom)] print:hidden">
